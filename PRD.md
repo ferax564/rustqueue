@@ -1,0 +1,1649 @@
+# Product Requirements Document (PRD)
+# **RustQueue** — A High-Performance Distributed Job Scheduler
+
+**Version:** 1.0  
+**Date:** February 5, 2026  
+**Status:** Draft  
+**Author:** [Your Name]
+
+---
+
+## Table of Contents
+
+1. [Vision & Opportunity](#1-vision--opportunity)
+2. [Problem Statement](#2-problem-statement)
+3. [Target Users & Personas](#3-target-users--personas)
+4. [Product Overview](#4-product-overview)
+5. [Competitive Analysis](#5-competitive-analysis)
+6. [Core Principles & Design Philosophy](#6-core-principles--design-philosophy)
+7. [Architecture](#7-architecture)
+8. [Functional Requirements](#8-functional-requirements)
+9. [Non-Functional Requirements](#9-non-functional-requirements)
+10. [Data Model](#10-data-model)
+11. [API Design](#11-api-design)
+12. [SDK & Client Libraries](#12-sdk--client-libraries)
+13. [Deployment & Configuration](#13-deployment--configuration)
+14. [Security](#14-security)
+15. [Observability & Monitoring](#15-observability--monitoring)
+16. [Web Dashboard](#16-web-dashboard)
+17. [Release Plan & Milestones](#17-release-plan--milestones)
+18. [Success Metrics](#18-success-metrics)
+19. [Business Model](#19-business-model)
+20. [Risks & Mitigations](#20-risks--mitigations)
+21. [Future Roadmap](#21-future-roadmap)
+22. [Technical Stack](#22-technical-stack)
+23. [Glossary](#23-glossary)
+
+---
+
+## 1. Vision & Opportunity
+
+### 1.1 Vision Statement
+
+Build the **SQLite of job scheduling** — a zero-dependency, single-binary, high-performance distributed job queue and task scheduler written in Rust that runs anywhere from a Raspberry Pi to a 100-node production cluster.
+
+### 1.2 One-Liner
+
+> The job scheduler that runs anywhere, scales to anything, and depends on nothing.
+
+### 1.3 Market Opportunity
+
+The global workload scheduling and automation market was valued at **$4.7 billion in 2025** and is projected to reach **$8.4 billion by 2035**, growing at a CAGR of 6.2% (OMR Global, 2025). Over 72% of enterprises operate more than 500 recurring batch jobs daily, while 48% manage over 5,000 workflows across hybrid infrastructure. Yet the current landscape forces teams to choose between:
+
+- **Simplicity with limitations** (cron, in-process schedulers)
+- **Power with complexity** (Temporal, Airflow, Kubernetes CronJobs)
+- **Language lock-in** (Sidekiq for Ruby, Celery for Python, BullMQ for Node.js)
+- **Infrastructure overhead** (Redis, RabbitMQ, PostgreSQL as mandatory dependencies)
+
+There is no solution today that is simultaneously simple to deploy, language-agnostic, distributed, observable, and high-performance. RustQueue fills this gap.
+
+### 1.4 Why Now
+
+- The **White House and NSA** have formally recommended migration to memory-safe languages, creating institutional tailwinds for Rust-based infrastructure.
+- **Rust adoption** has grown 40% year-over-year on GitHub, with 45% of organizations now using it for production workloads. Rust has been voted the "Most Admired Language" on Stack Overflow for 10 consecutive years.
+- 80% of organizations are transitioning from traditional scheduling to cloud-driven automation and AI-powered orchestration (EMA Research, 2025).
+- The "single binary" deployment model (popularized by Go tools like Caddy, Consul, and Litestream) has proven its market appeal, but Rust offers even better performance characteristics.
+- **Serverless and edge computing** demand lightweight, embeddable tools — not heavy Java/Python runtimes.
+
+### 1.5 Why Rust
+
+| Advantage | Impact on Job Schedulers |
+|---|---|
+| No garbage collector | Zero GC pauses = precise job timing, predictable latency under load |
+| Memory safety | Eliminates the #1 class of security bugs in long-running daemons |
+| Single static binary | Zero runtime dependencies = trivial deployment |
+| Async with tokio | Handles 100K+ concurrent connections efficiently |
+| Low memory footprint | Runs on $5/month VPS or Raspberry Pi |
+| WASM compilation | SDK can run in browsers for local-first apps |
+| Embeddable as a library | Use as a server OR embed in your own Rust application |
+
+---
+
+## 2. Problem Statement
+
+### 2.1 Problems with Unix Cron
+
+Unix cron is the default for scheduled tasks and has remained virtually unchanged since the 1970s. Its limitations are well-documented:
+
+- **No persistence.** If the server reboots during a scheduled window, the job is silently lost.
+- **No retry logic.** A failed job simply fails. No backoff, no retry, no notification.
+- **No observability.** Determining whether a job ran, when it ran, how long it took, or why it failed requires custom logging and ad-hoc tooling.
+- **No job dependencies.** Cannot express "run B after A completes successfully."
+- **No distributed coordination.** Running the same crontab on multiple servers causes duplicate execution.
+- **No resource controls.** No concurrency limits, rate limiting, or priority queuing.
+- **No dead letter queue.** Permanently failed jobs vanish without a trace.
+
+### 2.2 Problems with Existing Solutions
+
+| Solution | Primary Pain Points |
+|---|---|
+| **Celery** (Python) | Requires Redis or RabbitMQ. Python-only. Complex configuration. Memory-hungry. |
+| **Sidekiq** (Ruby) | Ruby-only. Requires Redis. Pro features are expensive ($100+/month). |
+| **BullMQ** (Node.js) | Requires Redis. JavaScript-only. GC pauses under load. |
+| **Temporal** | Extremely powerful but massively complex. Requires a full cluster to operate. Steep learning curve. Overkill for 90% of use cases. |
+| **Kubernetes CronJobs** | Requires Kubernetes. Pod startup overhead (seconds). Not suitable for sub-minute scheduling. |
+| **Airflow** | Designed for data pipelines, not general job scheduling. Python-only. Heavy infrastructure. |
+| **Cronicle** | Node.js-based. Single-threaded performance ceiling. Limited ecosystem. |
+| **Dkron** | Go-based, distributed. But limited feature set — no job dependencies, no priorities, no DLQ. |
+| **bunqueue** | Requires Bun runtime. Single-node only. TypeScript-only SDK. Not battle-tested. |
+| **rust-task-queue** | Rust-based but requires Redis. Library only (no standalone server). No dashboard, no distributed mode, no DLQ. |
+
+### 2.3 The Gap
+
+No existing solution provides all of the following:
+
+1. Zero external dependencies (no Redis, no PostgreSQL, no message broker)
+2. Single-binary deployment
+3. Language-agnostic interface (HTTP/TCP protocol, not tied to a runtime)
+4. Distributed high availability without manual configuration
+5. Production-grade observability out of the box
+6. Embeddable as a library in other applications
+7. Sub-millisecond scheduling precision
+8. Built-in web dashboard
+
+**RustQueue delivers all eight.**
+
+---
+
+## 3. Target Users & Personas
+
+### 3.1 Primary Persona: The Backend Developer
+
+**Name:** Alex — Senior Backend Engineer  
+**Company size:** 10-200 engineers  
+**Stack:** Polyglot (Go, Python, TypeScript, Rust)  
+**Current solution:** Redis + BullMQ or Celery, with growing frustration over infrastructure complexity  
+
+**Needs:**
+- Drop-in background job processing for web applications
+- Cron-like scheduling without managing crontab files across servers
+- Retries with exponential backoff that just work
+- A dashboard to see what's running, what failed, and why
+
+**Quote:** *"I just want to schedule jobs. I don't want to manage Redis, monitor Redis, back up Redis, and deal with Redis memory issues just to run a background task every hour."*
+
+### 3.2 Secondary Persona: The DevOps / Platform Engineer
+
+**Name:** Jordan — Platform Engineer  
+**Company size:** 50-500 engineers  
+**Responsibility:** Internal infrastructure, developer tooling  
+**Current solution:** Kubernetes CronJobs + custom monitoring  
+
+**Needs:**
+- Centralized job management across multiple services
+- High availability without Kubernetes
+- Prometheus/Grafana integration
+- Authentication and multi-tenancy for different teams
+
+**Quote:** *"We have 200 cron jobs scattered across 30 servers. Nobody knows which ones are still needed. When one fails, we find out from customers."*
+
+### 3.3 Tertiary Persona: The Solo Developer / Startup
+
+**Name:** Sam — Full-Stack Developer, Solo Founder  
+**Company size:** 1-5  
+**Stack:** Whatever works fastest  
+**Current solution:** `setTimeout` in Node.js or cron on a $10 VPS  
+
+**Needs:**
+- Near-zero operational overhead
+- Works on a cheap VPS
+- Easy to set up, easy to forget about until something breaks
+- Free for small scale
+
+**Quote:** *"I need to send reminder emails, process uploads, and clean up expired sessions. I don't want to learn Kubernetes to do it."*
+
+### 3.4 Stretch Persona: The Embedded / IoT Developer
+
+**Name:** Casey — Embedded Systems Engineer  
+**Stack:** Rust, C  
+**Environment:** Resource-constrained devices, edge computing  
+
+**Needs:**
+- Embeddable library (not a separate server)
+- Tiny memory footprint
+- No network dependencies
+- Deterministic timing
+
+---
+
+## 4. Product Overview
+
+### 4.1 What RustQueue Is
+
+RustQueue is a **job queue server and task scheduler** distributed as a single binary with zero external dependencies. It provides:
+
+- **Job queuing** with priorities, delays, and FIFO/LIFO ordering
+- **Cron scheduling** for recurring tasks
+- **Automatic retries** with configurable backoff strategies
+- **Dead letter queues** for inspecting and retrying permanently failed jobs
+- **Job dependencies** (DAG-based workflows)
+- **Real-time events** via WebSocket and Server-Sent Events
+- **A built-in web dashboard** for monitoring and management
+- **Prometheus metrics** for integration with existing monitoring stacks
+- **Distributed mode** (optional) for high availability via Raft consensus
+- **Embedded mode** for use as a Rust library without a separate server
+
+### 4.2 What RustQueue Is Not
+
+- **Not a message broker.** It is not a replacement for Kafka or RabbitMQ for event streaming. It is optimized for task execution, not pub/sub messaging.
+- **Not a workflow orchestration platform.** It supports job dependencies and simple DAGs, but it is not a replacement for Temporal or Airflow for complex, long-running, multi-step workflows with compensation logic.
+- **Not a data pipeline tool.** It does not provide ETL capabilities, data transformations, or dataset management.
+
+### 4.3 Deployment Modes
+
+| Mode | Description | Use Case |
+|---|---|---|
+| **Standalone** | Single binary, single node, embedded storage | Development, small apps, solo founders |
+| **Server** | Single binary, single node, optional external storage | Production single-server deployments |
+| **Cluster** | 3+ nodes with Raft consensus | High availability production |
+| **Embedded** | Rust library (`use rustqueue::Queue`) | Integrating directly into Rust applications |
+
+---
+
+## 5. Competitive Analysis
+
+### 5.1 Feature Comparison Matrix
+
+| Feature | RustQueue | bunqueue | BullMQ | Sidekiq Pro | Celery | Temporal | Dkron | rust-task-queue |
+|---|---|---|---|---|---|---|---|---|
+| **Language** | Rust | TypeScript/Bun | TypeScript | Ruby | Python | Go | Go | Rust |
+| **External deps** | None | Bun runtime | Redis | Redis | Redis/RabbitMQ | Cluster | None | Redis |
+| **Single binary** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| **Distributed HA** | ✅ (Raft) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (Raft) | ❌ |
+| **Job priorities** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
+| **Delayed jobs** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **Cron scheduling** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| **Retry + backoff** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
+| **Dead Letter Queue** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Job dependencies** | ✅ (DAG) | ✅ (basic) | ✅ (flows) | ❌ | ✅ (canvas) | ✅ | ❌ | ❌ |
+| **Rate limiting** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| **Web dashboard** | ✅ (built-in) | ❌ | ❌ (paid) | ✅ | ✅ (Flower) | ✅ | ✅ | ❌ |
+| **Prometheus** | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| **WebSocket events** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Embeddable** | ✅ (lib) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (lib) |
+| **Language-agnostic** | ✅ (HTTP/TCP) | Partial | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ |
+| **Memory footprint** | ~10-30 MB | ~80-150 MB | ~100+ MB | ~100+ MB | ~200+ MB | ~500+ MB | ~30-50 MB | ~30-50 MB |
+| **License** | MIT / Apache-2.0 | MIT | MIT | Commercial | BSD | MIT | LGPL | MIT/Apache-2.0 |
+
+### 5.2 Positioning Statement
+
+RustQueue is positioned **between** the simplicity of cron/BullMQ and the power of Temporal:
+
+```
+Simplicity ◄─────────────────────────────────────────────► Power
+
+  cron    BullMQ    Sidekiq   RustQueue    Dkron    Temporal    Airflow
+   │        │         │        ▲            │         │           │
+   │        │         │        │            │         │           │
+   └────────┴─────────┴────────┴────────────┴─────────┴───────────┘
+                               │
+                     "Simple enough for a solo dev,
+                      powerful enough for a platform team"
+```
+
+### 5.3 Key Differentiators
+
+1. **Zero-dependency single binary** — Nothing else to install, configure, or manage.
+2. **Distributed without infrastructure** — Raft consensus built-in; just run 3 copies.
+3. **Embeddable** — Use as a standalone server OR as a Rust library.
+4. **Language-agnostic** — HTTP REST + TCP protocol; works with any language.
+5. **Smallest footprint** — Runs on a $5 VPS or a Raspberry Pi.
+6. **Built-in dashboard** — No separate UI to deploy; open a browser and manage your queues.
+
+---
+
+## 6. Core Principles & Design Philosophy
+
+### 6.1 Zero-Config Defaults, Full Configurability
+
+RustQueue must work out of the box with `./rustqueue` and no configuration file. Every default should be production-reasonable. Advanced users can override anything via config file, environment variables, or CLI flags (in that priority order).
+
+### 6.2 Batteries Included, Not Batteries Required
+
+The dashboard, storage, metrics, and scheduling engine are all built-in. But users should be able to swap components: use Postgres instead of embedded storage, export metrics to Datadog instead of Prometheus, or skip the dashboard entirely.
+
+### 6.3 Protocol-First, SDK-Second
+
+The TCP and HTTP protocols are the primary interfaces. SDKs are thin wrappers for convenience. This ensures any language can integrate without waiting for an official SDK.
+
+### 6.4 Crash-Only Design
+
+RustQueue should be safe to kill at any time (`kill -9`). On restart, it must recover all state from durable storage with zero data loss. No graceful shutdown should ever be required for correctness.
+
+### 6.5 Observability is Not Optional
+
+Every job has a full lifecycle trace. Every queue has metrics. Every failure has context. If something goes wrong, the operator should be able to diagnose it without SSH-ing into the server.
+
+### 6.6 Progressive Complexity
+
+A solo developer running on a single VPS should never encounter distributed systems concepts. A platform team running a 10-node cluster should have all the knobs they need. The product should grow with the user.
+
+---
+
+## 7. Architecture
+
+### 7.1 High-Level Architecture
+
+```
+                     ┌──────────────────────────────────────────────┐
+                     │              RustQueue Binary                │
+                     │                                              │
+  Producers ────────►│  ┌────────────┐    ┌────────────────────┐   │
+  (any language)     │  │ HTTP/REST  │    │   TCP Protocol     │   │
+                     │  │  (axum)    │    │  (tokio raw TCP)   │   │
+  Workers ◄─────────►│  │ + WebSocket│    │  + SSE             │   │
+  (any language)     │  └─────┬──────┘    └────────┬───────────┘   │
+                     │        │                    │               │
+  Browser ──────────►│        └────────┬───────────┘               │
+  (Dashboard)        │                 │                           │
+                     │        ┌────────▼─────────┐                 │
+                     │        │   Core Engine     │                 │
+                     │        │                   │                 │
+                     │        │  ┌─────────────┐  │                 │
+                     │        │  │ Queue Mgr   │  │                 │
+                     │        │  ├─────────────┤  │                 │
+                     │        │  │ Scheduler   │  │                 │
+                     │        │  ├─────────────┤  │                 │
+                     │        │  │ Worker Mgr  │  │                 │
+                     │        │  ├─────────────┤  │                 │
+                     │        │  │ Flow Engine │  │                 │
+                     │        │  ├─────────────┤  │                 │
+                     │        │  │ DLQ Manager │  │                 │
+                     │        │  ├─────────────┤  │                 │
+                     │        │  │ Rate Limiter│  │                 │
+                     │        │  └─────────────┘  │                 │
+                     │        └────────┬──────────┘                 │
+                     │                 │                            │
+                     │        ┌────────▼──────────┐                │
+                     │        │  Storage Layer    │                 │
+                     │        │  (trait-based)    │                 │
+                     │        │                   │                 │
+                     │        │  ┌──────┐ ┌─────┐│                 │
+                     │        │  │ redb │ │SQLite││                 │
+                     │        │  └──────┘ └─────┘│                 │
+                     │        │  ┌────────────┐  │                 │
+                     │        │  │ PostgreSQL │  │                 │
+                     │        │  └────────────┘  │                 │
+                     │        └──────────────────┘                 │
+                     │                                              │
+                     │  ┌──────────────────────────────────────┐   │
+                     │  │  Raft Consensus (optional cluster)   │   │
+                     │  │  (openraft)                          │   │
+                     │  └──────────────────────────────────────┘   │
+                     │                                              │
+                     │  ┌──────────────────────────────────────┐   │
+                     │  │  Embedded Web Dashboard              │   │
+                     │  │  (rust-embed + static HTML/JS)       │   │
+                     │  └──────────────────────────────────────┘   │
+                     └──────────────────────────────────────────────┘
+```
+
+### 7.2 Core Engine Components
+
+#### 7.2.1 Queue Manager
+
+Manages named queues and their configuration. Handles job insertion, dequeuing, and state transitions. Supports multiple ordering strategies per queue.
+
+**Ordering strategies:**
+- **FIFO** (default): First-in, first-out
+- **LIFO**: Last-in, first-out
+- **Priority**: Highest priority value dequeued first, with FIFO as tiebreaker
+- **Fair**: Round-robin across job groups (for multi-tenant workloads)
+
+#### 7.2.2 Scheduler
+
+Manages time-based job execution. Evaluates cron expressions and interval-based schedules on a configurable tick interval (default: 1 second). Creates jobs in the appropriate queue when their scheduled time arrives.
+
+**Supported schedule types:**
+- Standard cron expressions (5 fields: minute, hour, day, month, weekday)
+- Extended cron expressions (6 fields: + seconds)
+- Fixed interval (`every: 300000` = every 5 minutes)
+- One-shot delayed execution (`run_at: "2026-03-01T00:00:00Z"`)
+
+#### 7.2.3 Worker Manager
+
+Tracks registered workers, their heartbeats, assigned jobs, and capacity. Detects stalled workers (missing heartbeats) and reassigns their active jobs.
+
+**Worker lifecycle:**
+1. Worker connects and registers (protocol, queue, concurrency)
+2. Worker pulls jobs (or server pushes, depending on mode)
+3. Worker sends heartbeats while processing
+4. Worker acknowledges completion or reports failure
+5. If heartbeat is missed for `stall_timeout` (default: 30s), job is returned to queue
+
+#### 7.2.4 Flow Engine
+
+Manages directed acyclic graphs (DAGs) of job dependencies. A parent job only becomes eligible for execution when all its children have completed successfully.
+
+**DAG rules:**
+- Cycles are detected at submission time and rejected
+- If any child fails (exhausts retries), the parent is moved to a "blocked" state
+- Blocked parents can be manually retried once the child issue is resolved
+- Maximum DAG depth: configurable (default: 10)
+
+#### 7.2.5 DLQ Manager
+
+Manages jobs that have exhausted their retry budget. Dead-lettered jobs are preserved with their full execution history (every attempt, every error message, every timestamp) for inspection and manual retry.
+
+#### 7.2.6 Rate Limiter
+
+Implements per-queue rate limiting using a token bucket algorithm. Configurable as:
+- **Max concurrent:** Maximum jobs executing simultaneously in a queue
+- **Max rate:** Maximum jobs dequeued per time window (e.g., 100/minute)
+- **Max per group:** Maximum concurrent jobs sharing a `group_id`
+
+### 7.3 Storage Layer
+
+Storage is abstracted behind a trait (`StorageBackend`) to allow multiple implementations:
+
+```rust
+#[async_trait]
+pub trait StorageBackend: Send + Sync + 'static {
+    // Job operations
+    async fn insert_job(&self, job: &Job) -> Result<JobId>;
+    async fn get_job(&self, id: JobId) -> Result<Option<Job>>;
+    async fn update_job(&self, job: &Job) -> Result<()>;
+    async fn delete_job(&self, id: JobId) -> Result<()>;
+    
+    // Queue operations
+    async fn dequeue(&self, queue: &str, count: u32) -> Result<Vec<Job>>;
+    async fn get_queue_counts(&self, queue: &str) -> Result<QueueCounts>;
+    
+    // Scheduled jobs
+    async fn get_ready_scheduled(&self, now: DateTime<Utc>) -> Result<Vec<Job>>;
+    
+    // DLQ
+    async fn move_to_dlq(&self, job: &Job, reason: &str) -> Result<()>;
+    async fn get_dlq_jobs(&self, queue: &str, limit: u32) -> Result<Vec<Job>>;
+    
+    // Cleanup
+    async fn remove_completed_before(&self, before: DateTime<Utc>) -> Result<u64>;
+    
+    // Cron schedules
+    async fn upsert_schedule(&self, schedule: &Schedule) -> Result<()>;
+    async fn get_active_schedules(&self) -> Result<Vec<Schedule>>;
+    async fn delete_schedule(&self, name: &str) -> Result<()>;
+}
+```
+
+**Implementations (prioritized):**
+
+| Backend | Priority | Use Case |
+|---|---|---|
+| `redb` | P0 (default) | Zero-config embedded, pure Rust, ACID |
+| `sqlite` | P1 | Familiar, tooling ecosystem, debugging ease |
+| `postgres` | P2 | Teams with existing Postgres, shared state |
+
+### 7.4 Distributed Mode (Cluster)
+
+When running in cluster mode (3+ nodes), RustQueue uses the Raft consensus protocol to replicate state across nodes:
+
+- **Leader** handles all write operations (PUSH, ACK, FAIL, schedule changes)
+- **Followers** serve read operations (GET, STATS, PULL in read-only mode) and replicate the leader's log
+- **Leader election** is automatic; if the leader dies, a follower takes over within seconds
+- **Job execution** only happens on the leader to prevent duplicate processing
+- **Split-brain protection** via Raft quorum (requires majority of nodes to agree)
+
+**Cluster discovery:**
+- Static: Provide a list of peer addresses in config
+- DNS: Resolve a DNS name to discover peers (for Kubernetes/Consul integration)
+
+---
+
+## 8. Functional Requirements
+
+### 8.1 Job Lifecycle
+
+A job progresses through the following states:
+
+```
+                         ┌──────────┐
+                         │ CREATED  │
+                         └────┬─────┘
+                              │
+                    ┌─────────▼──────────┐
+              ┌─────┤    WAITING / DELAYED├─────┐
+              │     └─────────┬──────────┘      │
+              │               │                 │
+              │     ┌─────────▼─────────┐       │
+              │     │      ACTIVE       │       │
+              │     └───┬──────────┬────┘       │
+              │         │          │            │
+              │  ┌──────▼───┐ ┌───▼────────┐   │
+              │  │COMPLETED │ │  FAILED     │   │
+              │  └──────────┘ └───┬────────┘   │
+              │                   │            │
+              │         ┌─────────▼─────────┐  │
+              │         │  retries left?    │  │
+              │         │  yes → WAITING    │──┘
+              │         │  no  → DLQ        │
+              │         └───────────────────┘
+              │
+         ┌────▼─────┐
+         │ CANCELLED │
+         └──────────┘
+```
+
+**State definitions:**
+
+| State | Description |
+|---|---|
+| `created` | Job has been submitted but not yet enqueued (used in flows waiting for children) |
+| `waiting` | Job is in the queue, eligible for execution |
+| `delayed` | Job is waiting for its scheduled time to arrive |
+| `active` | Job has been assigned to a worker and is being processed |
+| `completed` | Job finished successfully |
+| `failed` | Job's current attempt failed; may be retried |
+| `dlq` | Job exhausted all retries and is in the dead letter queue |
+| `cancelled` | Job was cancelled before completion |
+| `blocked` | Job is waiting for dependent jobs (children in a flow) |
+
+### 8.2 Job Operations
+
+#### P0 — Must Have (v0.1)
+
+| ID | Requirement | Description |
+|---|---|---|
+| JOB-01 | Push job | Submit a job to a named queue with a JSON payload |
+| JOB-02 | Pull job | Dequeue the next eligible job from a named queue |
+| JOB-03 | Acknowledge | Mark an active job as completed with an optional result |
+| JOB-04 | Fail | Mark an active job as failed with an error message |
+| JOB-05 | Get job | Retrieve a job by ID, including full state and history |
+| JOB-06 | Cancel job | Cancel a waiting or delayed job |
+| JOB-07 | Batch push | Submit multiple jobs in a single request |
+| JOB-08 | Batch pull | Dequeue multiple jobs in a single request |
+| JOB-09 | Batch ack | Acknowledge multiple jobs in a single request |
+| JOB-10 | Job priority | Higher priority jobs are dequeued first |
+| JOB-11 | Delayed jobs | Jobs can specify a delay (ms) or absolute run time |
+| JOB-12 | TTL | Jobs expire and are discarded if not processed within TTL |
+| JOB-13 | Unique jobs | Deduplication via a user-provided unique key per queue |
+
+#### P1 — Should Have (v0.2)
+
+| ID | Requirement | Description |
+|---|---|---|
+| JOB-14 | Retry with backoff | Automatic retries with configurable backoff (fixed, linear, exponential) |
+| JOB-15 | Max attempts | Configurable maximum retry count per job (default: 3) |
+| JOB-16 | Dead letter queue | Failed jobs are moved to DLQ after exhausting retries |
+| JOB-17 | DLQ inspection | List, inspect, and retry DLQ jobs via API |
+| JOB-18 | DLQ purge | Bulk delete DLQ jobs by queue or age |
+| JOB-19 | Progress tracking | Workers can report progress (0-100%) on active jobs |
+| JOB-20 | Job logs | Workers can append log entries to a job's log |
+| JOB-21 | Job heartbeat | Workers send heartbeats; stalled jobs are reclaimed |
+| JOB-22 | Job timeout | Jobs are failed if processing exceeds a timeout |
+| JOB-23 | Job tags | Arbitrary string tags for filtering and grouping |
+| JOB-24 | Job groups | Group ID for fair scheduling and per-group rate limiting |
+
+#### P2 — Nice to Have (v0.3+)
+
+| ID | Requirement | Description |
+|---|---|---|
+| JOB-25 | Job dependencies | Parent jobs wait for children to complete (DAG flows) |
+| JOB-26 | Promote | Move a delayed job to waiting immediately |
+| JOB-27 | Change priority | Update the priority of a waiting job |
+| JOB-28 | Job data update | Update the payload of a waiting job |
+| JOB-29 | Remove on complete | Optionally auto-delete jobs after completion |
+| JOB-30 | Remove on fail | Optionally auto-delete jobs after final failure |
+| JOB-31 | Job result storage | Store and retrieve the result of completed jobs |
+
+### 8.3 Queue Operations
+
+| ID | Priority | Requirement | Description |
+|---|---|---|---|
+| Q-01 | P0 | List queues | List all known queues with summary statistics |
+| Q-02 | P0 | Queue stats | Get counts by state (waiting, active, delayed, completed, failed, dlq) |
+| Q-03 | P1 | Pause queue | Stop dequeuing from a queue (jobs still accepted) |
+| Q-04 | P1 | Resume queue | Re-enable dequeuing from a paused queue |
+| Q-05 | P1 | Drain queue | Remove all waiting jobs from a queue |
+| Q-06 | P2 | Obliterate queue | Remove all data associated with a queue |
+| Q-07 | P1 | Clean queue | Remove completed/failed jobs older than a threshold |
+| Q-08 | P1 | Rate limit | Set max jobs/second and max concurrency per queue |
+| Q-09 | P2 | Queue ordering | Configure FIFO, LIFO, priority, or fair ordering per queue |
+
+### 8.4 Scheduling (Cron)
+
+| ID | Priority | Requirement | Description |
+|---|---|---|---|
+| CRON-01 | P1 | Create schedule | Define a recurring schedule with cron expression or interval |
+| CRON-02 | P1 | Upsert schedule | Create or update a schedule by name (idempotent) |
+| CRON-03 | P1 | Delete schedule | Remove a schedule by name |
+| CRON-04 | P1 | List schedules | List all active schedules with next run time |
+| CRON-05 | P1 | Pause schedule | Temporarily disable a schedule without deleting it |
+| CRON-06 | P2 | Max executions | Limit total number of times a schedule fires |
+| CRON-07 | P2 | Timezone support | Schedules can specify a timezone (default: UTC) |
+| CRON-08 | P2 | Backfill | Retroactively create jobs for missed schedule windows |
+
+### 8.5 Webhooks
+
+| ID | Priority | Requirement | Description |
+|---|---|---|---|
+| WH-01 | P2 | Register webhook | Add an HTTP callback URL for job events |
+| WH-02 | P2 | Event filtering | Filter webhook triggers by queue, event type, and tags |
+| WH-03 | P2 | Retry delivery | Retry failed webhook deliveries with exponential backoff |
+| WH-04 | P2 | Webhook signing | HMAC-SHA256 signature on webhook payloads for verification |
+| WH-05 | P2 | Webhook management | List, update, and delete webhooks via API |
+
+### 8.6 Worker Management
+
+| ID | Priority | Requirement | Description |
+|---|---|---|---|
+| WRK-01 | P1 | Register worker | Workers register with name, queue, and concurrency |
+| WRK-02 | P1 | Unregister worker | Clean disconnection, reassign active jobs |
+| WRK-03 | P1 | List workers | Show active workers with their assigned jobs |
+| WRK-04 | P1 | Stall detection | Detect workers that stopped sending heartbeats |
+| WRK-05 | P2 | Worker groups | Tag workers for targeted job routing |
+
+---
+
+## 9. Non-Functional Requirements
+
+### 9.1 Performance
+
+| Metric | Target | Rationale |
+|---|---|---|
+| Throughput (push) | ≥ 50,000 jobs/sec (single node) | Competitive with Redis-based solutions |
+| Throughput (push+ack) | ≥ 30,000 jobs/sec round-trip | Real-world workload simulation |
+| Latency (p50 push) | < 1 ms | Near-instantaneous for most use cases |
+| Latency (p99 push) | < 5 ms | Tail latency matters for SLA-sensitive workloads |
+| Scheduling precision | ± 1 second | Acceptable for cron-style workloads |
+| Startup time | < 500 ms (cold start) | Fast restarts after crashes or deployments |
+| Recovery time | < 5 seconds | Time to full operation after crash (WAL replay) |
+
+### 9.2 Reliability
+
+| Requirement | Target |
+|---|---|
+| Durability | Zero job loss on crash (all accepted jobs are persisted before acknowledgment) |
+| Exactly-once delivery | At-least-once guaranteed; exactly-once via unique keys + idempotent workers |
+| Cluster failover | < 10 seconds leader election in Raft mode |
+| Data integrity | ACID transactions for all state transitions |
+
+### 9.3 Scalability
+
+| Dimension | Target |
+|---|---|
+| Queues | 10,000+ named queues per instance |
+| Jobs in queue | 10,000,000+ per queue |
+| Connected workers | 10,000+ simultaneous TCP connections |
+| Cluster size | 3-7 nodes (Raft limitation) |
+
+### 9.4 Resource Usage
+
+| Resource | Target (idle) | Target (1K jobs/sec) |
+|---|---|---|
+| Memory | < 20 MB | < 100 MB |
+| CPU | < 1% of one core | < 25% of one core |
+| Disk (binary) | < 15 MB | — |
+| Disk (storage) | ~100 bytes/job | ~100 bytes/job |
+
+### 9.5 Compatibility
+
+| Platform | Support Level |
+|---|---|
+| Linux x86_64 | Tier 1 (prebuilt binaries, CI tested) |
+| Linux ARM64 | Tier 1 |
+| macOS x86_64 | Tier 1 |
+| macOS ARM64 (Apple Silicon) | Tier 1 |
+| Windows x86_64 | Tier 2 (prebuilt binaries, community tested) |
+| FreeBSD | Tier 3 (builds from source) |
+
+---
+
+## 10. Data Model
+
+### 10.1 Job
+
+```rust
+pub struct Job {
+    // Identity
+    pub id: JobId,                          // Auto-generated UUID v7 (time-sortable)
+    pub custom_id: Option<String>,          // User-provided identifier
+    pub name: String,                       // Job type name (e.g., "send-email")
+    pub queue: String,                      // Queue name
+    
+    // Payload
+    pub data: serde_json::Value,            // Arbitrary JSON payload
+    pub result: Option<serde_json::Value>,  // Result from worker on completion
+    
+    // State
+    pub state: JobState,                    // Current lifecycle state
+    pub progress: Option<u8>,              // 0-100 progress percentage
+    pub logs: Vec<LogEntry>,               // Append-only log entries
+    
+    // Scheduling
+    pub priority: i32,                      // Higher = processed first (default: 0)
+    pub delay_until: Option<DateTime<Utc>>, // Don't process before this time
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    
+    // Retry configuration
+    pub max_attempts: u32,                  // Max retries (default: 3)
+    pub attempt: u32,                       // Current attempt number
+    pub backoff: BackoffStrategy,           // Fixed, linear, or exponential
+    pub backoff_delay_ms: u64,              // Base delay for backoff
+    pub last_error: Option<String>,         // Most recent error message
+    
+    // Constraints
+    pub ttl_ms: Option<u64>,               // Time-to-live from creation
+    pub timeout_ms: Option<u64>,           // Max processing time per attempt
+    pub unique_key: Option<String>,        // Deduplication key (unique per queue)
+    
+    // Organization
+    pub tags: Vec<String>,                 // Arbitrary tags for filtering
+    pub group_id: Option<String>,          // Group for fair scheduling / rate limiting
+    
+    // Dependencies
+    pub depends_on: Vec<JobId>,            // Parent jobs that must complete first
+    pub flow_id: Option<String>,           // ID of the flow/DAG this job belongs to
+    
+    // Behavior flags
+    pub lifo: bool,                        // Last-in-first-out ordering
+    pub remove_on_complete: bool,          // Auto-delete after completion
+    pub remove_on_fail: bool,              // Auto-delete after final failure
+    
+    // Worker assignment
+    pub worker_id: Option<String>,         // ID of the worker processing this job
+    pub last_heartbeat: Option<DateTime<Utc>>,
+}
+```
+
+### 10.2 Schedule (Cron)
+
+```rust
+pub struct Schedule {
+    pub name: String,                      // Unique schedule identifier
+    pub queue: String,                     // Target queue for generated jobs
+    pub job_name: String,                  // Name for generated jobs
+    pub job_data: serde_json::Value,       // Payload for generated jobs
+    
+    // Timing
+    pub cron_expr: Option<String>,         // Cron expression (mutually exclusive with every_ms)
+    pub every_ms: Option<u64>,             // Fixed interval in milliseconds
+    pub timezone: Option<String>,          // IANA timezone (default: UTC)
+    
+    // Constraints
+    pub max_executions: Option<u64>,       // Stop after N executions
+    pub execution_count: u64,              // How many times it has fired
+    pub paused: bool,                      // Temporarily disabled
+    
+    // Job options (applied to generated jobs)
+    pub job_options: JobOptions,           // Priority, retries, timeout, etc.
+    
+    // Metadata
+    pub last_run_at: Option<DateTime<Utc>>,
+    pub next_run_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+```
+
+### 10.3 Worker
+
+```rust
+pub struct Worker {
+    pub id: String,                        // Unique worker identifier
+    pub name: Option<String>,              // Human-readable name
+    pub queues: Vec<String>,               // Queues this worker consumes from
+    pub concurrency: u32,                  // Max simultaneous jobs
+    pub active_jobs: Vec<JobId>,           // Currently processing
+    pub tags: Vec<String>,                 // For targeted routing
+    
+    pub connected_at: DateTime<Utc>,
+    pub last_heartbeat: DateTime<Utc>,
+    pub jobs_completed: u64,               // Lifetime stats
+    pub jobs_failed: u64,
+}
+```
+
+### 10.4 Webhook
+
+```rust
+pub struct Webhook {
+    pub id: String,
+    pub url: String,                       // HTTP endpoint to call
+    pub events: Vec<WebhookEvent>,         // Subscribed event types
+    pub queues: Option<Vec<String>>,       // Filter by queue (None = all)
+    pub secret: Option<String>,            // HMAC signing secret
+    pub active: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+pub enum WebhookEvent {
+    JobCompleted,
+    JobFailed,
+    JobDlq,
+    JobProgress,
+    QueuePaused,
+    QueueResumed,
+    WorkerConnected,
+    WorkerDisconnected,
+    ScheduleFired,
+}
+```
+
+### 10.5 Enumerations
+
+```rust
+pub enum JobState {
+    Created,
+    Waiting,
+    Delayed,
+    Active,
+    Completed,
+    Failed,
+    Dlq,
+    Cancelled,
+    Blocked,
+}
+
+pub enum BackoffStrategy {
+    Fixed,          // Same delay every retry
+    Linear,         // delay * attempt
+    Exponential,    // delay * 2^attempt
+}
+
+pub enum QueueOrdering {
+    Fifo,
+    Lifo,
+    Priority,
+    Fair,
+}
+```
+
+---
+
+## 11. API Design
+
+### 11.1 Protocols
+
+RustQueue exposes two protocols:
+
+| Protocol | Port (default) | Use Case |
+|---|---|---|
+| **HTTP/REST** | 6790 | General use, browser dashboard, webhooks, compatibility |
+| **TCP** | 6789 | High-throughput worker connections, low-latency operations |
+
+Both protocols support the same operations. The TCP protocol uses newline-delimited JSON for simplicity and performance.
+
+### 11.2 HTTP REST API
+
+#### Jobs
+
+```
+POST   /api/v1/queues/{queue}/jobs          # Push job(s)
+GET    /api/v1/queues/{queue}/jobs           # Pull next job (long-poll with ?timeout=)
+GET    /api/v1/jobs/{id}                     # Get job by ID
+POST   /api/v1/jobs/{id}/ack                # Acknowledge completion
+POST   /api/v1/jobs/{id}/fail               # Report failure
+POST   /api/v1/jobs/{id}/cancel             # Cancel job
+POST   /api/v1/jobs/{id}/progress           # Update progress
+POST   /api/v1/jobs/{id}/log                # Append log entry
+POST   /api/v1/jobs/{id}/heartbeat          # Send heartbeat
+PUT    /api/v1/jobs/{id}/priority            # Change priority
+POST   /api/v1/jobs/{id}/promote            # Move delayed → waiting
+GET    /api/v1/jobs/{id}/logs               # Get job logs
+GET    /api/v1/jobs/{id}/result             # Get job result
+```
+
+#### Queues
+
+```
+GET    /api/v1/queues                       # List all queues
+GET    /api/v1/queues/{queue}/stats         # Queue statistics
+POST   /api/v1/queues/{queue}/pause         # Pause queue
+POST   /api/v1/queues/{queue}/resume        # Resume queue
+DELETE /api/v1/queues/{queue}/drain         # Remove waiting jobs
+DELETE /api/v1/queues/{queue}               # Obliterate queue
+POST   /api/v1/queues/{queue}/clean         # Clean old jobs
+PUT    /api/v1/queues/{queue}/rate-limit    # Set rate limit
+PUT    /api/v1/queues/{queue}/concurrency   # Set concurrency limit
+```
+
+#### Dead Letter Queue
+
+```
+GET    /api/v1/queues/{queue}/dlq           # List DLQ jobs
+POST   /api/v1/queues/{queue}/dlq/retry     # Retry DLQ jobs
+DELETE /api/v1/queues/{queue}/dlq           # Purge DLQ
+```
+
+#### Schedules
+
+```
+POST   /api/v1/schedules                    # Create schedule
+PUT    /api/v1/schedules/{name}             # Upsert schedule
+GET    /api/v1/schedules                    # List schedules
+GET    /api/v1/schedules/{name}             # Get schedule
+DELETE /api/v1/schedules/{name}             # Delete schedule
+POST   /api/v1/schedules/{name}/pause       # Pause schedule
+POST   /api/v1/schedules/{name}/resume      # Resume schedule
+```
+
+#### Flows
+
+```
+POST   /api/v1/flows                        # Create flow (DAG of jobs)
+GET    /api/v1/flows/{id}                   # Get flow status
+```
+
+#### Webhooks
+
+```
+POST   /api/v1/webhooks                     # Register webhook
+GET    /api/v1/webhooks                     # List webhooks
+DELETE /api/v1/webhooks/{id}                # Remove webhook
+```
+
+#### Workers
+
+```
+GET    /api/v1/workers                      # List connected workers
+```
+
+#### Monitoring
+
+```
+GET    /api/v1/stats                        # Global statistics
+GET    /api/v1/health                       # Health check
+GET    /api/v1/metrics/prometheus            # Prometheus metrics
+```
+
+#### Real-time
+
+```
+WS     /api/v1/ws                           # WebSocket (all events)
+WS     /api/v1/ws/queues/{queue}            # WebSocket (queue-specific)
+GET    /api/v1/events                       # SSE (all events)
+GET    /api/v1/events/queues/{queue}        # SSE (queue-specific)
+```
+
+### 11.3 TCP Protocol
+
+Newline-delimited JSON. Each message is a single JSON object followed by `\n`.
+
+```json
+// Authentication (if enabled)
+→ {"cmd":"auth","token":"secret123"}
+← {"ok":true}
+
+// Push a job
+→ {"cmd":"push","queue":"emails","name":"send-welcome","data":{"to":"a@b.com"},"priority":5}
+← {"ok":true,"id":"01JKXYZ..."}
+
+// Pull a job
+→ {"cmd":"pull","queue":"emails","timeout":30000}
+← {"ok":true,"job":{"id":"01JKXYZ...","name":"send-welcome","data":{"to":"a@b.com"}}}
+
+// Acknowledge
+→ {"cmd":"ack","id":"01JKXYZ...","result":{"sent":true}}
+← {"ok":true}
+
+// Fail
+→ {"cmd":"fail","id":"01JKXYZ...","error":"SMTP timeout"}
+← {"ok":true,"retry":true,"next_attempt_at":"2026-02-05T12:05:00Z"}
+
+// Subscribe to events
+→ {"cmd":"subscribe","queues":["emails","reports"]}
+← {"event":"job:completed","queue":"emails","job_id":"01JKXYZ..."}
+← {"event":"job:failed","queue":"reports","job_id":"01JKABC..."}
+```
+
+### 11.4 Error Responses
+
+All errors follow a consistent format:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "QUEUE_NOT_FOUND",
+    "message": "Queue 'nonexistent' does not exist",
+    "details": null
+  }
+}
+```
+
+**Standard error codes:**
+
+| Code | HTTP Status | Description |
+|---|---|---|
+| `QUEUE_NOT_FOUND` | 404 | Queue does not exist |
+| `JOB_NOT_FOUND` | 404 | Job ID not found |
+| `INVALID_STATE` | 409 | Job is not in the expected state for this operation |
+| `DUPLICATE_KEY` | 409 | A job with this unique key already exists |
+| `QUEUE_PAUSED` | 503 | Queue is paused, cannot dequeue |
+| `RATE_LIMITED` | 429 | Rate limit exceeded |
+| `UNAUTHORIZED` | 401 | Missing or invalid auth token |
+| `VALIDATION_ERROR` | 400 | Invalid request payload |
+| `INTERNAL_ERROR` | 500 | Unexpected server error |
+
+---
+
+## 12. SDK & Client Libraries
+
+### 12.1 Strategy
+
+RustQueue is **protocol-first**. The HTTP REST API and TCP protocol are the primary interfaces. SDKs are thin, ergonomic wrappers.
+
+### 12.2 Official SDKs (by priority)
+
+| SDK | Priority | Rationale |
+|---|---|---|
+| **Rust** (embedded library) | P0 | Core crate; enables embedded mode |
+| **TypeScript/JavaScript** | P0 | Largest developer population; replaces BullMQ |
+| **Python** | P1 | Celery replacement story |
+| **Go** | P1 | DevOps/infrastructure audience |
+| **OpenAPI spec** | P0 | Enables auto-generated clients for any language |
+
+### 12.3 SDK Design Principles
+
+- SDKs should be **thin wrappers** over the HTTP/TCP protocol
+- SDKs should provide **type-safe** job definitions where the language supports it
+- SDKs should handle **reconnection** and **heartbeats** automatically
+- SDKs should be published to the language's standard package registry (npm, PyPI, crates.io, pkg.go.dev)
+
+### 12.4 TypeScript SDK Example (Target API)
+
+```typescript
+import { Queue, Worker, FlowProducer } from '@rustqueue/client';
+
+// Producer
+const queue = new Queue('emails', { url: 'http://localhost:6790' });
+await queue.add('send-welcome', { to: 'user@example.com' }, {
+  priority: 10,
+  delay: 5000,
+  attempts: 3,
+  backoff: { type: 'exponential', delay: 1000 },
+});
+
+// Worker
+const worker = new Worker('emails', async (job) => {
+  await job.updateProgress(50);
+  await sendEmail(job.data.to);
+  return { sent: true };
+}, {
+  url: 'tcp://localhost:6789',
+  concurrency: 5,
+});
+
+worker.on('completed', (job, result) => console.log('Done:', result));
+worker.on('failed', (job, err) => console.error('Failed:', err));
+```
+
+---
+
+## 13. Deployment & Configuration
+
+### 13.1 Installation Methods
+
+```bash
+# 1. Pre-built binary (Linux/macOS)
+curl -sSL https://rustqueue.dev/install.sh | sh
+
+# 2. Homebrew (macOS)
+brew install rustqueue
+
+# 3. Cargo (from source)
+cargo install rustqueue
+
+# 4. Docker
+docker run -p 6789:6789 -p 6790:6790 ghcr.io/rustqueue/rustqueue
+
+# 5. Docker Compose (see below)
+```
+
+### 13.2 Configuration
+
+Configuration is resolved in order: **CLI flags > environment variables > config file > defaults**.
+
+#### Config File (`rustqueue.toml`)
+
+```toml
+[server]
+host = "0.0.0.0"
+tcp_port = 6789
+http_port = 6790
+
+[storage]
+backend = "redb"                  # "redb", "sqlite", "postgres"
+path = "/var/lib/rustqueue/data"  # For redb/sqlite
+# postgres_url = "postgres://..."  # For postgres backend
+
+[auth]
+enabled = false
+tokens = ["token1", "token2"]     # Static bearer tokens
+
+[scheduler]
+tick_interval_ms = 1000           # How often to check for ready scheduled jobs
+stall_check_interval_ms = 5000    # How often to check for stalled workers
+
+[jobs]
+default_max_attempts = 3
+default_backoff = "exponential"
+default_backoff_delay_ms = 1000
+default_timeout_ms = 300000       # 5 minutes
+stall_timeout_ms = 30000          # 30 seconds
+
+[retention]
+completed_ttl = "7d"              # Auto-clean completed jobs after 7 days
+failed_ttl = "30d"                # Auto-clean failed jobs after 30 days
+dlq_ttl = "90d"                   # Auto-clean DLQ after 90 days
+
+[dashboard]
+enabled = true
+path_prefix = "/dashboard"
+
+[cluster]
+enabled = false
+node_id = "node-1"
+peers = ["10.0.0.2:6800", "10.0.0.3:6800"]
+raft_port = 6800
+
+[logging]
+level = "info"                    # trace, debug, info, warn, error
+format = "json"                   # "json" or "pretty"
+
+[metrics]
+prometheus_enabled = true
+prometheus_path = "/api/v1/metrics/prometheus"
+```
+
+#### Environment Variables
+
+All config values map to environment variables with the `RUSTQUEUE_` prefix:
+
+```bash
+RUSTQUEUE_TCP_PORT=6789
+RUSTQUEUE_HTTP_PORT=6790
+RUSTQUEUE_STORAGE_BACKEND=redb
+RUSTQUEUE_STORAGE_PATH=/var/lib/rustqueue/data
+RUSTQUEUE_AUTH_TOKENS=token1,token2
+RUSTQUEUE_CLUSTER_ENABLED=true
+RUSTQUEUE_LOG_LEVEL=info
+```
+
+### 13.3 Docker Compose (Production)
+
+```yaml
+version: "3.8"
+services:
+  rustqueue:
+    image: ghcr.io/rustqueue/rustqueue:latest
+    ports:
+      - "6789:6789"   # TCP
+      - "6790:6790"   # HTTP + Dashboard
+    volumes:
+      - rustqueue-data:/var/lib/rustqueue/data
+    environment:
+      - RUSTQUEUE_AUTH_TOKENS=your-secret-token
+      - RUSTQUEUE_LOG_LEVEL=info
+      - RUSTQUEUE_LOG_FORMAT=json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6790/api/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  rustqueue-data:
+```
+
+### 13.4 Docker Compose (3-Node Cluster)
+
+```yaml
+version: "3.8"
+services:
+  node1:
+    image: ghcr.io/rustqueue/rustqueue:latest
+    ports:
+      - "6789:6789"
+      - "6790:6790"
+    environment:
+      - RUSTQUEUE_CLUSTER_ENABLED=true
+      - RUSTQUEUE_CLUSTER_NODE_ID=node-1
+      - RUSTQUEUE_CLUSTER_PEERS=node2:6800,node3:6800
+      - RUSTQUEUE_CLUSTER_RAFT_PORT=6800
+    volumes:
+      - node1-data:/var/lib/rustqueue/data
+
+  node2:
+    image: ghcr.io/rustqueue/rustqueue:latest
+    environment:
+      - RUSTQUEUE_CLUSTER_ENABLED=true
+      - RUSTQUEUE_CLUSTER_NODE_ID=node-2
+      - RUSTQUEUE_CLUSTER_PEERS=node1:6800,node3:6800
+      - RUSTQUEUE_CLUSTER_RAFT_PORT=6800
+    volumes:
+      - node2-data:/var/lib/rustqueue/data
+
+  node3:
+    image: ghcr.io/rustqueue/rustqueue:latest
+    environment:
+      - RUSTQUEUE_CLUSTER_ENABLED=true
+      - RUSTQUEUE_CLUSTER_NODE_ID=node-3
+      - RUSTQUEUE_CLUSTER_PEERS=node1:6800,node2:6800
+      - RUSTQUEUE_CLUSTER_RAFT_PORT=6800
+    volumes:
+      - node3-data:/var/lib/rustqueue/data
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+```
+
+---
+
+## 14. Security
+
+### 14.1 Authentication
+
+#### Phase 1: Static Token Auth (v0.1)
+
+- Bearer tokens configured via environment variable or config file
+- Tokens are validated on every request (HTTP `Authorization: Bearer <token>`, TCP `auth` command)
+- No token = open access (suitable for development and single-tenant deployments)
+
+#### Phase 2: API Keys with Scopes (v0.4+)
+
+- Generate API keys with specific permissions (read-only, write, admin)
+- Keys are stored hashed in the database
+- Each key has an associated set of allowed queues and operations
+
+#### Phase 3: SSO / OIDC (v1.0+ / Pro)
+
+- OpenID Connect integration for the web dashboard
+- Role-based access control (viewer, operator, admin)
+
+### 14.2 Transport Security
+
+- **TLS** support for both HTTP and TCP protocols via `rustls` (no OpenSSL dependency)
+- TLS is optional but strongly recommended for production
+- Certificate can be provided via file path or auto-generated with Let's Encrypt (stretch goal)
+
+### 14.3 Data Security
+
+- Job payloads are stored as-is (plaintext JSON). Users are responsible for encrypting sensitive data before submission.
+- Auth tokens are never logged or exposed via the API.
+- The dashboard requires authentication when auth is enabled.
+
+### 14.4 Webhook Security
+
+- Webhook payloads are signed with HMAC-SHA256 using a per-webhook secret
+- Signature is included in the `X-RustQueue-Signature` header
+- Receiving services should verify the signature before processing
+
+---
+
+## 15. Observability & Monitoring
+
+### 15.1 Structured Logging
+
+All logs are structured JSON by default (with a `pretty` mode for development):
+
+```json
+{
+  "timestamp": "2026-02-05T12:00:00.123Z",
+  "level": "info",
+  "target": "rustqueue::engine",
+  "message": "Job completed",
+  "job_id": "01JKXYZ...",
+  "queue": "emails",
+  "name": "send-welcome",
+  "duration_ms": 234,
+  "attempt": 1
+}
+```
+
+Log levels: `trace`, `debug`, `info`, `warn`, `error`.
+
+### 15.2 Prometheus Metrics
+
+Exposed at `GET /api/v1/metrics/prometheus`. Key metrics:
+
+**Counters:**
+- `rustqueue_jobs_pushed_total{queue}` — Total jobs submitted
+- `rustqueue_jobs_completed_total{queue}` — Total jobs completed
+- `rustqueue_jobs_failed_total{queue}` — Total job failures (including retries)
+- `rustqueue_jobs_dlq_total{queue}` — Total jobs moved to DLQ
+- `rustqueue_jobs_retried_total{queue}` — Total retry attempts
+- `rustqueue_schedules_fired_total{schedule}` — Times each schedule has fired
+
+**Gauges:**
+- `rustqueue_jobs_waiting{queue}` — Current waiting jobs
+- `rustqueue_jobs_active{queue}` — Current active jobs
+- `rustqueue_jobs_delayed{queue}` — Current delayed jobs
+- `rustqueue_jobs_dlq{queue}` — Current DLQ size
+- `rustqueue_workers_connected{queue}` — Connected workers
+- `rustqueue_queues_total` — Total number of queues
+
+**Histograms:**
+- `rustqueue_job_duration_seconds{queue}` — Job processing time
+- `rustqueue_job_wait_time_seconds{queue}` — Time from push to start
+- `rustqueue_api_request_duration_seconds{method, path}` — API latency
+
+### 15.3 Health Check
+
+```
+GET /api/v1/health
+
+# Healthy response (200):
+{ "ok": true, "status": "healthy", "version": "0.1.0", "uptime_seconds": 86400 }
+
+# Degraded response (200):
+{ "ok": true, "status": "degraded", "reason": "high_dlq_count", ... }
+
+# Unhealthy response (503):
+{ "ok": false, "status": "unhealthy", "reason": "storage_error", ... }
+```
+
+### 15.4 Real-Time Events
+
+Events are emitted via WebSocket and SSE for real-time monitoring:
+
+```json
+{
+  "event": "job:completed",
+  "timestamp": "2026-02-05T12:00:00.123Z",
+  "queue": "emails",
+  "job_id": "01JKXYZ...",
+  "job_name": "send-welcome",
+  "duration_ms": 234,
+  "result": { "sent": true }
+}
+```
+
+**Event types:**
+`job:waiting`, `job:active`, `job:completed`, `job:failed`, `job:dlq`, `job:progress`, `job:retrying`, `queue:paused`, `queue:resumed`, `worker:connected`, `worker:disconnected`, `worker:stalled`, `schedule:fired`
+
+---
+
+## 16. Web Dashboard
+
+### 16.1 Overview
+
+The dashboard is a static web application compiled into the RustQueue binary using `rust-embed`. No separate deployment required — opening `http://localhost:6790/dashboard` shows the UI.
+
+### 16.2 Technology
+
+- **Framework:** Vanilla JS + lightweight reactive library (Preact or Alpine.js) to minimize bundle size
+- **Styling:** Tailwind CSS (purged for minimal size)
+- **Target size:** < 500 KB total (HTML + JS + CSS)
+- **Data:** All data fetched via the REST API; dashboard has no special access
+
+### 16.3 Dashboard Pages
+
+#### Overview Page
+- Total jobs by state (waiting, active, delayed, completed, failed, DLQ) as cards
+- Throughput chart (jobs/minute over the last hour)
+- Active queues with summary stats
+- Recent failures (last 10)
+
+#### Queues Page
+- List of all queues with: name, waiting count, active count, DLQ count, throughput
+- Click a queue to see its jobs, filter by state
+- Pause/resume buttons
+- Rate limit configuration
+
+#### Job Detail Page
+- Full job data (payload, result, state, timestamps)
+- Attempt history (each attempt's start time, duration, error)
+- Log entries
+- Progress bar (if applicable)
+- Retry / cancel / promote actions
+
+#### DLQ Page
+- List of dead-lettered jobs across all queues
+- Inspect individual failures
+- Bulk retry or purge
+
+#### Schedules Page
+- List of cron schedules with next run time
+- Create / edit / delete schedules
+- Pause / resume individual schedules
+- Execution history
+
+#### Workers Page
+- Connected workers with: name, queues, concurrency, active jobs, uptime
+- Highlight stalled workers
+
+#### Cluster Page (when cluster mode is enabled)
+- Node list with role (leader/follower), status, last heartbeat
+- Raft log status
+
+---
+
+## 17. Release Plan & Milestones
+
+### Phase 1: Foundation (v0.1) — Weeks 1-6
+
+**Goal:** A working job queue with HTTP and TCP APIs.
+
+| Deliverable | Description |
+|---|---|
+| Core engine | Queue manager, job state machine, priority ordering |
+| redb storage | Embedded storage backend with ACID transactions |
+| HTTP API | Push, pull, ack, fail, get job, list queues, stats |
+| TCP protocol | Same operations over newline-delimited JSON |
+| CLI | `rustqueue serve` with basic configuration |
+| Docker image | Multi-arch (amd64, arm64) |
+| Benchmarks | Throughput and latency benchmarks vs. BullMQ and Sidekiq |
+| Tests | Unit tests, integration tests, property-based tests for state machine |
+
+**Exit criteria:** Can push 10,000 jobs/sec, pull and ack them, with zero data loss on crash.
+
+### Phase 2: Scheduling & Reliability (v0.2) — Weeks 7-12
+
+**Goal:** Cron scheduling, retries, DLQ, and real-time events.
+
+| Deliverable | Description |
+|---|---|
+| Cron scheduler | Cron expressions, fixed intervals, one-shot delayed |
+| Retry engine | Configurable backoff (fixed, linear, exponential) |
+| Dead letter queue | DLQ management API |
+| Worker management | Registration, heartbeat, stall detection |
+| Job progress | Progress updates and log entries |
+| Job timeout | Automatic failure on timeout |
+| WebSocket events | Real-time job lifecycle events |
+| SSE events | Alternative to WebSocket for simpler clients |
+| Unique jobs | Deduplication by key |
+
+**Exit criteria:** Can run 100 cron schedules simultaneously, retry failed jobs correctly, DLQ jobs are inspectable and retriable.
+
+### Phase 3: Observability & Dashboard (v0.3) — Weeks 13-18
+
+**Goal:** Production-ready observability and a built-in web dashboard.
+
+| Deliverable | Description |
+|---|---|
+| Prometheus metrics | All counters, gauges, and histograms |
+| Structured logging | JSON logs with job context |
+| Health check | `/health` endpoint with degradation detection |
+| Web dashboard | Overview, queues, jobs, DLQ, schedules, workers pages |
+| SQLite backend | Alternative storage option |
+| Auto-cleanup | Configurable retention policies for completed/failed jobs |
+| Documentation | Full API docs, getting started guide, deployment guide |
+| Website | Landing page, docs site |
+
+**Exit criteria:** Dashboard shows all system state. Prometheus metrics are accurate. Documentation covers all features.
+
+### Phase 4: Advanced Features (v0.4) — Weeks 19-26
+
+**Goal:** Flows, webhooks, rate limiting, and authentication improvements.
+
+| Deliverable | Description |
+|---|---|
+| Job dependencies | DAG-based flows with parent/child relationships |
+| Flow API | Create, inspect, and cancel flows |
+| Webhooks | Register, deliver (with retry), and manage webhooks |
+| Rate limiting | Per-queue max concurrency and max rate |
+| Queue ordering | FIFO, LIFO, priority, and fair modes |
+| API key auth | Scoped API keys with granular permissions |
+| TLS | rustls-based TLS for HTTP and TCP |
+| TypeScript SDK | Official npm package |
+| Python SDK | Official PyPI package |
+
+**Exit criteria:** Can define a 5-step job flow, receive webhook callbacks, rate limit a queue to 10 jobs/sec.
+
+### Phase 5: Distributed Mode (v0.5) — Weeks 27-36
+
+**Goal:** High-availability cluster mode.
+
+| Deliverable | Description |
+|---|---|
+| Raft consensus | Leader election, log replication using `openraft` |
+| Cluster discovery | Static peers and DNS-based discovery |
+| Follower reads | Read operations served by followers |
+| Failover | Automatic leader re-election on failure |
+| Cluster dashboard | Node status, Raft log visualization |
+| Postgres backend | External storage for shared-nothing deployments |
+
+**Exit criteria:** 3-node cluster survives leader failure with < 10s failover and zero job loss.
+
+### v1.0 — Week 37+
+
+Stabilize APIs, write migration guides, achieve production use at 3+ organizations.
+
+---
+
+## 18. Success Metrics
+
+### 18.1 Adoption Metrics
+
+| Metric | 6-Month Target | 12-Month Target |
+|---|---|---|
+| GitHub stars | 1,000 | 5,000 |
+| Docker pulls | 5,000 | 50,000 |
+| Crates.io downloads | 2,000 | 20,000 |
+| npm SDK downloads | 1,000 | 10,000 |
+| Active production deployments (estimated) | 50 | 500 |
+| Contributors | 10 | 30 |
+
+### 18.2 Technical Metrics
+
+| Metric | Target |
+|---|---|
+| Throughput (single node) | ≥ 50,000 jobs/sec |
+| P99 latency (push) | < 5 ms |
+| Binary size | < 15 MB |
+| Memory usage (idle) | < 20 MB |
+| Test coverage | > 80% |
+| Zero CVEs | Continuous |
+
+### 18.3 Community Metrics
+
+| Metric | Target |
+|---|---|
+| Hacker News front page | At least 1 launch post |
+| Conference talks | 2+ (RustConf, local meetups) |
+| Blog posts / tutorials by others | 10+ |
+| Discord / community members | 500+ |
+
+---
+
+## 19. Business Model
+
+### 19.1 Open Source Core (MIT License)
+
+The core RustQueue binary is fully open-source and MIT-licensed. This includes:
+- All job queue functionality
+- Single-node deployment
+- Built-in dashboard
+- All storage backends
+- All APIs and protocols
+- All SDKs
+
+### 19.2 Revenue Streams (Future)
+
+#### Option A: Open Core + Commercial License
+
+| Tier | Price | Features |
+|---|---|---|
+| **Community** | Free | Everything in the open-source release |
+| **Pro** | $49/month per node | Cluster mode (Raft), OIDC/SSO, audit logs, priority support |
+| **Enterprise** | Custom | Multi-tenancy, custom integrations, SLA, dedicated support |
+
+#### Option B: Managed Cloud Service
+
+| Tier | Price | Features |
+|---|---|---|
+| **Starter** | Free | 10,000 jobs/month, 1 queue, community support |
+| **Growth** | $29/month | 500,000 jobs/month, unlimited queues, email support |
+| **Scale** | $99/month | 5,000,000 jobs/month, HA cluster, priority support |
+| **Enterprise** | Custom | Unlimited, dedicated infrastructure, SLA |
+
+#### Option C: Dual License (AGPL + Commercial)
+
+- Open source under AGPL (requires open-sourcing derivative works)
+- Commercial license for proprietary use ($X/year)
+- Used successfully by GitLab, Minio, and others
+
+### 19.3 Recommended Strategy
+
+Start with **MIT license** for maximum adoption. Once traction is established (1,000+ GitHub stars, 50+ production users), introduce a **managed cloud service** (Option B) as the primary revenue stream. This avoids the community friction of open-core feature gating while building a sustainable business.
+
+---
+
+## 20. Risks & Mitigations
+
+| Risk | Probability | Impact | Mitigation |
+|---|---|---|---|
+| **Rust learning curve slows development** | Medium | High | Leverage well-established crates (axum, tokio, serde). Start with the simplest features first. |
+| **Storage performance issues at scale** | Low | High | Benchmark early and often. The trait-based storage layer allows swapping backends. |
+| **Raft implementation complexity** | High | Medium | Use the battle-tested `openraft` crate. Defer cluster mode to v0.5 after core is stable. |
+| **Low adoption / crowded market** | Medium | High | Differentiate on "zero deps, single binary." Target the underserved solo dev and small team segments first. |
+| **BullMQ/Sidekiq add Rust competition** | Low | Medium | Move fast on the features they can't easily add (embedded mode, WASM, single binary). |
+| **Scope creep toward workflow orchestration** | Medium | Medium | Stay firm on "not Temporal." RustQueue is a job queue with scheduling. Refer workflow users to Temporal. |
+| **Dashboard becomes a maintenance burden** | Medium | Low | Keep the dashboard minimal and data-driven. All data comes from the same API users have access to. |
+
+---
+
+## 21. Future Roadmap (Post v1.0)
+
+Items explicitly out of scope for v1.0 but planned for the future:
+
+| Feature | Description | Timeframe |
+|---|---|---|
+| **WASM SDK** | Core scheduling logic compiled to WASM for browser-side use | v1.1 |
+| **Grafana dashboard template** | Pre-built Grafana dashboard JSON for Prometheus metrics | v1.1 |
+| **Job batching** | Process a batch of jobs as a single unit (all-or-nothing) | v1.2 |
+| **Multi-tenancy** | Namespace isolation for different teams/services | v1.2 |
+| **Audit log** | Immutable record of all administrative actions | v1.2 |
+| **Geographic routing** | Route jobs to workers in specific regions | v1.3 |
+| **Plugin system** | User-defined middleware for job lifecycle hooks | v2.0 |
+| **GUI job builder** | Visual DAG editor for building flows in the dashboard | v2.0 |
+| **S3/GCS result storage** | Store large job results in object storage | v2.0 |
+
+---
+
+## 22. Technical Stack
+
+| Component | Technology | Rationale |
+|---|---|---|
+| **Language** | Rust (2024 edition) | Memory safety, performance, single binary |
+| **Async runtime** | tokio | Industry standard, mature, well-documented |
+| **HTTP framework** | axum | Best ergonomics, tower middleware, WebSocket support |
+| **TCP protocol** | tokio raw TCP + serde_json | Maximum performance, minimal overhead |
+| **Storage (default)** | redb | Pure Rust, embedded, ACID, zero external deps |
+| **Storage (optional)** | rusqlite | SQLite familiarity, great debugging tools |
+| **Storage (optional)** | sqlx + PostgreSQL | For teams with existing Postgres |
+| **Cron parsing** | croner | Full cron syntax + L/W/# extensions |
+| **Consensus** | openraft | Battle-tested Raft implementation |
+| **Metrics** | metrics + metrics-exporter-prometheus | Prometheus-compatible |
+| **Logging** | tracing + tracing-subscriber | Structured, async-aware logging |
+| **CLI** | clap | Standard Rust CLI framework |
+| **Config** | config-rs | Multi-source (file, env, CLI) configuration |
+| **Serialization** | serde + serde_json | Universal Rust serialization |
+| **TLS** | rustls | No OpenSSL dependency |
+| **Dashboard embed** | rust-embed | Compile static assets into binary |
+| **Dashboard UI** | Preact + Tailwind CSS | Minimal bundle size (< 500 KB) |
+| **IDs** | uuid v7 | Time-sortable, globally unique |
+| **Testing** | cargo test + proptest | Unit, integration, and property-based tests |
+| **CI/CD** | GitHub Actions | Build, test, release binaries, publish Docker images |
+| **Benchmarks** | criterion | Reproducible micro-benchmarks |
+
+---
+
+## 23. Glossary
+
+| Term | Definition |
+|---|---|
+| **Job** | A unit of work submitted to a queue for processing by a worker |
+| **Queue** | A named, ordered collection of jobs |
+| **Worker** | A process that pulls jobs from a queue and executes them |
+| **Schedule** | A recurring or one-time trigger that creates jobs at specified times |
+| **Flow** | A directed acyclic graph (DAG) of jobs with dependency relationships |
+| **DLQ** | Dead Letter Queue — where jobs go after exhausting all retry attempts |
+| **Backoff** | The strategy for increasing delay between retry attempts |
+| **Stall** | When a worker stops sending heartbeats while processing a job |
+| **Raft** | A consensus algorithm for replicating state across distributed nodes |
+| **WAL** | Write-Ahead Log — a technique for ensuring durability before acknowledging writes |
+| **redb** | A pure-Rust embedded key-value database with ACID transactions |
+| **SSE** | Server-Sent Events — a unidirectional real-time protocol over HTTP |
+
+---
+
+*End of document.*

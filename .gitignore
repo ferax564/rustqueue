@@ -1,0 +1,9 @@
+/target
+*.swp
+*.swo
+*~
+.DS_Store
+*.db
+*.redb
+rustqueue.toml
+.env
