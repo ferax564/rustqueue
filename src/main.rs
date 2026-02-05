@@ -2,7 +2,6 @@ use clap::Parser;
 use tracing::info;
 
 mod dashboard;
-mod protocol;
 
 #[derive(Parser)]
 #[command(name = "rustqueue", version, about = "A high-performance distributed job scheduler")]

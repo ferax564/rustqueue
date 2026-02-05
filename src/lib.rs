@@ -6,6 +6,7 @@
 pub mod api;
 pub mod config;
 pub mod engine;
+pub mod protocol;
 pub mod storage;
 
 // Re-export core types for library consumers
