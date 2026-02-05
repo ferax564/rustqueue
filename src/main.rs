@@ -1,7 +1,6 @@
 use clap::Parser;
 use tracing::info;
 
-mod api;
 mod dashboard;
 mod protocol;
 

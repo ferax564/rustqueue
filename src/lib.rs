@@ -3,6 +3,7 @@
 //! RustQueue is a zero-dependency, single-binary job queue and task scheduler
 //! that can be used as a standalone server or embedded as a library.
 
+pub mod api;
 pub mod config;
 pub mod engine;
 pub mod storage;
