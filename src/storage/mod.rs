@@ -1,7 +1,11 @@
+pub mod redb;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::engine::models::{Job, JobId, QueueCounts, Schedule};
+
+pub use self::redb::RedbStorage;
 
 /// Trait abstracting the storage layer, allowing multiple backend implementations.
 #[async_trait]
