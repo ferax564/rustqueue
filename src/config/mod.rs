@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Root configuration, corresponding to the full `rustqueue.toml` file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RustQueueConfig {
     #[serde(default)]
     pub server: ServerConfig,
@@ -31,22 +31,6 @@ pub struct RustQueueConfig {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub metrics: MetricsConfig,
-}
-
-impl Default for RustQueueConfig {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            storage: StorageConfig::default(),
-            auth: AuthConfig::default(),
-            scheduler: SchedulerConfig::default(),
-            jobs: JobsConfig::default(),
-            retention: RetentionConfig::default(),
-            dashboard: DashboardConfig::default(),
-            logging: LoggingConfig::default(),
-            metrics: MetricsConfig::default(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -90,18 +74,13 @@ fn default_tcp_port() -> u16 {
 // ---------------------------------------------------------------------------
 
 /// Storage backend type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StorageBackendType {
+    #[default]
     Redb,
     Sqlite,
     Postgres,
-}
-
-impl Default for StorageBackendType {
-    fn default() -> Self {
-        Self::Redb
-    }
 }
 
 /// Persistent storage settings.
@@ -135,7 +114,7 @@ fn default_storage_path() -> String {
 // ---------------------------------------------------------------------------
 
 /// Authentication / authorization settings.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AuthConfig {
     /// Whether token-based auth is enforced.
     #[serde(default)]
@@ -143,15 +122,6 @@ pub struct AuthConfig {
     /// List of valid bearer tokens.
     #[serde(default)]
     pub tokens: Vec<String>,
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            tokens: Vec::new(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ pub enum JobState {
 }
 
 /// Strategy for increasing delay between retry attempts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackoffStrategy {
     /// Same delay every retry.
@@ -29,29 +29,19 @@ pub enum BackoffStrategy {
     /// delay * attempt number.
     Linear,
     /// delay * 2^attempt.
+    #[default]
     Exponential,
 }
 
-impl Default for BackoffStrategy {
-    fn default() -> Self {
-        Self::Exponential
-    }
-}
-
 /// Ordering strategy for a queue.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueOrdering {
+    #[default]
     Fifo,
     Lifo,
     Priority,
     Fair,
-}
-
-impl Default for QueueOrdering {
-    fn default() -> Self {
-        Self::Fifo
-    }
 }
 
 /// A single log entry appended by a worker during job processing.
