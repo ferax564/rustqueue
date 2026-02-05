@@ -34,4 +34,8 @@ pub trait StorageBackend: Send + Sync + 'static {
     async fn upsert_schedule(&self, schedule: &Schedule) -> anyhow::Result<()>;
     async fn get_active_schedules(&self) -> anyhow::Result<Vec<Schedule>>;
     async fn delete_schedule(&self, name: &str) -> anyhow::Result<()>;
+
+    // Discovery
+    async fn list_queue_names(&self) -> anyhow::Result<Vec<String>>;
+    async fn get_job_by_unique_key(&self, queue: &str, key: &str) -> anyhow::Result<Option<Job>>;
 }

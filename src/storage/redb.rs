@@ -312,6 +312,41 @@ impl StorageBackend for RedbStorage {
         write_txn.commit()?;
         Ok(())
     }
+
+    // ── Discovery ────────────────────────────────────────────────────────
+
+    async fn list_queue_names(&self) -> Result<Vec<String>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(JOBS_TABLE)?;
+
+        let mut names = std::collections::BTreeSet::new();
+        for entry in table.iter()? {
+            let (_, value) = entry?;
+            let job: Job = serde_json::from_slice(value.value())?;
+            names.insert(job.queue);
+        }
+        Ok(names.into_iter().collect())
+    }
+
+    async fn get_job_by_unique_key(&self, queue: &str, key: &str) -> Result<Option<Job>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(JOBS_TABLE)?;
+
+        for entry in table.iter()? {
+            let (_, value) = entry?;
+            let job: Job = serde_json::from_slice(value.value())?;
+            if job.queue == queue
+                && job.unique_key.as_deref() == Some(key)
+                && !matches!(
+                    job.state,
+                    JobState::Completed | JobState::Dlq | JobState::Cancelled
+                )
+            {
+                return Ok(Some(job));
+            }
+        }
+        Ok(None)
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
