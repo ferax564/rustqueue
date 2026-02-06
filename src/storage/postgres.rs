@@ -398,6 +398,72 @@ impl StorageBackend for PostgresStorage {
         Ok(count)
     }
 
+    async fn remove_failed_before(&self, before: DateTime<Utc>) -> Result<u64> {
+        let rows: Vec<(uuid::Uuid, serde_json::Value)> = sqlx::query_as(
+            "SELECT id, data FROM jobs WHERE state = 'failed'",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch failed jobs for cleanup")?;
+
+        let mut to_remove: Vec<uuid::Uuid> = Vec::new();
+
+        for (id, data) in rows {
+            let job: Job = serde_json::from_value(data)?;
+            if job.updated_at < before {
+                to_remove.push(id);
+            }
+        }
+
+        if to_remove.is_empty() {
+            return Ok(0);
+        }
+
+        let count = to_remove.len() as u64;
+
+        for id in &to_remove {
+            sqlx::query("DELETE FROM jobs WHERE id = $1")
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
+
+        Ok(count)
+    }
+
+    async fn remove_dlq_before(&self, before: DateTime<Utc>) -> Result<u64> {
+        let rows: Vec<(uuid::Uuid, serde_json::Value)> = sqlx::query_as(
+            "SELECT id, data FROM jobs WHERE state = 'dlq'",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to fetch DLQ jobs for cleanup")?;
+
+        let mut to_remove: Vec<uuid::Uuid> = Vec::new();
+
+        for (id, data) in rows {
+            let job: Job = serde_json::from_value(data)?;
+            if job.updated_at < before {
+                to_remove.push(id);
+            }
+        }
+
+        if to_remove.is_empty() {
+            return Ok(0);
+        }
+
+        let count = to_remove.len() as u64;
+
+        for id in &to_remove {
+            sqlx::query("DELETE FROM jobs WHERE id = $1")
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
+
+        Ok(count)
+    }
+
     // -- Cron schedules -------------------------------------------------------
 
     async fn upsert_schedule(&self, schedule: &Schedule) -> Result<()> {

@@ -196,6 +196,40 @@ impl StorageBackend for MemoryStorage {
         Ok(count)
     }
 
+    async fn remove_failed_before(&self, before: DateTime<Utc>) -> Result<u64> {
+        let mut jobs = self.jobs.write().unwrap();
+
+        let to_remove: Vec<JobId> = jobs
+            .values()
+            .filter(|j| j.state == JobState::Failed && j.updated_at < before)
+            .map(|j| j.id)
+            .collect();
+
+        let count = to_remove.len() as u64;
+        for id in to_remove {
+            jobs.remove(&id);
+        }
+
+        Ok(count)
+    }
+
+    async fn remove_dlq_before(&self, before: DateTime<Utc>) -> Result<u64> {
+        let mut jobs = self.jobs.write().unwrap();
+
+        let to_remove: Vec<JobId> = jobs
+            .values()
+            .filter(|j| j.state == JobState::Dlq && j.updated_at < before)
+            .map(|j| j.id)
+            .collect();
+
+        let count = to_remove.len() as u64;
+        for id in to_remove {
+            jobs.remove(&id);
+        }
+
+        Ok(count)
+    }
+
     // ── Cron schedules ──────────────────────────────────────────────────
 
     async fn upsert_schedule(&self, schedule: &Schedule) -> Result<()> {

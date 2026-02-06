@@ -272,6 +272,58 @@ impl StorageBackend for RedbStorage {
         Ok(removed)
     }
 
+    async fn remove_failed_before(&self, before: DateTime<Utc>) -> Result<u64> {
+        let write_txn = self.db.begin_write()?;
+        let removed = {
+            let mut table = write_txn.open_table(JOBS_TABLE)?;
+
+            let mut to_remove: Vec<[u8; 16]> = Vec::new();
+            for entry in table.iter()? {
+                let (key, value) = entry?;
+                let job: Job = serde_json::from_slice(value.value())?;
+                if job.state == JobState::Failed && job.updated_at < before {
+                    let mut id_bytes = [0u8; 16];
+                    id_bytes.copy_from_slice(key.value());
+                    to_remove.push(id_bytes);
+                }
+            }
+
+            let count = to_remove.len() as u64;
+            for id_bytes in &to_remove {
+                table.remove(id_bytes.as_slice())?;
+            }
+            count
+        };
+        write_txn.commit()?;
+        Ok(removed)
+    }
+
+    async fn remove_dlq_before(&self, before: DateTime<Utc>) -> Result<u64> {
+        let write_txn = self.db.begin_write()?;
+        let removed = {
+            let mut table = write_txn.open_table(JOBS_TABLE)?;
+
+            let mut to_remove: Vec<[u8; 16]> = Vec::new();
+            for entry in table.iter()? {
+                let (key, value) = entry?;
+                let job: Job = serde_json::from_slice(value.value())?;
+                if job.state == JobState::Dlq && job.updated_at < before {
+                    let mut id_bytes = [0u8; 16];
+                    id_bytes.copy_from_slice(key.value());
+                    to_remove.push(id_bytes);
+                }
+            }
+
+            let count = to_remove.len() as u64;
+            for id_bytes in &to_remove {
+                table.remove(id_bytes.as_slice())?;
+            }
+            count
+        };
+        write_txn.commit()?;
+        Ok(removed)
+    }
+
     // ── Cron schedules ──────────────────────────────────────────────────
 
     async fn upsert_schedule(&self, schedule: &Schedule) -> Result<()> {

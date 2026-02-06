@@ -44,6 +44,12 @@ pub trait StorageBackend: Send + Sync + 'static {
     // Cleanup
     async fn remove_completed_before(&self, before: DateTime<Utc>) -> anyhow::Result<u64>;
 
+    /// Remove failed jobs (state == Failed) updated before the given time.
+    async fn remove_failed_before(&self, before: DateTime<Utc>) -> anyhow::Result<u64>;
+
+    /// Remove DLQ jobs (state == Dlq) updated before the given time.
+    async fn remove_dlq_before(&self, before: DateTime<Utc>) -> anyhow::Result<u64>;
+
     // Cron schedules
     async fn upsert_schedule(&self, schedule: &Schedule) -> anyhow::Result<()>;
     async fn get_active_schedules(&self) -> anyhow::Result<Vec<Schedule>>;

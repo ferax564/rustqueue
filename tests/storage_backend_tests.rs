@@ -394,6 +394,86 @@ macro_rules! backend_tests {
                     "waiting job should not be affected by cleanup"
                 );
             }
+
+            // ── 15. remove_failed_before ────────────────────────────────
+
+            #[tokio::test]
+            async fn remove_failed_before() {
+                let storage = $factory;
+
+                // Old failed job (60 days ago).
+                let mut old_job = test_job("cleanup-q");
+                old_job.state = JobState::Failed;
+                old_job.updated_at = Utc::now() - Duration::days(60);
+                storage.insert_job(&old_job).await.unwrap();
+
+                // Recent failed job (just now) -- should NOT be removed.
+                let mut recent_job = test_job("cleanup-q");
+                recent_job.state = JobState::Failed;
+                recent_job.updated_at = Utc::now();
+                storage.insert_job(&recent_job).await.unwrap();
+
+                // A waiting job -- should never be touched.
+                let waiting_job = test_job("cleanup-q");
+                storage.insert_job(&waiting_job).await.unwrap();
+
+                let cutoff = Utc::now() - Duration::days(30);
+                let removed = storage.remove_failed_before(cutoff).await.unwrap();
+                assert_eq!(removed, 1, "should remove exactly 1 old failed job");
+
+                assert!(
+                    storage.get_job(old_job.id).await.unwrap().is_none(),
+                    "old failed job should be removed"
+                );
+                assert!(
+                    storage.get_job(recent_job.id).await.unwrap().is_some(),
+                    "recent failed job should survive cleanup"
+                );
+                assert!(
+                    storage.get_job(waiting_job.id).await.unwrap().is_some(),
+                    "waiting job should not be affected by cleanup"
+                );
+            }
+
+            // ── 16. remove_dlq_before ───────────────────────────────────
+
+            #[tokio::test]
+            async fn remove_dlq_before() {
+                let storage = $factory;
+
+                // Old DLQ job (120 days ago).
+                let mut old_job = test_job("cleanup-q");
+                old_job.state = JobState::Dlq;
+                old_job.updated_at = Utc::now() - Duration::days(120);
+                storage.insert_job(&old_job).await.unwrap();
+
+                // Recent DLQ job (just now) -- should NOT be removed.
+                let mut recent_job = test_job("cleanup-q");
+                recent_job.state = JobState::Dlq;
+                recent_job.updated_at = Utc::now();
+                storage.insert_job(&recent_job).await.unwrap();
+
+                // A waiting job -- should never be touched.
+                let waiting_job = test_job("cleanup-q");
+                storage.insert_job(&waiting_job).await.unwrap();
+
+                let cutoff = Utc::now() - Duration::days(90);
+                let removed = storage.remove_dlq_before(cutoff).await.unwrap();
+                assert_eq!(removed, 1, "should remove exactly 1 old DLQ job");
+
+                assert!(
+                    storage.get_job(old_job.id).await.unwrap().is_none(),
+                    "old DLQ job should be removed"
+                );
+                assert!(
+                    storage.get_job(recent_job.id).await.unwrap().is_some(),
+                    "recent DLQ job should survive cleanup"
+                );
+                assert!(
+                    storage.get_job(waiting_job.id).await.unwrap().is_some(),
+                    "waiting job should not be affected by cleanup"
+                );
+            }
         }
     };
 }

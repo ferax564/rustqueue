@@ -237,6 +237,7 @@ async fn main() -> anyhow::Result<()> {
                 Arc::clone(&queue_manager),
                 config.scheduler.tick_interval_ms,
                 config.jobs.stall_timeout_ms,
+                config.retention.clone(),
             );
             info!(
                 tick_ms = config.scheduler.tick_interval_ms,

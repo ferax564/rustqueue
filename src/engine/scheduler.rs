@@ -5,19 +5,23 @@ use std::time::Duration;
 
 use tracing::{info, warn};
 
+use crate::config::RetentionConfig;
 use crate::engine::queue::QueueManager;
 
 /// Start the background scheduler that periodically runs housekeeping tasks.
 ///
 /// This spawns a tokio task that runs on a configurable interval:
+/// - Promote delayed jobs whose delay has expired
 /// - Check for timed-out jobs
 /// - Detect stalled jobs (no heartbeat within `stall_timeout_ms`)
+/// - Run retention cleanup every 60 ticks (~1 minute at 1s tick)
 ///
 /// Returns a `JoinHandle` that can be used to abort the scheduler.
 pub fn start_scheduler(
     manager: Arc<QueueManager>,
     tick_interval_ms: u64,
     stall_timeout_ms: u64,
+    retention: RetentionConfig,
 ) -> tokio::task::JoinHandle<()> {
     let interval = Duration::from_millis(tick_interval_ms);
 
@@ -28,8 +32,11 @@ pub fn start_scheduler(
 
         info!(interval_ms = tick_interval_ms, stall_timeout_ms, "Background scheduler started");
 
+        let mut tick_count: u64 = 0;
+
         loop {
             ticker.tick().await;
+            tick_count += 1;
 
             // Promote delayed jobs first
             if let Err(e) = manager.promote_delayed_jobs().await {
@@ -44,6 +51,20 @@ pub fn start_scheduler(
             // Detect stalled jobs (no heartbeat)
             if let Err(e) = manager.detect_stalls(stall_timeout_ms).await {
                 warn!(error = %e, "Stall detection failed");
+            }
+
+            // Retention cleanup every 60 ticks (~1 minute at 1s tick)
+            if tick_count % 60 == 0 {
+                if let Err(e) = manager
+                    .cleanup_expired_jobs(
+                        &retention.completed_ttl,
+                        &retention.failed_ttl,
+                        &retention.dlq_ttl,
+                    )
+                    .await
+                {
+                    warn!(error = %e, "Retention cleanup failed");
+                }
             }
         }
     })

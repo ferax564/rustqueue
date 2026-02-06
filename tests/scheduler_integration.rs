@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use serde_json::json;
 
+use rustqueue::config::RetentionConfig;
 use rustqueue::engine::queue::{JobOptions, QueueManager};
 use rustqueue::engine::scheduler::start_scheduler;
 use rustqueue::storage::MemoryStorage;
@@ -34,7 +35,7 @@ async fn test_scheduler_promotes_delayed_jobs() {
     assert!(pulled.is_empty(), "Delayed job should not be pullable yet");
 
     // Start the scheduler with a fast tick (20ms)
-    let scheduler = start_scheduler(Arc::clone(&manager), 20, 30_000);
+    let scheduler = start_scheduler(Arc::clone(&manager), 20, 30_000, RetentionConfig::default());
 
     // Wait for the delay to expire + scheduler tick (50ms delay + 40ms margin)
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
@@ -71,7 +72,7 @@ async fn test_scheduler_detects_timed_out_jobs() {
     assert_eq!(job.state, JobState::Active);
 
     // Start the scheduler with a fast tick (20ms)
-    let scheduler = start_scheduler(Arc::clone(&manager), 20, 30_000);
+    let scheduler = start_scheduler(Arc::clone(&manager), 20, 30_000, RetentionConfig::default());
 
     // Wait for timeout + scheduler tick
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;

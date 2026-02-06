@@ -559,6 +559,54 @@ impl QueueManager {
         Ok(timed_out)
     }
 
+    // ── Retention cleanup ──────────────────────────────────────────────
+
+    /// Remove expired completed, failed, and DLQ jobs based on TTL strings.
+    ///
+    /// TTL strings use human-readable format: "7d", "24h", "30m".
+    /// Returns a tuple of `(completed_removed, failed_removed, dlq_removed)`.
+    pub async fn cleanup_expired_jobs(
+        &self,
+        completed_ttl: &str,
+        failed_ttl: &str,
+        dlq_ttl: &str,
+    ) -> Result<(u64, u64, u64), RustQueueError> {
+        let now = Utc::now();
+
+        let completed = if let Some(dur) = parse_ttl(completed_ttl) {
+            self.storage
+                .remove_completed_before(now - dur)
+                .await
+                .map_err(RustQueueError::Internal)?
+        } else {
+            0
+        };
+
+        let failed = if let Some(dur) = parse_ttl(failed_ttl) {
+            self.storage
+                .remove_failed_before(now - dur)
+                .await
+                .map_err(RustQueueError::Internal)?
+        } else {
+            0
+        };
+
+        let dlq = if let Some(dur) = parse_ttl(dlq_ttl) {
+            self.storage
+                .remove_dlq_before(now - dur)
+                .await
+                .map_err(RustQueueError::Internal)?
+        } else {
+            0
+        };
+
+        if completed > 0 || failed > 0 || dlq > 0 {
+            tracing::info!(completed, failed, dlq, "Retention cleanup");
+        }
+
+        Ok((completed, failed, dlq))
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────
 
     /// Fetch a job by ID, returning `JobNotFound` if it does not exist.
@@ -579,6 +627,24 @@ impl QueueManager {
                 base_delay_ms * 2u64.saturating_pow(attempt.saturating_sub(1))
             }
         }
+    }
+}
+
+// ── TTL parsing utility ──────────────────────────────────────────────────────
+
+/// Parse a human-readable TTL string like "7d", "24h", or "30m" into a `chrono::Duration`.
+///
+/// Returns `None` if the format is invalid.
+fn parse_ttl(ttl: &str) -> Option<Duration> {
+    let s = ttl.trim();
+    if let Some(d) = s.strip_suffix('d') {
+        d.parse::<i64>().ok().map(Duration::days)
+    } else if let Some(h) = s.strip_suffix('h') {
+        h.parse::<i64>().ok().map(Duration::hours)
+    } else if let Some(m) = s.strip_suffix('m') {
+        m.parse::<i64>().ok().map(Duration::minutes)
+    } else {
+        None
     }
 }
 
@@ -994,5 +1060,91 @@ mod tests {
         let pulled = mgr.pull("work", 1).await.unwrap();
         assert_eq!(pulled.len(), 1);
         assert_eq!(pulled[0].id, id);
+    }
+
+    // ── Retention / TTL tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_ttl_formats() {
+        use super::parse_ttl;
+
+        // Valid formats
+        assert_eq!(parse_ttl("7d"), Some(Duration::days(7)));
+        assert_eq!(parse_ttl("24h"), Some(Duration::hours(24)));
+        assert_eq!(parse_ttl("30m"), Some(Duration::minutes(30)));
+        assert_eq!(parse_ttl("1d"), Some(Duration::days(1)));
+        assert_eq!(parse_ttl("90d"), Some(Duration::days(90)));
+
+        // Whitespace trimming
+        assert_eq!(parse_ttl("  7d  "), Some(Duration::days(7)));
+
+        // Invalid formats
+        assert_eq!(parse_ttl("invalid"), None);
+        assert_eq!(parse_ttl("7"), None);
+        assert_eq!(parse_ttl(""), None);
+        assert_eq!(parse_ttl("7s"), None); // seconds not supported
+        assert_eq!(parse_ttl("abc_d"), None);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_removes_old_completed() {
+        let mgr = temp_manager();
+
+        // Push a job, pull it, ack it so it becomes Completed.
+        let id = mgr
+            .push("work", "process", json!({}), None)
+            .await
+            .unwrap();
+        mgr.pull("work", 1).await.unwrap();
+        mgr.ack(id, None).await.unwrap();
+
+        // Manually backdate the completed_at to 30 days ago to simulate an old job.
+        let mut job = mgr.get_job(id).await.unwrap().unwrap();
+        assert_eq!(job.state, JobState::Completed);
+        job.completed_at = Some(Utc::now() - Duration::days(30));
+        job.updated_at = Utc::now() - Duration::days(30);
+        mgr.storage
+            .update_job(&job)
+            .await
+            .unwrap();
+
+        // Run cleanup with a 7-day TTL — the 30-day-old job should be removed.
+        let (completed, failed, dlq) = mgr
+            .cleanup_expired_jobs("7d", "30d", "90d")
+            .await
+            .unwrap();
+        assert_eq!(completed, 1);
+        assert_eq!(failed, 0);
+        assert_eq!(dlq, 0);
+
+        // Verify the job is gone.
+        let job = mgr.get_job(id).await.unwrap();
+        assert!(job.is_none(), "old completed job should have been removed");
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_preserves_recent() {
+        let mgr = temp_manager();
+
+        // Push, pull, and ack a job — it becomes Completed just now.
+        let id = mgr
+            .push("work", "process", json!({}), None)
+            .await
+            .unwrap();
+        mgr.pull("work", 1).await.unwrap();
+        mgr.ack(id, None).await.unwrap();
+
+        // Run cleanup with 7d TTL — recent job should survive.
+        let (completed, failed, dlq) = mgr
+            .cleanup_expired_jobs("7d", "30d", "90d")
+            .await
+            .unwrap();
+        assert_eq!(completed, 0);
+        assert_eq!(failed, 0);
+        assert_eq!(dlq, 0);
+
+        // The job should still exist.
+        let job = mgr.get_job(id).await.unwrap();
+        assert!(job.is_some(), "recent completed job should be preserved");
     }
 }

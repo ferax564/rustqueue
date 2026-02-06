@@ -304,6 +304,64 @@ impl StorageBackend for SqliteStorage {
         Ok(count)
     }
 
+    async fn remove_failed_before(&self, before: DateTime<Utc>) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, data FROM jobs
+             WHERE json_extract(data, '$.state') = 'failed'",
+        )?;
+
+        let mut to_remove: Vec<Vec<u8>> = Vec::new();
+        let mut rows = stmt.query(())?;
+
+        while let Some(row) = rows.next()? {
+            let key: Vec<u8> = row.get(0)?;
+            let data: String = row.get(1)?;
+            let job: Job = serde_json::from_str(&data)?;
+
+            if job.updated_at < before {
+                to_remove.push(key);
+            }
+        }
+
+        let count = to_remove.len() as u64;
+        for key in &to_remove {
+            conn.execute("DELETE FROM jobs WHERE id = ?1", (key,))?;
+        }
+
+        Ok(count)
+    }
+
+    async fn remove_dlq_before(&self, before: DateTime<Utc>) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT id, data FROM jobs
+             WHERE json_extract(data, '$.state') = 'dlq'",
+        )?;
+
+        let mut to_remove: Vec<Vec<u8>> = Vec::new();
+        let mut rows = stmt.query(())?;
+
+        while let Some(row) = rows.next()? {
+            let key: Vec<u8> = row.get(0)?;
+            let data: String = row.get(1)?;
+            let job: Job = serde_json::from_str(&data)?;
+
+            if job.updated_at < before {
+                to_remove.push(key);
+            }
+        }
+
+        let count = to_remove.len() as u64;
+        for key in &to_remove {
+            conn.execute("DELETE FROM jobs WHERE id = ?1", (key,))?;
+        }
+
+        Ok(count)
+    }
+
     // -- Cron schedules -------------------------------------------------------
 
     async fn upsert_schedule(&self, schedule: &Schedule) -> Result<()> {
