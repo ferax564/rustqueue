@@ -5,6 +5,23 @@ use tracing::{info, warn};
 
 mod dashboard;
 
+#[cfg(feature = "tls")]
+fn load_certs(path: &str) -> anyhow::Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
+    let certs = rustls_pemfile::certs(&mut reader).collect::<Result<Vec<_>, _>>()?;
+    Ok(certs)
+}
+
+#[cfg(feature = "tls")]
+fn load_key(path: &str) -> anyhow::Result<rustls::pki_types::PrivateKeyDer<'static>> {
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
+    let key = rustls_pemfile::private_key(&mut reader)?
+        .ok_or_else(|| anyhow::anyhow!("No private key found in {}", path))?;
+    Ok(key)
+}
+
 #[derive(Parser)]
 #[command(name = "rustqueue", version, about = "A high-performance distributed job scheduler")]
 struct Cli {
@@ -263,6 +280,46 @@ async fn main() -> anyhow::Result<()> {
 
             // 12. Spawn TCP server with graceful shutdown (auth config for connection-level authentication)
             let tcp_auth_config = config.auth.clone();
+
+            // When TLS is enabled, start the TLS TCP server; otherwise start the plain TCP server.
+            #[cfg(feature = "tls")]
+            let tcp_handle = if config.tls.enabled {
+                let certs = load_certs(&config.tls.cert_path)?;
+                let key = load_key(&config.tls.key_path)?;
+                let tls_config = rustls::ServerConfig::builder()
+                    .with_no_client_auth()
+                    .with_single_cert(certs, key)?;
+                let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
+                info!("TLS enabled for TCP protocol");
+                tokio::spawn({
+                    let rx = shutdown_rx.clone();
+                    async move {
+                        rustqueue::protocol::start_tls_tcp_server(
+                            tcp_listener,
+                            queue_manager,
+                            tcp_auth_config,
+                            rx,
+                            acceptor,
+                        )
+                        .await;
+                    }
+                })
+            } else {
+                tokio::spawn({
+                    let rx = shutdown_rx.clone();
+                    async move {
+                        rustqueue::protocol::start_tcp_server(
+                            tcp_listener,
+                            queue_manager,
+                            tcp_auth_config,
+                            rx,
+                        )
+                        .await;
+                    }
+                })
+            };
+
+            #[cfg(not(feature = "tls"))]
             let tcp_handle = tokio::spawn({
                 let rx = shutdown_rx.clone();
                 async move {

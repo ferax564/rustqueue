@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
 use crate::config::AuthConfig;
@@ -13,25 +12,27 @@ use crate::engine::queue::{JobOptions, QueueManager};
 
 /// Handle a single TCP connection, processing commands until the client disconnects.
 ///
+/// The stream type is generic over `AsyncRead + AsyncWrite` so that both plain TCP
+/// and TLS connections can be handled with the same logic.
+///
 /// When `auth_config.enabled` is `true`, the first command on the connection must
 /// be `{"cmd":"auth","token":"<bearer-token>"}`. All subsequent commands are allowed
 /// only after successful authentication. When auth is disabled, all commands are
 /// allowed without an auth handshake.
-pub async fn handle_connection(
-    stream: TcpStream,
+pub async fn handle_connection<S>(
+    stream: S,
     manager: Arc<QueueManager>,
     auth_config: &AuthConfig,
-) {
-    let peer = stream
-        .peer_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+) where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let peer = "unknown";
     debug!(peer = %peer, "New TCP connection");
 
     // If auth is disabled, the connection starts as authenticated.
     let mut authenticated = !auth_config.enabled;
 
-    let (reader, mut writer) = stream.into_split();
+    let (reader, mut writer) = tokio::io::split(stream);
     let mut reader = BufReader::new(reader);
     let mut line = String::new();
 

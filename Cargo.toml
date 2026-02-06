@@ -75,6 +75,7 @@ anyhow = "1"
 # TLS (optional)
 rustls = { version = "0.23", optional = true }
 tokio-rustls = { version = "0.26", optional = true }
+rustls-pemfile = { version = "2", optional = true }
 
 # Dashboard embedding
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
@@ -94,7 +95,7 @@ futures-util = "0.3"
 [features]
 default = ["cli"]
 cli = ["reqwest"]
-tls = ["rustls", "tokio-rustls"]
+tls = ["rustls", "tokio-rustls", "rustls-pemfile"]
 otel = ["opentelemetry", "opentelemetry-otlp", "opentelemetry_sdk", "tracing-opentelemetry"]
 sqlite = ["rusqlite"]
 postgres = ["sqlx"]

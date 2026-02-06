@@ -31,6 +31,8 @@ pub struct RustQueueConfig {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub metrics: MetricsConfig,
+    #[serde(default)]
+    pub tls: TlsConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +330,22 @@ fn default_prometheus_path() -> String {
 }
 
 // ---------------------------------------------------------------------------
+
+/// TLS configuration for the TCP protocol listener.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TlsConfig {
+    /// Whether TLS is enabled for the TCP protocol.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Path to the PEM-encoded certificate chain file.
+    #[serde(default)]
+    pub cert_path: String,
+    /// Path to the PEM-encoded private key file.
+    #[serde(default)]
+    pub key_path: String,
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -380,6 +398,11 @@ mod tests {
         // Metrics
         assert!(cfg.metrics.prometheus_enabled);
         assert_eq!(cfg.metrics.prometheus_path, "/api/v1/metrics/prometheus");
+
+        // TLS
+        assert!(!cfg.tls.enabled);
+        assert_eq!(cfg.tls.cert_path, "");
+        assert_eq!(cfg.tls.key_path, "");
     }
 
     #[test]
@@ -416,6 +439,28 @@ postgres_url = "postgres://localhost/rustqueue"
         assert_eq!(cfg.server.tcp_port, 6789);
         assert_eq!(cfg.jobs.default_max_attempts, 3);
         assert!(cfg.dashboard.enabled);
+    }
+
+    #[test]
+    fn test_tls_config_defaults() {
+        let cfg = RustQueueConfig::default();
+        assert!(!cfg.tls.enabled);
+        assert_eq!(cfg.tls.cert_path, "");
+        assert_eq!(cfg.tls.key_path, "");
+    }
+
+    #[test]
+    fn test_tls_config_from_toml() {
+        let input = r#"
+[tls]
+enabled = true
+cert_path = "/etc/certs/server.crt"
+key_path = "/etc/certs/server.key"
+"#;
+        let cfg: RustQueueConfig = toml::from_str(input).expect("parse TLS TOML");
+        assert!(cfg.tls.enabled);
+        assert_eq!(cfg.tls.cert_path, "/etc/certs/server.crt");
+        assert_eq!(cfg.tls.key_path, "/etc/certs/server.key");
     }
 
     #[test]
