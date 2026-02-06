@@ -88,6 +88,62 @@ enum Commands {
         #[arg(long, default_value_t = 6790, env = "RUSTQUEUE_HTTP_PORT")]
         http_port: u16,
     },
+
+    /// Manage schedules on a running server
+    #[cfg(feature = "cli")]
+    Schedules {
+        #[command(subcommand)]
+        action: ScheduleAction,
+        /// Server host
+        #[arg(long, default_value = "127.0.0.1", env = "RUSTQUEUE_HOST")]
+        host: String,
+        /// Server HTTP port
+        #[arg(long, default_value_t = 6790, env = "RUSTQUEUE_HTTP_PORT")]
+        http_port: u16,
+    },
+}
+
+#[cfg(feature = "cli")]
+#[derive(clap::Subcommand)]
+enum ScheduleAction {
+    /// List all schedules
+    List,
+    /// Create a new schedule
+    Create {
+        /// Schedule name (unique identifier)
+        #[arg(long)]
+        name: String,
+        /// Target queue
+        #[arg(long)]
+        queue: String,
+        /// Job name for created jobs
+        #[arg(long)]
+        job_name: String,
+        /// Job data as JSON string
+        #[arg(long, default_value = "{}")]
+        data: String,
+        /// Cron expression (e.g. "*/5 * * * *")
+        #[arg(long)]
+        cron: Option<String>,
+        /// Interval in milliseconds
+        #[arg(long)]
+        every_ms: Option<u64>,
+    },
+    /// Delete a schedule
+    Delete {
+        /// Schedule name
+        name: String,
+    },
+    /// Pause a schedule
+    Pause {
+        /// Schedule name
+        name: String,
+    },
+    /// Resume a paused schedule
+    Resume {
+        /// Schedule name
+        name: String,
+    },
 }
 
 #[tokio::main]
@@ -450,6 +506,93 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&body["job"])?);
             } else {
                 eprintln!("Error: {}", body);
+            }
+        }
+
+        #[cfg(feature = "cli")]
+        Commands::Schedules { action, host, http_port } => {
+            let base = format!("http://{}:{}/api/v1/schedules", host, http_port);
+            let client = reqwest::Client::new();
+
+            match action {
+                ScheduleAction::List => {
+                    let resp = client.get(&base).send().await?;
+                    let body: serde_json::Value = resp.json().await?;
+                    if body["ok"].as_bool() == Some(true) {
+                        if let Some(schedules) = body["schedules"].as_array() {
+                            if schedules.is_empty() {
+                                println!("No schedules found.");
+                            } else {
+                                println!("{:<25} {:<15} {:<25} {:>6} {:<7}", "Name", "Queue", "Timing", "Runs", "Paused");
+                                println!("{}", "-".repeat(80));
+                                for s in schedules {
+                                    let name = s["name"].as_str().unwrap_or("?");
+                                    let queue = s["queue"].as_str().unwrap_or("?");
+                                    let timing = if let Some(cron) = s["cron_expr"].as_str() {
+                                        format!("cron: {}", cron)
+                                    } else if let Some(ms) = s["every_ms"].as_u64() {
+                                        format!("every {}ms", ms)
+                                    } else {
+                                        "?".to_string()
+                                    };
+                                    let runs = s["execution_count"].as_u64().unwrap_or(0);
+                                    let paused = s["paused"].as_bool().unwrap_or(false);
+                                    println!("{:<25} {:<15} {:<25} {:>6} {:<7}", name, queue, timing, runs, paused);
+                                }
+                            }
+                        }
+                    } else {
+                        eprintln!("Error: {}", body);
+                    }
+                }
+                ScheduleAction::Create { name, queue, job_name, data, cron, every_ms } => {
+                    let payload: serde_json::Value = serde_json::from_str(&data).unwrap_or(serde_json::json!({}));
+                    let mut body = serde_json::json!({
+                        "name": name,
+                        "queue": queue,
+                        "job_name": job_name,
+                        "job_data": payload,
+                    });
+                    if let Some(c) = cron { body["cron_expr"] = serde_json::json!(c); }
+                    if let Some(ms) = every_ms { body["every_ms"] = serde_json::json!(ms); }
+                    let resp = client.post(&base).json(&body).send().await?;
+                    let result: serde_json::Value = resp.json().await?;
+                    if result["ok"].as_bool() == Some(true) {
+                        println!("Schedule '{}' created.", name);
+                    } else {
+                        eprintln!("Error: {}", result);
+                    }
+                }
+                ScheduleAction::Delete { name } => {
+                    let url = format!("{}/{}", base, name);
+                    let resp = client.delete(&url).send().await?;
+                    let result: serde_json::Value = resp.json().await?;
+                    if result["ok"].as_bool() == Some(true) {
+                        println!("Schedule '{}' deleted.", name);
+                    } else {
+                        eprintln!("Error: {}", result);
+                    }
+                }
+                ScheduleAction::Pause { name } => {
+                    let url = format!("{}/{}/pause", base, name);
+                    let resp = client.post(&url).send().await?;
+                    let result: serde_json::Value = resp.json().await?;
+                    if result["ok"].as_bool() == Some(true) {
+                        println!("Schedule '{}' paused.", name);
+                    } else {
+                        eprintln!("Error: {}", result);
+                    }
+                }
+                ScheduleAction::Resume { name } => {
+                    let url = format!("{}/{}/resume", base, name);
+                    let resp = client.post(&url).send().await?;
+                    let result: serde_json::Value = resp.json().await?;
+                    if result["ok"].as_bool() == Some(true) {
+                        println!("Schedule '{}' resumed.", name);
+                    } else {
+                        eprintln!("Error: {}", result);
+                    }
+                }
             }
         }
     }
