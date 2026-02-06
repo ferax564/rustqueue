@@ -158,9 +158,12 @@ async fn handle_push(cmd: &Value, manager: &QueueManager) -> Value {
     };
     let data = cmd.get("data").cloned().unwrap_or(json!({}));
 
+    // Accept options either nested under "options" key or flattened at top level
+    // (matching the HTTP API's #[serde(flatten)] behavior).
     let options: Option<JobOptions> = cmd
         .get("options")
-        .and_then(|v| serde_json::from_value(v.clone()).ok());
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .or_else(|| serde_json::from_value(cmd.clone()).ok());
 
     match manager.push(queue, name, data, options).await {
         Ok(id) => json!({"ok": true, "id": id.to_string()}),

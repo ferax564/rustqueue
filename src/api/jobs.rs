@@ -214,9 +214,10 @@ async fn get_job(
 async fn ack_job(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
-    Json(body): Json<AckRequest>,
+    body: Option<Json<AckRequest>>,
 ) -> Result<Json<OkResponse>, ApiError> {
-    state.queue_manager.ack(id, body.result).await?;
+    let result = body.and_then(|b| b.0.result);
+    state.queue_manager.ack(id, result).await?;
     Ok(Json(OkResponse { ok: true }))
 }
 
