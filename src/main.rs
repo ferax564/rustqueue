@@ -230,23 +230,36 @@ async fn main() -> anyhow::Result<()> {
                 "RustQueue server starting"
             );
 
-            // 9. Spawn HTTP server
+            // 9. Spawn background scheduler
+            let scheduler_handle = rustqueue::engine::scheduler::start_scheduler(
+                Arc::clone(&queue_manager),
+                config.scheduler.tick_interval_ms,
+                config.jobs.stall_timeout_ms,
+            );
+            info!(
+                tick_ms = config.scheduler.tick_interval_ms,
+                stall_timeout_ms = config.jobs.stall_timeout_ms,
+                "Background scheduler started"
+            );
+
+            // 10. Spawn HTTP server
             let http_handle = tokio::spawn(async move {
                 axum::serve(http_listener, app)
                     .await
                     .expect("HTTP server error");
             });
 
-            // 10. Spawn TCP server
+            // 11. Spawn TCP server
             let tcp_handle = tokio::spawn(async move {
                 rustqueue::protocol::start_tcp_server(tcp_listener, queue_manager).await;
             });
 
-            // 11. Wait for shutdown signal (Ctrl+C)
+            // 12. Wait for shutdown signal (Ctrl+C)
             tokio::signal::ctrl_c().await?;
             info!("Shutdown signal received, stopping servers...");
 
             // Abort server tasks for clean shutdown
+            scheduler_handle.abort();
             http_handle.abort();
             tcp_handle.abort();
 
