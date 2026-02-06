@@ -44,9 +44,10 @@ async fn start_full_server() -> (String, std::net::SocketAddr) {
         axum::serve(http_listener, app).await.unwrap();
     });
 
-    // Spawn TCP server
+    // Spawn TCP server (auth disabled for smoke tests)
+    let auth_config = rustqueue::config::AuthConfig::default();
     tokio::spawn(async move {
-        rustqueue::protocol::start_tcp_server(tcp_listener, queue_manager).await;
+        rustqueue::protocol::start_tcp_server(tcp_listener, queue_manager, auth_config).await;
     });
 
     (format!("http://{http_addr}"), tcp_addr)

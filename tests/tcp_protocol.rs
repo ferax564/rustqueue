@@ -6,6 +6,7 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
+use rustqueue::config::AuthConfig;
 use rustqueue::engine::queue::QueueManager;
 use rustqueue::protocol;
 use rustqueue::storage::RedbStorage;
@@ -13,6 +14,7 @@ use rustqueue::storage::RedbStorage;
 // ── Test helpers ─────────────────────────────────────────────────────────────
 
 /// Start a TCP server on a random port and return the port number.
+/// Auth is disabled so existing tests continue to work without changes.
 /// The tempdir is leaked intentionally so it outlives the spawned server task.
 async fn start_test_tcp_server() -> u16 {
     let dir = tempfile::tempdir().unwrap();
@@ -26,8 +28,13 @@ async fn start_test_tcp_server() -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
 
+    let auth_config = AuthConfig {
+        enabled: false,
+        tokens: vec![],
+    };
+
     tokio::spawn(async move {
-        protocol::start_tcp_server(listener, qm).await;
+        protocol::start_tcp_server(listener, qm, auth_config).await;
     });
 
     port

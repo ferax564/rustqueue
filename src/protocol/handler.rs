@@ -8,15 +8,28 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
+use crate::config::AuthConfig;
 use crate::engine::queue::{JobOptions, QueueManager};
 
 /// Handle a single TCP connection, processing commands until the client disconnects.
-pub async fn handle_connection(stream: TcpStream, manager: Arc<QueueManager>) {
+///
+/// When `auth_config.enabled` is `true`, the first command on the connection must
+/// be `{"cmd":"auth","token":"<bearer-token>"}`. All subsequent commands are allowed
+/// only after successful authentication. When auth is disabled, all commands are
+/// allowed without an auth handshake.
+pub async fn handle_connection(
+    stream: TcpStream,
+    manager: Arc<QueueManager>,
+    auth_config: &AuthConfig,
+) {
     let peer = stream
         .peer_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     debug!(peer = %peer, "New TCP connection");
+
+    // If auth is disabled, the connection starts as authenticated.
+    let mut authenticated = !auth_config.enabled;
 
     let (reader, mut writer) = stream.into_split();
     let mut reader = BufReader::new(reader);
@@ -30,7 +43,11 @@ pub async fn handle_connection(stream: TcpStream, manager: Arc<QueueManager>) {
                 break;
             }
             Ok(_) => {
-                let response = process_line(&line, &manager).await;
+                let response = if authenticated {
+                    process_line(&line, &manager).await
+                } else {
+                    process_auth_line(&line, auth_config, &mut authenticated)
+                };
                 let mut resp_bytes = serde_json::to_string(&response).unwrap_or_else(|e| {
                     json!({"ok": false, "error": {"code": "INTERNAL_ERROR", "message": e.to_string()}})
                         .to_string()
@@ -46,6 +63,48 @@ pub async fn handle_connection(stream: TcpStream, manager: Arc<QueueManager>) {
                 break;
             }
         }
+    }
+}
+
+/// Process a line when the connection is not yet authenticated.
+///
+/// Only the `auth` command is accepted. If the token is valid, `authenticated` is
+/// set to `true` and `{"ok":true}` is returned. Any other command returns an
+/// `UNAUTHORIZED` error prompting the client to authenticate first.
+fn process_auth_line(line: &str, auth_config: &AuthConfig, authenticated: &mut bool) -> Value {
+    let parsed: Value = match serde_json::from_str(line.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            return error_response("PARSE_ERROR", &format!("Invalid JSON: {e}"));
+        }
+    };
+
+    let cmd = match parsed.get("cmd").and_then(|v| v.as_str()) {
+        Some(c) => c,
+        None => {
+            return error_response("VALIDATION_ERROR", "Missing or invalid 'cmd' field");
+        }
+    };
+
+    if cmd != "auth" {
+        return error_response(
+            "UNAUTHORIZED",
+            "Authentication required. Send {\"cmd\":\"auth\",\"token\":\"...\"} first",
+        );
+    }
+
+    let token = match parsed.get("token").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => {
+            return error_response("VALIDATION_ERROR", "Missing 'token' field in auth command");
+        }
+    };
+
+    if auth_config.tokens.contains(&token.to_string()) {
+        *authenticated = true;
+        json!({"ok": true})
+    } else {
+        error_response("UNAUTHORIZED", "Invalid authentication token")
     }
 }
 

@@ -251,9 +251,11 @@ async fn main() -> anyhow::Result<()> {
                     .expect("HTTP server error");
             });
 
-            // 11. Spawn TCP server
+            // 11. Spawn TCP server (with auth config for connection-level authentication)
+            let tcp_auth_config = config.auth.clone();
             let tcp_handle = tokio::spawn(async move {
-                rustqueue::protocol::start_tcp_server(tcp_listener, queue_manager).await;
+                rustqueue::protocol::start_tcp_server(tcp_listener, queue_manager, tcp_auth_config)
+                    .await;
             });
 
             // 12. Wait for shutdown signal (Ctrl+C)
