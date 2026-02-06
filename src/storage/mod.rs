@@ -1,6 +1,9 @@
 pub mod memory;
 pub mod redb;
 
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -8,6 +11,9 @@ use crate::engine::models::{Job, JobId, QueueCounts, Schedule};
 
 pub use self::memory::MemoryStorage;
 pub use self::redb::RedbStorage;
+
+#[cfg(feature = "sqlite")]
+pub use self::sqlite::SqliteStorage;
 
 /// Trait abstracting the storage layer, allowing multiple backend implementations.
 #[async_trait]

@@ -15,6 +15,9 @@ use uuid::Uuid;
 use rustqueue::engine::models::{Job, JobState, Schedule};
 use rustqueue::storage::{MemoryStorage, RedbStorage, StorageBackend};
 
+#[cfg(feature = "sqlite")]
+use rustqueue::storage::SqliteStorage;
+
 /// Helper: create a job in the given queue with sensible defaults.
 fn test_job(queue: &str) -> Job {
     Job::new(queue, "test-job", json!({"key": "value"}))
@@ -402,4 +405,15 @@ backend_tests!(redb_backend, {
     let path = tmp.path().to_owned();
     drop(tmp);
     RedbStorage::new(&path).unwrap()
+});
+
+// -- Instantiate for SqliteStorage --------------------------------------------
+
+#[cfg(feature = "sqlite")]
+backend_tests!(sqlite_backend, {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.db");
+    // Leak the tempdir so it outlives the test (the Connection holds the file open).
+    std::mem::forget(dir);
+    SqliteStorage::new(&path).unwrap()
 });

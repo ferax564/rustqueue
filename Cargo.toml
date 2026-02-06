@@ -33,6 +33,7 @@ serde_json = "1"
 
 # Storage - embedded (default)
 redb = "2"
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -83,6 +84,7 @@ predicates = "3"
 [features]
 default = []
 tls = ["rustls", "tokio-rustls"]
+sqlite = ["rusqlite"]
 
 [[bench]]
 name = "throughput"
