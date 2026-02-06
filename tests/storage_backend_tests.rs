@@ -435,7 +435,58 @@ macro_rules! backend_tests {
                 );
             }
 
-            // ── 16. remove_dlq_before ───────────────────────────────────
+            // ── 16. get_schedule_found_and_not_found ────────────────────
+
+            #[tokio::test]
+            async fn get_schedule_found_and_not_found() {
+                let storage = $factory;
+
+                // Upsert a schedule.
+                let schedule = test_schedule("hourly-sync", "sync-q");
+                storage.upsert_schedule(&schedule).await.unwrap();
+
+                // Get by name -- should be found.
+                let found = storage.get_schedule("hourly-sync").await.unwrap();
+                assert!(found.is_some(), "upserted schedule should be found by name");
+                let found = found.unwrap();
+                assert_eq!(found.name, "hourly-sync");
+                assert_eq!(found.queue, "sync-q");
+
+                // Get nonexistent -- should return None.
+                let missing = storage.get_schedule("nonexistent").await.unwrap();
+                assert!(missing.is_none(), "nonexistent schedule should return None");
+            }
+
+            // ── 17. list_all_schedules_includes_paused ─────────────────────
+
+            #[tokio::test]
+            async fn list_all_schedules_includes_paused() {
+                let storage = $factory;
+
+                // Upsert an active schedule.
+                let active = test_schedule("active-sched", "work-q");
+                storage.upsert_schedule(&active).await.unwrap();
+
+                // Upsert a paused schedule.
+                let mut paused = test_schedule("paused-sched", "work-q");
+                paused.paused = true;
+                storage.upsert_schedule(&paused).await.unwrap();
+
+                // list_all_schedules should return both.
+                let all = storage.list_all_schedules().await.unwrap();
+                assert_eq!(all.len(), 2, "list_all_schedules should return both active and paused");
+
+                let mut names: Vec<String> = all.iter().map(|s| s.name.clone()).collect();
+                names.sort();
+                assert_eq!(names, vec!["active-sched", "paused-sched"]);
+
+                // Contrast with get_active_schedules which should only return 1.
+                let active_only = storage.get_active_schedules().await.unwrap();
+                assert_eq!(active_only.len(), 1, "get_active_schedules should exclude paused");
+                assert_eq!(active_only[0].name, "active-sched");
+            }
+
+            // ── 18. remove_dlq_before ───────────────────────────────────
 
             #[tokio::test]
             async fn remove_dlq_before() {

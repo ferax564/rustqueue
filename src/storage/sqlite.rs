@@ -401,6 +401,38 @@ impl StorageBackend for SqliteStorage {
         Ok(())
     }
 
+    async fn get_schedule(&self, name: &str) -> Result<Option<Schedule>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare("SELECT data FROM schedules WHERE name = ?1")?;
+        let result = stmt.query_row((name,), |row| {
+            let data: String = row.get(0)?;
+            Ok(data)
+        });
+
+        match result {
+            Ok(data) => Ok(Some(serde_json::from_str(&data)?)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn list_all_schedules(&self) -> Result<Vec<Schedule>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare("SELECT data FROM schedules")?;
+        let mut schedules = Vec::new();
+        let mut rows = stmt.query(())?;
+
+        while let Some(row) = rows.next()? {
+            let data: String = row.get(0)?;
+            let schedule: Schedule = serde_json::from_str(&data)?;
+            schedules.push(schedule);
+        }
+
+        Ok(schedules)
+    }
+
     // -- Discovery ------------------------------------------------------------
 
     async fn list_queue_names(&self) -> Result<Vec<String>> {

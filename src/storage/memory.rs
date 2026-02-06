@@ -252,6 +252,16 @@ impl StorageBackend for MemoryStorage {
         Ok(())
     }
 
+    async fn get_schedule(&self, name: &str) -> Result<Option<Schedule>> {
+        let schedules = self.schedules.read().unwrap();
+        Ok(schedules.get(name).cloned())
+    }
+
+    async fn list_all_schedules(&self) -> Result<Vec<Schedule>> {
+        let schedules = self.schedules.read().unwrap();
+        Ok(schedules.values().cloned().collect())
+    }
+
     // ── Discovery ────────────────────────────────────────────────────────
 
     async fn list_queue_names(&self) -> Result<Vec<String>> {

@@ -365,6 +365,34 @@ impl StorageBackend for RedbStorage {
         Ok(())
     }
 
+    async fn get_schedule(&self, name: &str) -> Result<Option<Schedule>> {
+        let key = name.as_bytes();
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(SCHEDULES_TABLE)?;
+
+        match table.get(key)? {
+            Some(value) => {
+                let schedule: Schedule = serde_json::from_slice(value.value())
+                    .context("failed to deserialize schedule")?;
+                Ok(Some(schedule))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn list_all_schedules(&self) -> Result<Vec<Schedule>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(SCHEDULES_TABLE)?;
+
+        let mut schedules = Vec::new();
+        for entry in table.iter()? {
+            let (_, value) = entry?;
+            let schedule: Schedule = serde_json::from_slice(value.value())?;
+            schedules.push(schedule);
+        }
+        Ok(schedules)
+    }
+
     // ── Discovery ────────────────────────────────────────────────────────
 
     async fn list_queue_names(&self) -> Result<Vec<String>> {

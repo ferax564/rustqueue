@@ -511,6 +511,39 @@ impl StorageBackend for PostgresStorage {
         Ok(())
     }
 
+    async fn get_schedule(&self, name: &str) -> Result<Option<Schedule>> {
+        let row: Option<(serde_json::Value,)> =
+            sqlx::query_as("SELECT data FROM schedules WHERE name = $1")
+                .bind(name)
+                .fetch_optional(&self.pool)
+                .await
+                .context("failed to fetch schedule")?;
+
+        match row {
+            Some((data,)) => {
+                let schedule: Schedule = serde_json::from_value(data)
+                    .context("failed to deserialize schedule from JSONB")?;
+                Ok(Some(schedule))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn list_all_schedules(&self) -> Result<Vec<Schedule>> {
+        let rows: Vec<(serde_json::Value,)> =
+            sqlx::query_as("SELECT data FROM schedules")
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to fetch all schedules")?;
+
+        let mut schedules = Vec::with_capacity(rows.len());
+        for (data,) in rows {
+            schedules.push(serde_json::from_value(data)?);
+        }
+
+        Ok(schedules)
+    }
+
     // -- Discovery ------------------------------------------------------------
 
     async fn list_queue_names(&self) -> Result<Vec<String>> {
