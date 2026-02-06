@@ -20,7 +20,7 @@ use std::sync::Arc;
 use crate::engine::error::RustQueueError;
 use crate::engine::models::{Job, JobId, QueueCounts};
 use crate::engine::queue::{FailResult, JobOptions, QueueInfo, QueueManager};
-use crate::storage::{MemoryStorage, RedbStorage, StorageBackend};
+use crate::storage::{BufferedRedbConfig, BufferedRedbStorage, MemoryStorage, RedbStorage, StorageBackend};
 
 /// High-level client for RustQueue, usable as an embedded library.
 ///
@@ -38,6 +38,7 @@ pub struct RustQueue {
 /// Call [`.build()`](RustQueueBuilder::build) to finalise.
 pub struct RustQueueBuilder {
     storage: Arc<dyn StorageBackend>,
+    buffered_config: Option<BufferedRedbConfig>,
 }
 
 impl RustQueue {
@@ -48,6 +49,7 @@ impl RustQueue {
     pub fn memory() -> RustQueueBuilder {
         RustQueueBuilder {
             storage: Arc::new(MemoryStorage::new()),
+            buffered_config: None,
         }
     }
 
@@ -57,15 +59,32 @@ impl RustQueue {
     /// Data survives process restarts.
     pub fn redb(path: impl AsRef<Path>) -> anyhow::Result<RustQueueBuilder> {
         let storage = Arc::new(RedbStorage::new(path)?);
-        Ok(RustQueueBuilder { storage })
+        Ok(RustQueueBuilder {
+            storage,
+            buffered_config: None,
+        })
     }
 }
 
 impl RustQueueBuilder {
+    /// Enable write coalescing with the given configuration.
+    ///
+    /// When enabled, single `insert_job` and `complete_job` calls are buffered
+    /// and flushed as batches for significantly higher throughput.
+    pub fn with_write_coalescing(mut self, config: BufferedRedbConfig) -> Self {
+        self.buffered_config = Some(config);
+        self
+    }
+
     /// Build the [`RustQueue`] instance.
     pub fn build(self) -> anyhow::Result<RustQueue> {
+        let storage: Arc<dyn StorageBackend> = if let Some(config) = self.buffered_config {
+            Arc::new(BufferedRedbStorage::new(self.storage, config))
+        } else {
+            self.storage
+        };
         Ok(RustQueue {
-            manager: QueueManager::new(self.storage),
+            manager: QueueManager::new(storage),
         })
     }
 }

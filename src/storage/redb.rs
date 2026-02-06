@@ -26,6 +26,10 @@ const JOBS_QUEUE_STATE_PRIORITY_INDEX: TableDefinition<&[u8], &[u8]> =
 const JOBS_STATE_UPDATED_INDEX: TableDefinition<&[u8], &[u8]> =
     TableDefinition::new("jobs_state_updated_idx");
 
+/// Secondary index: queue/unique_key -> job_id (only non-terminal states)
+const JOBS_UNIQUE_KEY_INDEX: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("jobs_unique_key_idx");
+
 /// Schedule storage: key = schedule name bytes, value = JSON bytes.
 const SCHEDULES_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("schedules");
 
@@ -116,6 +120,28 @@ fn prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
+fn is_terminal_state(state: JobState) -> bool {
+    matches!(
+        state,
+        JobState::Completed | JobState::Dlq | JobState::Cancelled
+    )
+}
+
+fn unique_key_index_key(queue: &str, unique_key: &str) -> Vec<u8> {
+    let queue_bytes = queue.as_bytes();
+    let key_bytes = unique_key.as_bytes();
+    let mut key = Vec::with_capacity(4 + queue_bytes.len() + key_bytes.len());
+    key.extend_from_slice(&(queue_bytes.len() as u32).to_be_bytes());
+    key.extend_from_slice(queue_bytes);
+    key.extend_from_slice(key_bytes);
+    key
+}
+
+fn decode_i64_lex(bytes: &[u8; 8]) -> i64 {
+    let val = u64::from_be_bytes(*bytes);
+    (val ^ 0x8000_0000_0000_0000) as i64
+}
+
 fn parse_index_job_id(bytes: &[u8]) -> Result<JobId> {
     JobId::from_slice(bytes).context("invalid job id bytes in index")
 }
@@ -123,6 +149,7 @@ fn parse_index_job_id(bytes: &[u8]) -> Result<JobId> {
 fn insert_job_indexes(
     queue_index: &mut Table<'_, &[u8], &[u8]>,
     state_index: &mut Table<'_, &[u8], &[u8]>,
+    unique_key_index: &mut Table<'_, &[u8], &[u8]>,
     job: &Job,
 ) -> Result<()> {
     let queue_key = queue_state_priority_key(job);
@@ -131,12 +158,20 @@ fn insert_job_indexes(
 
     queue_index.insert(queue_key.as_slice(), id)?;
     state_index.insert(state_key.as_slice(), id)?;
+
+    if let Some(ref ukey) = job.unique_key {
+        if !is_terminal_state(job.state) {
+            let uk_key = unique_key_index_key(&job.queue, ukey);
+            unique_key_index.insert(uk_key.as_slice(), id)?;
+        }
+    }
     Ok(())
 }
 
 fn remove_job_indexes(
     queue_index: &mut Table<'_, &[u8], &[u8]>,
     state_index: &mut Table<'_, &[u8], &[u8]>,
+    unique_key_index: &mut Table<'_, &[u8], &[u8]>,
     job: &Job,
 ) -> Result<()> {
     let queue_key = queue_state_priority_key(job);
@@ -144,6 +179,11 @@ fn remove_job_indexes(
 
     queue_index.remove(queue_key.as_slice())?;
     state_index.remove(state_key.as_slice())?;
+
+    if let Some(ref ukey) = job.unique_key {
+        let uk_key = unique_key_index_key(&job.queue, ukey);
+        unique_key_index.remove(uk_key.as_slice())?;
+    }
     Ok(())
 }
 
@@ -151,6 +191,7 @@ fn complete_job_in_tables(
     jobs: &mut Table<'_, &[u8], &[u8]>,
     queue_index: &mut Table<'_, &[u8], &[u8]>,
     state_index: &mut Table<'_, &[u8], &[u8]>,
+    unique_key_index: &mut Table<'_, &[u8], &[u8]>,
     id: JobId,
     result: Option<serde_json::Value>,
 ) -> Result<CompleteJobOutcome> {
@@ -175,7 +216,7 @@ fn complete_job_in_tables(
     job.updated_at = now;
     job.result = result;
 
-    remove_job_indexes(queue_index, state_index, &previous)?;
+    remove_job_indexes(queue_index, state_index, unique_key_index, &previous)?;
 
     if job.remove_on_complete {
         jobs.remove(key)?;
@@ -183,7 +224,7 @@ fn complete_job_in_tables(
         let value = serde_json::to_vec(&job)
             .context("failed to serialize completed job during complete_job")?;
         jobs.insert(key, value.as_slice())?;
-        insert_job_indexes(queue_index, state_index, &job)?;
+        insert_job_indexes(queue_index, state_index, unique_key_index, &job)?;
     }
 
     Ok(CompleteJobOutcome::Completed(job))
@@ -219,6 +260,7 @@ impl RedbStorage {
             let _jobs = write_txn.open_table(JOBS_TABLE)?;
             let _queue_state_priority = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
             let _state_updated = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+            let _unique_key = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
             let _schedules = write_txn.open_table(SCHEDULES_TABLE)?;
         }
         write_txn.commit()?;
@@ -260,15 +302,22 @@ impl RedbStorage {
             let jobs = write_txn.open_table(JOBS_TABLE)?;
             let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
             let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+            let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
 
             queue_index.retain(|_, _| false)?;
             state_index.retain(|_, _| false)?;
+            unique_key_index.retain(|_, _| false)?;
 
             for entry in jobs.iter()? {
                 let (_, value) = entry?;
                 let job: Job = serde_json::from_slice(value.value())
                     .context("failed to deserialize job while rebuilding indexes")?;
-                insert_job_indexes(&mut queue_index, &mut state_index, &job)?;
+                insert_job_indexes(
+                    &mut queue_index,
+                    &mut state_index,
+                    &mut unique_key_index,
+                    &job,
+                )?;
             }
         }
         write_txn.commit()?;
@@ -305,9 +354,10 @@ impl StorageBackend for RedbStorage {
                 let mut jobs = write_txn.open_table(JOBS_TABLE)?;
                 let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
                 let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+                let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
 
                 jobs.insert(key, value.as_slice())?;
-                insert_job_indexes(&mut queue_index, &mut state_index, &job)?;
+                insert_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &job)?;
             }
             write_txn.commit()?;
             Ok(id)
@@ -324,13 +374,14 @@ impl StorageBackend for RedbStorage {
                 let mut jobs_table = write_txn.open_table(JOBS_TABLE)?;
                 let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
                 let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+                let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
                 let mut ids = Vec::with_capacity(jobs.len());
                 for job in &jobs {
                     let id = job.id;
                     let key = id.as_bytes().as_slice();
                     let value = serde_json::to_vec(job).context("failed to serialize job")?;
                     jobs_table.insert(key, value.as_slice())?;
-                    insert_job_indexes(&mut queue_index, &mut state_index, job)?;
+                    insert_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, job)?;
                     ids.push(id);
                 }
                 ids
@@ -371,6 +422,7 @@ impl StorageBackend for RedbStorage {
                 let mut jobs = write_txn.open_table(JOBS_TABLE)?;
                 let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
                 let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+                let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
 
                 let previous = jobs
                     .get(key)?
@@ -381,11 +433,11 @@ impl StorageBackend for RedbStorage {
                     .transpose()?;
 
                 if let Some(previous) = previous.as_ref() {
-                    remove_job_indexes(&mut queue_index, &mut state_index, previous)?;
+                    remove_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, previous)?;
                 }
 
                 jobs.insert(key, value.as_slice())?;
-                insert_job_indexes(&mut queue_index, &mut state_index, &job)?;
+                insert_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &job)?;
             }
             write_txn.commit()?;
             Ok(())
@@ -402,6 +454,7 @@ impl StorageBackend for RedbStorage {
                 let mut jobs = write_txn.open_table(JOBS_TABLE)?;
                 let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
                 let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+                let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
 
                 let previous = jobs
                     .get(key)?
@@ -413,7 +466,7 @@ impl StorageBackend for RedbStorage {
 
                 jobs.remove(key)?;
                 if let Some(previous) = previous.as_ref() {
-                    remove_job_indexes(&mut queue_index, &mut state_index, previous)?;
+                    remove_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, previous)?;
                 }
             }
             write_txn.commit()?;
@@ -434,7 +487,8 @@ impl StorageBackend for RedbStorage {
                 let mut jobs = write_txn.open_table(JOBS_TABLE)?;
                 let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
                 let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
-                complete_job_in_tables(&mut jobs, &mut queue_index, &mut state_index, id, result)?
+                let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
+                complete_job_in_tables(&mut jobs, &mut queue_index, &mut state_index, &mut unique_key_index, id, result)?
             };
             write_txn.commit()?;
             Ok(outcome)
@@ -458,6 +512,7 @@ impl StorageBackend for RedbStorage {
                 let mut jobs = write_txn.open_table(JOBS_TABLE)?;
                 let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
                 let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+                let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
                 let mut outcomes = Vec::with_capacity(items.len());
 
                 for (id, result) in items {
@@ -465,6 +520,7 @@ impl StorageBackend for RedbStorage {
                         &mut jobs,
                         &mut queue_index,
                         &mut state_index,
+                        &mut unique_key_index,
                         id,
                         result,
                     )?);
@@ -492,6 +548,7 @@ impl StorageBackend for RedbStorage {
                 let mut jobs_table = write_txn.open_table(JOBS_TABLE)?;
                 let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
                 let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+                let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
 
                 let waiting_prefix = queue_state_prefix(&queue, JobState::Waiting);
                 let waiting_end = prefix_upper_bound(&waiting_prefix);
@@ -542,8 +599,8 @@ impl StorageBackend for RedbStorage {
                     let value = serde_json::to_vec(&job)?;
                     jobs_table.insert(key, value.as_slice())?;
 
-                    remove_job_indexes(&mut queue_index, &mut state_index, &previous)?;
-                    insert_job_indexes(&mut queue_index, &mut state_index, &job)?;
+                    remove_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &previous)?;
+                    insert_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &job)?;
                     activated.push(job);
                 }
 
@@ -665,6 +722,7 @@ impl StorageBackend for RedbStorage {
                 let mut jobs_table = write_txn.open_table(JOBS_TABLE)?;
                 let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
                 let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+                let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
 
                 let previous = jobs_table
                     .get(key)?
@@ -675,9 +733,9 @@ impl StorageBackend for RedbStorage {
                     .transpose()?
                     .unwrap_or(job);
 
-                remove_job_indexes(&mut queue_index, &mut state_index, &previous)?;
+                remove_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &previous)?;
                 jobs_table.insert(key, value.as_slice())?;
-                insert_job_indexes(&mut queue_index, &mut state_index, &updated)?;
+                insert_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &updated)?;
             }
             write_txn.commit()?;
             Ok(())
@@ -737,25 +795,51 @@ impl StorageBackend for RedbStorage {
                 let mut jobs_table = write_txn.open_table(JOBS_TABLE)?;
                 let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
                 let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+                let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
 
-                // Collect jobs first (cannot mutate while iterating).
-                let mut to_remove: Vec<Job> = Vec::new();
-                for entry in jobs_table.iter()? {
-                    let (_, value) = entry?;
-                    let job: Job = serde_json::from_slice(value.value())?;
-                    if job.state == JobState::Completed {
-                        if let Some(completed_at) = job.completed_at {
-                            if completed_at < before {
-                                to_remove.push(job);
+                // Scan only Completed entries from the state index (O(K) not O(N))
+                let completed_prefix = state_prefix(JobState::Completed);
+                let completed_end = prefix_upper_bound(&completed_prefix);
+
+                let range = if let Some(ref end) = completed_end {
+                    state_index.range(completed_prefix.as_slice()..end.as_slice())?
+                } else {
+                    state_index.range(completed_prefix.as_slice()..)?
+                };
+
+                // Collect candidate IDs — we check completed_at on the actual job
+                // because updated_at and completed_at can differ in edge cases.
+                let mut candidate_ids: Vec<JobId> = Vec::new();
+                for entry in range {
+                    let (_, index_value) = entry?;
+                    let id = parse_index_job_id(index_value.value())?;
+                    candidate_ids.push(id);
+                }
+
+                let mut count = 0u64;
+                for id in &candidate_ids {
+                    let job = {
+                        let stored = jobs_table.get(id.as_bytes().as_slice())?;
+                        stored
+                            .map(|s| serde_json::from_slice::<Job>(s.value()))
+                            .transpose()?
+                    };
+                    if let Some(job) = job {
+                        if job.state == JobState::Completed {
+                            if let Some(completed_at) = job.completed_at {
+                                if completed_at < before {
+                                    remove_job_indexes(
+                                        &mut queue_index,
+                                        &mut state_index,
+                                        &mut unique_key_index,
+                                        &job,
+                                    )?;
+                                    jobs_table.remove(id.as_bytes().as_slice())?;
+                                    count += 1;
+                                }
                             }
                         }
                     }
-                }
-
-                let count = to_remove.len() as u64;
-                for job in &to_remove {
-                    jobs_table.remove(job.id.as_bytes().as_slice())?;
-                    remove_job_indexes(&mut queue_index, &mut state_index, job)?;
                 }
                 count
             };
@@ -773,20 +857,43 @@ impl StorageBackend for RedbStorage {
                 let mut jobs_table = write_txn.open_table(JOBS_TABLE)?;
                 let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
                 let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+                let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
 
-                let mut to_remove: Vec<Job> = Vec::new();
-                for entry in jobs_table.iter()? {
-                    let (_, value) = entry?;
-                    let job: Job = serde_json::from_slice(value.value())?;
-                    if job.state == JobState::Failed && job.updated_at < before {
-                        to_remove.push(job);
+                let failed_prefix = state_prefix(JobState::Failed);
+                let failed_end = prefix_upper_bound(&failed_prefix);
+                let cutoff_micros = before.timestamp_micros();
+
+                let range = if let Some(ref end) = failed_end {
+                    state_index.range(failed_prefix.as_slice()..end.as_slice())?
+                } else {
+                    state_index.range(failed_prefix.as_slice()..)?
+                };
+
+                let mut to_remove_ids: Vec<JobId> = Vec::new();
+                for entry in range {
+                    let (index_key, index_value) = entry?;
+                    let key_bytes = index_key.value();
+                    if key_bytes.len() >= 9 {
+                        let updated_micros =
+                            decode_i64_lex(key_bytes[1..9].try_into().unwrap());
+                        if updated_micros >= cutoff_micros {
+                            break;
+                        }
                     }
+                    let id = parse_index_job_id(index_value.value())?;
+                    to_remove_ids.push(id);
                 }
 
-                let count = to_remove.len() as u64;
-                for job in &to_remove {
-                    jobs_table.remove(job.id.as_bytes().as_slice())?;
-                    remove_job_indexes(&mut queue_index, &mut state_index, job)?;
+                let count = to_remove_ids.len() as u64;
+                for id in &to_remove_ids {
+                    let job = {
+                        let stored = jobs_table.get(id.as_bytes().as_slice())?;
+                        stored.map(|s| serde_json::from_slice::<Job>(s.value())).transpose()?
+                    };
+                    if let Some(job) = job {
+                        remove_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &job)?;
+                        jobs_table.remove(id.as_bytes().as_slice())?;
+                    }
                 }
                 count
             };
@@ -804,20 +911,43 @@ impl StorageBackend for RedbStorage {
                 let mut jobs_table = write_txn.open_table(JOBS_TABLE)?;
                 let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
                 let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+                let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
 
-                let mut to_remove: Vec<Job> = Vec::new();
-                for entry in jobs_table.iter()? {
-                    let (_, value) = entry?;
-                    let job: Job = serde_json::from_slice(value.value())?;
-                    if job.state == JobState::Dlq && job.updated_at < before {
-                        to_remove.push(job);
+                let dlq_prefix = state_prefix(JobState::Dlq);
+                let dlq_end = prefix_upper_bound(&dlq_prefix);
+                let cutoff_micros = before.timestamp_micros();
+
+                let range = if let Some(ref end) = dlq_end {
+                    state_index.range(dlq_prefix.as_slice()..end.as_slice())?
+                } else {
+                    state_index.range(dlq_prefix.as_slice()..)?
+                };
+
+                let mut to_remove_ids: Vec<JobId> = Vec::new();
+                for entry in range {
+                    let (index_key, index_value) = entry?;
+                    let key_bytes = index_key.value();
+                    if key_bytes.len() >= 9 {
+                        let updated_micros =
+                            decode_i64_lex(key_bytes[1..9].try_into().unwrap());
+                        if updated_micros >= cutoff_micros {
+                            break;
+                        }
                     }
+                    let id = parse_index_job_id(index_value.value())?;
+                    to_remove_ids.push(id);
                 }
 
-                let count = to_remove.len() as u64;
-                for job in &to_remove {
-                    jobs_table.remove(job.id.as_bytes().as_slice())?;
-                    remove_job_indexes(&mut queue_index, &mut state_index, job)?;
+                let count = to_remove_ids.len() as u64;
+                for id in &to_remove_ids {
+                    let job = {
+                        let stored = jobs_table.get(id.as_bytes().as_slice())?;
+                        stored.map(|s| serde_json::from_slice::<Job>(s.value())).transpose()?
+                    };
+                    if let Some(job) = job {
+                        remove_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &job)?;
+                        jobs_table.remove(id.as_bytes().as_slice())?;
+                    }
                 }
                 count
             };
@@ -921,13 +1051,39 @@ impl StorageBackend for RedbStorage {
     async fn list_queue_names(&self) -> Result<Vec<String>> {
         self.run_blocking("list_queue_names", move |db| {
             let read_txn = db.begin_read()?;
-            let table = read_txn.open_table(JOBS_TABLE)?;
+            let queue_index = read_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
 
             let mut names = std::collections::BTreeSet::new();
-            for entry in table.iter()? {
-                let (_, value) = entry?;
-                let job: Job = serde_json::from_slice(value.value())?;
-                names.insert(job.queue);
+            let mut prev_queue_bytes: Option<Vec<u8>> = None;
+
+            for entry in queue_index.iter()? {
+                let (key, _) = entry?;
+                let key_bytes = key.value();
+                if key_bytes.len() < 4 {
+                    continue;
+                }
+                let queue_len = u32::from_be_bytes([
+                    key_bytes[0],
+                    key_bytes[1],
+                    key_bytes[2],
+                    key_bytes[3],
+                ]) as usize;
+                if key_bytes.len() < 4 + queue_len {
+                    continue;
+                }
+                let queue_bytes = &key_bytes[4..4 + queue_len];
+
+                // Keys are sorted by queue name, so skip duplicates cheaply
+                if let Some(ref prev) = prev_queue_bytes {
+                    if prev.as_slice() == queue_bytes {
+                        continue;
+                    }
+                }
+                prev_queue_bytes = Some(queue_bytes.to_vec());
+
+                if let Ok(name) = std::str::from_utf8(queue_bytes) {
+                    names.insert(name.to_string());
+                }
             }
             Ok(names.into_iter().collect())
         })
@@ -939,22 +1095,31 @@ impl StorageBackend for RedbStorage {
         let key = key.to_string();
         self.run_blocking("get_job_by_unique_key", move |db| {
             let read_txn = db.begin_read()?;
-            let table = read_txn.open_table(JOBS_TABLE)?;
+            let unique_index = read_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
+            let jobs_table = read_txn.open_table(JOBS_TABLE)?;
 
-            for entry in table.iter()? {
-                let (_, value) = entry?;
-                let job: Job = serde_json::from_slice(value.value())?;
-                if job.queue == queue
-                    && job.unique_key.as_deref() == Some(key.as_str())
-                    && !matches!(
-                        job.state,
-                        JobState::Completed | JobState::Dlq | JobState::Cancelled
-                    )
-                {
-                    return Ok(Some(job));
+            let uk_key = unique_key_index_key(&queue, &key);
+            match unique_index.get(uk_key.as_slice())? {
+                Some(value) => {
+                    let id = parse_index_job_id(value.value())?;
+                    let stored = jobs_table.get(id.as_bytes().as_slice())?;
+                    let Some(stored) = stored else {
+                        return Ok(None);
+                    };
+                    let job: Job = serde_json::from_slice(stored.value())
+                        .context("failed to deserialize job from unique key index")?;
+                    // Verify non-terminal and matches
+                    if !is_terminal_state(job.state)
+                        && job.queue == queue
+                        && job.unique_key.as_deref() == Some(key.as_str())
+                    {
+                        Ok(Some(job))
+                    } else {
+                        Ok(None)
+                    }
                 }
+                None => Ok(None),
             }
-            Ok(None)
         })
         .await
     }

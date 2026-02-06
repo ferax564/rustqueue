@@ -1,5 +1,9 @@
 //! Throughput benchmarks for RustQueue push / pull / ack operations.
+//!
+//! Includes both raw `RedbStorage` baselines and `BufferedRedbStorage` variants
+//! to measure write coalescing impact.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -7,7 +11,7 @@ use serde_json::json;
 use tempfile::tempdir;
 
 use rustqueue::engine::queue::QueueManager;
-use rustqueue::storage::RedbStorage;
+use rustqueue::storage::{BufferedRedbConfig, BufferedRedbStorage, RedbStorage};
 
 /// Create a fresh `QueueManager` backed by a temporary redb database.
 ///
@@ -20,6 +24,26 @@ fn temp_manager() -> (QueueManager, tempfile::TempDir) {
     let mgr = QueueManager::new(Arc::new(storage));
     (mgr, dir)
 }
+
+/// Create a `QueueManager` backed by `BufferedRedbStorage` for write coalescing.
+///
+/// Must be called from within a tokio runtime (the buffer spawns a flush task).
+fn temp_buffered_manager() -> (QueueManager, tempfile::TempDir) {
+    let dir = tempdir().expect("failed to create tempdir");
+    let db_path = dir.path().join("bench-buffered.redb");
+    let inner = Arc::new(RedbStorage::new(&db_path).expect("failed to create RedbStorage"));
+    let buffered = BufferedRedbStorage::new(
+        inner,
+        BufferedRedbConfig {
+            interval_ms: 10,
+            max_batch: 100,
+        },
+    );
+    let mgr = QueueManager::new(Arc::new(buffered));
+    (mgr, dir)
+}
+
+// ── Baseline: raw RedbStorage ────────────────────────────────────────────────
 
 fn push_single_job(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -101,10 +125,101 @@ fn batch_push(c: &mut Criterion) {
     group.finish();
 }
 
+// ── Concurrent push: raw vs buffered ─────────────────────────────────────────
+//
+// Write coalescing only helps under concurrency — multiple callers pushing
+// simultaneously get batched into one fsync. Sequential benchmarks always show
+// the buffered variant as slower (flush interval overhead). These concurrent
+// benchmarks spawn N tasks that each push a job, measuring wall-clock time for
+// all to complete. This is the realistic server scenario (many TCP connections
+// pushing simultaneously).
+
+fn concurrent_push_raw(c: &mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut group = c.benchmark_group("concurrent_push_raw");
+
+    for concurrency in [10u64, 50, 100] {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(concurrency),
+            &concurrency,
+            |b, &concurrency| {
+                let (mgr, _dir) = temp_manager();
+                let mgr = Arc::new(mgr);
+                let counter = Arc::new(AtomicU64::new(0));
+
+                b.to_async(&rt).iter(|| {
+                    let mgr = Arc::clone(&mgr);
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        let mut handles = Vec::with_capacity(concurrency as usize);
+                        for _ in 0..concurrency {
+                            let mgr = Arc::clone(&mgr);
+                            let n = counter.fetch_add(1, Ordering::Relaxed);
+                            handles.push(tokio::spawn(async move {
+                                let name = format!("job-{n}");
+                                mgr.push("bench", &name, json!({"n": n}), None)
+                                    .await
+                                    .expect("push failed");
+                            }));
+                        }
+                        for h in handles {
+                            h.await.expect("task panicked");
+                        }
+                    }
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn concurrent_push_buffered(c: &mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let mut group = c.benchmark_group("concurrent_push_buffered");
+
+    for concurrency in [10u64, 50, 100] {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(concurrency),
+            &concurrency,
+            |b, &concurrency| {
+                let (mgr, _dir) = rt.block_on(async { temp_buffered_manager() });
+                let mgr = Arc::new(mgr);
+                let counter = Arc::new(AtomicU64::new(0));
+
+                b.to_async(&rt).iter(|| {
+                    let mgr = Arc::clone(&mgr);
+                    let counter = Arc::clone(&counter);
+                    async move {
+                        let mut handles = Vec::with_capacity(concurrency as usize);
+                        for _ in 0..concurrency {
+                            let mgr = Arc::clone(&mgr);
+                            let n = counter.fetch_add(1, Ordering::Relaxed);
+                            handles.push(tokio::spawn(async move {
+                                let name = format!("job-{n}");
+                                mgr.push("bench", &name, json!({"n": n}), None)
+                                    .await
+                                    .expect("push failed");
+                            }));
+                        }
+                        for h in handles {
+                            h.await.expect("task panicked");
+                        }
+                    }
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     push_single_job,
     push_pull_ack_roundtrip,
-    batch_push
+    batch_push,
+    concurrent_push_raw,
+    concurrent_push_buffered
 );
 criterion_main!(benches);

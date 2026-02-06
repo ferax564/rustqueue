@@ -117,6 +117,15 @@ pub struct StorageConfig {
     /// Connection string for Postgres (only used when `backend = "postgres"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub postgres_url: Option<String>,
+    /// Enable write coalescing for redb backend (buffers single writes into batches).
+    #[serde(default)]
+    pub write_coalescing_enabled: bool,
+    /// Flush interval for write coalescing in milliseconds.
+    #[serde(default = "default_write_coalescing_interval_ms")]
+    pub write_coalescing_interval_ms: u64,
+    /// Maximum buffered writes before triggering a flush.
+    #[serde(default = "default_write_coalescing_max_batch")]
+    pub write_coalescing_max_batch: usize,
 }
 
 impl Default for StorageConfig {
@@ -126,12 +135,23 @@ impl Default for StorageConfig {
             path: default_storage_path(),
             redb_durability: RedbDurabilityConfig::default(),
             postgres_url: None,
+            write_coalescing_enabled: false,
+            write_coalescing_interval_ms: default_write_coalescing_interval_ms(),
+            write_coalescing_max_batch: default_write_coalescing_max_batch(),
         }
     }
 }
 
 fn default_storage_path() -> String {
     "./data".to_string()
+}
+
+fn default_write_coalescing_interval_ms() -> u64 {
+    10
+}
+
+fn default_write_coalescing_max_batch() -> usize {
+    100
 }
 
 // ---------------------------------------------------------------------------

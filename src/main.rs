@@ -249,7 +249,7 @@ async fn main() -> anyhow::Result<()> {
                             rustqueue::storage::RedbDurability::Eventual
                         }
                     };
-                    let s = Arc::new(rustqueue::storage::RedbStorage::new_with_durability(
+                    let redb = Arc::new(rustqueue::storage::RedbStorage::new_with_durability(
                         &db_path, durability,
                     )?);
                     info!(
@@ -257,7 +257,23 @@ async fn main() -> anyhow::Result<()> {
                         durability = ?config.storage.redb_durability,
                         "RedbStorage initialized"
                     );
-                    s
+                    if config.storage.write_coalescing_enabled {
+                        let buffered_config = rustqueue::storage::BufferedRedbConfig {
+                            interval_ms: config.storage.write_coalescing_interval_ms,
+                            max_batch: config.storage.write_coalescing_max_batch,
+                        };
+                        let s: Arc<dyn rustqueue::storage::StorageBackend> = Arc::new(
+                            rustqueue::storage::BufferedRedbStorage::new(redb, buffered_config),
+                        );
+                        info!(
+                            interval_ms = config.storage.write_coalescing_interval_ms,
+                            max_batch = config.storage.write_coalescing_max_batch,
+                            "Write coalescing enabled"
+                        );
+                        s
+                    } else {
+                        redb
+                    }
                 }
                 rustqueue::config::StorageBackendType::InMemory => {
                     let s = Arc::new(rustqueue::storage::MemoryStorage::new());

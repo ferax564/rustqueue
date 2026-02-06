@@ -45,6 +45,7 @@ src/
 ├── storage/          # Storage abstraction and backends
 │   ├── mod.rs        # StorageBackend trait (20 async methods)
 │   ├── redb.rs       # redb embedded backend (default, always compiled)
+│   ├── buffered_redb.rs # Write-coalescing wrapper around RedbStorage
 │   ├── memory.rs     # In-memory backend (always compiled, great for tests)
 │   ├── sqlite.rs     # SQLite backend (behind `sqlite` feature)
 │   └── postgres.rs   # PostgreSQL backend (behind `postgres` feature)
@@ -69,15 +70,21 @@ src/
 
 ## Known Performance Limitations
 
-The default redb backend has significant throughput limitations on single-job command paths (~334 push/sec and ~56 push+pull+ack cycles/sec in the latest single-job TCP baseline run vs 50K/30K targets). Batched TCP mode is much faster (~10.9K push/sec, ~3.7K push+pull+ack cycles/sec) but still below long-term targets.
+The default redb backend has ~348 push/sec sequential throughput. With `BufferedRedbStorage` write coalescing enabled (v0.10), concurrent push throughput reaches **~22,222 jobs/sec at 100 concurrent callers** (60.6x improvement, within 2.3x of 50K target). Batched TCP mode reaches ~10.9K push/sec, ~3.7K push+pull+ack cycles/sec.
 
-Root causes for the single-job path:
+v0.10 improvements:
 
-1. **Per-transition durability cost**: lifecycle operations still commit write transactions frequently (`insert`, `dequeue transition`, `complete/fail update`)
-2. **Write amplification on state changes**: v0.6 indexes mean transitions update main row + index rows in one transaction
+1. **BufferedRedbStorage**: Automatic write coalescing for single-job `push`/`ack` flows. Enable via `write_coalescing_enabled = true` in `[storage]`.
+2. **Unique key index**: O(1) lookup for `get_job_by_unique_key()` via `JOBS_UNIQUE_KEY_INDEX`.
+3. **Index-based cleanup**: `remove_*_before()` methods use `JOBS_STATE_UPDATED_INDEX` prefix scan instead of full table scan.
+4. **Queue names from index**: `list_queue_names()` extracts from index keys without JSON deserialization.
+
+Remaining bottlenecks:
+
+1. **Per-transition durability cost**: lifecycle operations still commit write transactions frequently (mitigated by write coalescing)
+2. **Write amplification on state changes**: v0.6 indexes mean transitions update main row + 3 index rows in one transaction
 3. **Protocol overhead**: single-job TCP path is strict request/response JSON per command (batch commands now exist but are opt-in)
-4. **Some scans remain**: cleanup/list-queues/unique-key lookups still scan broad job sets
-5. **Durability trade-off is configurable**: `storage.redb_durability` supports `none`, `eventual`, and `immediate`; benchmark impact is workload-dependent (and `none` did not consistently outperform `immediate` in same-day repeated runs)
+4. **Durability trade-off is configurable**: `storage.redb_durability` supports `none`, `eventual`, and `immediate`
 
 References:
 
@@ -88,7 +95,7 @@ References:
 
 Immediate next steps:
 
-1. Add automatic timed write coalescing for single-job `push`/`ack` flows.
+1. Re-run competitor suite with `--write-coalescing` to measure actual single-job improvement.
 2. Expand SDK/client helpers so batch commands are the default high-throughput path.
 3. Re-run competitor suite on fixed control (`batch_size=1`) and batch (`batch_size=50`) profiles for trend tracking.
 
@@ -114,10 +121,10 @@ Immediate next steps:
 
 - **Unit tests**: Each module has `#[cfg(test)] mod tests` testing individual functions.
 - **Integration tests**: `tests/` directory tests full server behavior (HTTP + TCP + WebSocket).
-- **Generic backend harness**: `tests/storage_backend_tests.rs` — `backend_tests!` macro generates 14 canonical tests per storage backend.
+- **Generic backend harness**: `tests/storage_backend_tests.rs` — `backend_tests!` macro generates 18 canonical tests per storage backend.
 - **Property tests**: State machine transitions, serialization roundtrips.
 - **Benchmarks**: `benches/throughput.rs` measures jobs/sec for push, pull, ack operations.
-- **Current counts**: ~158 tests (default features), ~184 tests (with `sqlite`).
+- **Current counts**: ~183 tests (default features), ~199 tests (with `sqlite`).
 
 ## Configuration Priority
 

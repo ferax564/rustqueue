@@ -13,7 +13,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use rustqueue::engine::models::{Job, JobState, Schedule};
-use rustqueue::storage::{MemoryStorage, RedbStorage, StorageBackend};
+use rustqueue::storage::{BufferedRedbConfig, BufferedRedbStorage, MemoryStorage, RedbStorage, StorageBackend};
 
 #[cfg(feature = "sqlite")]
 use rustqueue::storage::SqliteStorage;
@@ -540,6 +540,22 @@ backend_tests!(redb_backend, {
     let path = tmp.path().to_owned();
     drop(tmp);
     RedbStorage::new(&path).unwrap()
+});
+
+// ── Instantiate for BufferedRedbStorage ──────────────────────────────────────
+
+backend_tests!(buffered_redb_backend, {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_owned();
+    drop(tmp);
+    let inner = std::sync::Arc::new(RedbStorage::new(&path).unwrap());
+    BufferedRedbStorage::new(
+        inner,
+        BufferedRedbConfig {
+            interval_ms: 5,
+            max_batch: 10,
+        },
+    )
 });
 
 // -- Instantiate for SqliteStorage --------------------------------------------
