@@ -698,6 +698,74 @@ impl QueueManager {
             .map_err(RustQueueError::Internal)
     }
 
+    // ── Schedule execution ────────────────────────────────────────────────
+
+    /// Evaluate all active schedules and create jobs for those that are due.
+    ///
+    /// For each non-paused schedule whose `next_run_at` has passed (or is `None`
+    /// for first-run), a new job is pushed to the schedule's target queue.
+    /// The schedule's `execution_count`, `last_run_at`, `next_run_at`, and
+    /// (optionally) `paused` flag are updated accordingly.
+    ///
+    /// Returns the number of schedules that fired.
+    pub async fn execute_schedules(&self) -> Result<u32, RustQueueError> {
+        let schedules = self
+            .storage
+            .get_active_schedules()
+            .await
+            .map_err(RustQueueError::Internal)?;
+        let now = Utc::now();
+        let mut fired = 0u32;
+
+        for mut schedule in schedules {
+            let is_due = match schedule.next_run_at {
+                Some(next) => next <= now,
+                None => true, // First run
+            };
+            if !is_due {
+                continue;
+            }
+
+            // Push job
+            if let Err(e) = self
+                .push(
+                    &schedule.queue,
+                    &schedule.job_name,
+                    schedule.job_data.clone(),
+                    schedule.job_options.clone(),
+                )
+                .await
+            {
+                tracing::warn!(schedule = %schedule.name, error = %e, "Schedule job push failed");
+                continue;
+            }
+
+            fired += 1;
+            schedule.execution_count += 1;
+            schedule.last_run_at = Some(now);
+            schedule.updated_at = now;
+
+            // Compute next_run_at
+            schedule.next_run_at = compute_next_run(&schedule, now);
+
+            // Check max_executions
+            if let Some(max) = schedule.max_executions {
+                if schedule.execution_count >= max {
+                    schedule.paused = true;
+                }
+            }
+
+            if let Err(e) = self.storage.upsert_schedule(&schedule).await {
+                tracing::warn!(schedule = %schedule.name, error = %e, "Schedule update failed");
+            }
+        }
+
+        if fired > 0 {
+            tracing::info!(count = fired, "Schedules fired");
+        }
+        Ok(fired)
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────
 
     /// Fetch a job by ID, returning `JobNotFound` if it does not exist.
@@ -737,6 +805,26 @@ fn parse_ttl(ttl: &str) -> Option<Duration> {
     } else {
         None
     }
+}
+
+// ── Schedule next-run computation ─────────────────────────────────────────────
+
+/// Compute the next run time for a schedule based on its cron expression or interval.
+///
+/// - If the schedule has a `cron_expr`, parses it via `croner` and finds the
+///   next occurrence after `after`.
+/// - Otherwise, if `every_ms` is set, returns `after + every_ms`.
+/// - Returns `None` if neither is configured or the cron expression is invalid.
+fn compute_next_run(schedule: &Schedule, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    if let Some(ref cron_expr) = schedule.cron_expr {
+        if let Ok(cron) = croner::Cron::new(cron_expr).parse() {
+            return cron.find_next_occurrence(&after, false).ok();
+        }
+    }
+    if let Some(every_ms) = schedule.every_ms {
+        return Some(after + Duration::milliseconds(every_ms as i64));
+    }
+    None
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -1331,5 +1419,147 @@ mod tests {
         // The job should still exist.
         let job = mgr.get_job(id).await.unwrap();
         assert!(job.is_some(), "recent completed job should be preserved");
+    }
+
+    // ── Schedule execution tests ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_execute_interval_schedule() {
+        let mgr = memory_manager();
+
+        // Create a schedule with a 100ms interval.
+        let schedule = test_schedule(None, Some(100));
+        mgr.create_schedule(&schedule).await.unwrap();
+
+        // First execution — next_run_at is None so it fires immediately.
+        let fired = mgr.execute_schedules().await.unwrap();
+        assert_eq!(fired, 1, "schedule should fire on first call");
+
+        // Verify a job was created.
+        let counts = mgr.get_queue_stats("emails").await.unwrap();
+        assert_eq!(counts.waiting, 1, "one job should be waiting");
+
+        // Verify schedule was updated.
+        let s = mgr
+            .get_schedule("test-schedule")
+            .await
+            .unwrap()
+            .expect("schedule should exist");
+        assert_eq!(s.execution_count, 1);
+        assert!(s.last_run_at.is_some());
+        assert!(s.next_run_at.is_some());
+
+        // Wait for the interval to elapse, then fire again.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let fired = mgr.execute_schedules().await.unwrap();
+        assert_eq!(fired, 1, "schedule should fire again after interval");
+
+        let counts = mgr.get_queue_stats("emails").await.unwrap();
+        assert_eq!(counts.waiting, 2, "two jobs should be waiting");
+
+        let s = mgr
+            .get_schedule("test-schedule")
+            .await
+            .unwrap()
+            .expect("schedule should exist");
+        assert_eq!(s.execution_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_max_executions_pauses_schedule() {
+        let mgr = memory_manager();
+
+        // Create a schedule with max_executions = 2 and a 100ms interval.
+        let mut schedule = test_schedule(None, Some(100));
+        schedule.max_executions = Some(2);
+        mgr.create_schedule(&schedule).await.unwrap();
+
+        // First call fires (execution_count becomes 1).
+        let fired = mgr.execute_schedules().await.unwrap();
+        assert_eq!(fired, 1);
+
+        // Wait for interval then fire again (execution_count becomes 2, hits max).
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let fired = mgr.execute_schedules().await.unwrap();
+        assert_eq!(fired, 1);
+
+        // Schedule should now be paused.
+        let s = mgr
+            .get_schedule("test-schedule")
+            .await
+            .unwrap()
+            .expect("schedule should exist");
+        assert_eq!(s.execution_count, 2);
+        assert!(s.paused, "schedule should be paused after max_executions");
+
+        // Third call should not fire (schedule is paused, get_active_schedules skips it).
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let fired = mgr.execute_schedules().await.unwrap();
+        assert_eq!(fired, 0, "paused schedule should not fire");
+
+        // Verify only 2 jobs were created total.
+        let counts = mgr.get_queue_stats("emails").await.unwrap();
+        assert_eq!(counts.waiting, 2, "only 2 jobs should have been created");
+    }
+
+    #[tokio::test]
+    async fn test_execute_cron_schedule() {
+        let mgr = memory_manager();
+
+        // Create a schedule with a cron expression that runs every minute.
+        let schedule = test_schedule(Some("* * * * *"), None);
+        mgr.create_schedule(&schedule).await.unwrap();
+
+        // First execution — next_run_at is None so it fires immediately.
+        let fired = mgr.execute_schedules().await.unwrap();
+        assert_eq!(fired, 1);
+
+        // Verify schedule state after firing.
+        let s = mgr
+            .get_schedule("test-schedule")
+            .await
+            .unwrap()
+            .expect("schedule should exist");
+        assert_eq!(s.execution_count, 1);
+        assert!(s.last_run_at.is_some());
+        assert!(s.next_run_at.is_some(), "next_run_at should be computed");
+
+        // The next_run_at should be in the future (at least ~1 minute from now).
+        let next = s.next_run_at.unwrap();
+        assert!(
+            next > Utc::now(),
+            "next_run_at should be in the future, got: {next}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_compute_next_run_interval() {
+        let schedule = test_schedule(None, Some(5000));
+        let now = Utc::now();
+        let next = super::compute_next_run(&schedule, now);
+        assert!(next.is_some());
+        let expected = now + Duration::milliseconds(5000);
+        assert_eq!(next.unwrap(), expected);
+    }
+
+    #[tokio::test]
+    async fn test_compute_next_run_cron() {
+        let schedule = test_schedule(Some("0 12 * * *"), None);
+        let now = Utc::now();
+        let next = super::compute_next_run(&schedule, now);
+        assert!(next.is_some());
+        // The next occurrence of "0 12 * * *" should be in the future.
+        assert!(next.unwrap() > now);
+    }
+
+    #[tokio::test]
+    async fn test_compute_next_run_neither() {
+        // A schedule with neither cron nor interval — should return None.
+        let mut schedule = test_schedule(None, Some(100));
+        schedule.every_ms = None; // Clear it to test the None path
+        let now = Utc::now();
+        let next = super::compute_next_run(&schedule, now);
+        assert!(next.is_none());
     }
 }

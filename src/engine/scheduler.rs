@@ -43,6 +43,11 @@ pub fn start_scheduler(
                 warn!(error = %e, "Delayed job promotion failed");
             }
 
+            // Execute due schedules
+            if let Err(e) = manager.execute_schedules().await {
+                warn!(error = %e, "Schedule execution failed");
+            }
+
             // Check for timed-out jobs
             if let Err(e) = manager.check_timeouts().await {
                 warn!(error = %e, "Timeout check failed");
