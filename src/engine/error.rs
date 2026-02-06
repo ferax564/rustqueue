@@ -19,6 +19,10 @@ pub enum RustQueueError {
     #[error("Job '{0}' not found")]
     JobNotFound(String),
 
+    /// The requested schedule does not exist.
+    #[error("Schedule not found: {0}")]
+    ScheduleNotFound(String),
+
     /// A job is in a state that does not permit the requested operation.
     #[error("Job is in invalid state '{current}' for operation (expected: {expected})")]
     InvalidState {
@@ -59,6 +63,7 @@ impl RustQueueError {
         match self {
             Self::QueueNotFound(_) => "QUEUE_NOT_FOUND",
             Self::JobNotFound(_) => "JOB_NOT_FOUND",
+            Self::ScheduleNotFound(_) => "SCHEDULE_NOT_FOUND",
             Self::InvalidState { .. } => "INVALID_STATE",
             Self::DuplicateKey(_) => "DUPLICATE_KEY",
             Self::QueuePaused(_) => "QUEUE_PAUSED",
@@ -74,6 +79,7 @@ impl RustQueueError {
         match self {
             Self::QueueNotFound(_) => 404,
             Self::JobNotFound(_) => 404,
+            Self::ScheduleNotFound(_) => 404,
             Self::InvalidState { .. } => 409,
             Self::DuplicateKey(_) => 409,
             Self::QueuePaused(_) => 503,

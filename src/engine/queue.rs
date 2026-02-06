@@ -13,7 +13,7 @@ use tracing::info;
 use crate::api::websocket::JobEvent;
 use crate::engine::error::RustQueueError;
 use crate::engine::metrics as metric_names;
-use crate::engine::models::{BackoffStrategy, Job, JobId, JobState, QueueCounts};
+use crate::engine::models::{BackoffStrategy, Job, JobId, JobState, QueueCounts, Schedule};
 use crate::storage::StorageBackend;
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -615,6 +615,89 @@ impl QueueManager {
         Ok((completed, failed, dlq))
     }
 
+    // ── Schedule management ──────────────────────────────────────────────
+
+    /// Create or update a schedule. Validates that exactly one of cron_expr/every_ms is set.
+    pub async fn create_schedule(&self, schedule: &Schedule) -> Result<(), RustQueueError> {
+        // Validate: must have cron_expr or every_ms (but not both)
+        if schedule.cron_expr.is_none() && schedule.every_ms.is_none() {
+            return Err(RustQueueError::ValidationError(
+                "Schedule must have cron_expr or every_ms".into(),
+            ));
+        }
+        if schedule.cron_expr.is_some() && schedule.every_ms.is_some() {
+            return Err(RustQueueError::ValidationError(
+                "Schedule cannot have both cron_expr and every_ms".into(),
+            ));
+        }
+        // Validate cron expression if present
+        if let Some(ref cron) = schedule.cron_expr {
+            croner::Cron::new(cron).parse().map_err(|e| {
+                RustQueueError::ValidationError(format!("Invalid cron expression: {e}"))
+            })?;
+        }
+        self.storage
+            .upsert_schedule(schedule)
+            .await
+            .map_err(RustQueueError::Internal)
+    }
+
+    /// Retrieve a schedule by name, or `None` if it does not exist.
+    pub async fn get_schedule(&self, name: &str) -> Result<Option<Schedule>, RustQueueError> {
+        self.storage
+            .get_schedule(name)
+            .await
+            .map_err(RustQueueError::Internal)
+    }
+
+    /// List all schedules (active and paused).
+    pub async fn list_schedules(&self) -> Result<Vec<Schedule>, RustQueueError> {
+        self.storage
+            .list_all_schedules()
+            .await
+            .map_err(RustQueueError::Internal)
+    }
+
+    /// Delete a schedule by name.
+    pub async fn delete_schedule(&self, name: &str) -> Result<(), RustQueueError> {
+        self.storage
+            .delete_schedule(name)
+            .await
+            .map_err(RustQueueError::Internal)
+    }
+
+    /// Pause a schedule, preventing it from creating new jobs.
+    pub async fn pause_schedule(&self, name: &str) -> Result<(), RustQueueError> {
+        let mut schedule = self
+            .storage
+            .get_schedule(name)
+            .await
+            .map_err(RustQueueError::Internal)?
+            .ok_or_else(|| RustQueueError::ScheduleNotFound(name.to_string()))?;
+        schedule.paused = true;
+        schedule.updated_at = Utc::now();
+        self.storage
+            .upsert_schedule(&schedule)
+            .await
+            .map_err(RustQueueError::Internal)
+    }
+
+    /// Resume a paused schedule.
+    pub async fn resume_schedule(&self, name: &str) -> Result<(), RustQueueError> {
+        let mut schedule = self
+            .storage
+            .get_schedule(name)
+            .await
+            .map_err(RustQueueError::Internal)?
+            .ok_or_else(|| RustQueueError::ScheduleNotFound(name.to_string()))?;
+        schedule.paused = false;
+        schedule.updated_at = Utc::now();
+        self.storage
+            .upsert_schedule(&schedule)
+            .await
+            .map_err(RustQueueError::Internal)
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────
 
     /// Fetch a job by ID, returning `JobNotFound` if it does not exist.
@@ -1128,6 +1211,100 @@ mod tests {
         // Verify the job is gone.
         let job = mgr.get_job(id).await.unwrap();
         assert!(job.is_none(), "old completed job should have been removed");
+    }
+
+    // ── Schedule tests ────────────────────────────────────────────────
+
+    /// Helper: create a QueueManager backed by MemoryStorage.
+    fn memory_manager() -> QueueManager {
+        use crate::storage::MemoryStorage;
+        let storage = Arc::new(MemoryStorage::new());
+        QueueManager::new(storage)
+    }
+
+    /// Helper: create a test Schedule with the given cron_expr and every_ms.
+    fn test_schedule(
+        cron_expr: Option<&str>,
+        every_ms: Option<u64>,
+    ) -> crate::engine::models::Schedule {
+        crate::engine::models::Schedule {
+            name: "test-schedule".to_string(),
+            queue: "emails".to_string(),
+            job_name: "send-welcome".to_string(),
+            job_data: json!({}),
+            job_options: None,
+            cron_expr: cron_expr.map(|s| s.to_string()),
+            every_ms,
+            timezone: None,
+            max_executions: None,
+            execution_count: 0,
+            paused: false,
+            last_run_at: None,
+            next_run_at: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_schedule_validates_cron() {
+        let mgr = memory_manager();
+        let schedule = test_schedule(Some("not-a-cron"), None);
+
+        let err = mgr.create_schedule(&schedule).await.unwrap_err();
+        match err {
+            RustQueueError::ValidationError(msg) => {
+                assert!(
+                    msg.contains("Invalid cron expression"),
+                    "expected 'Invalid cron expression' in: {msg}"
+                );
+            }
+            other => panic!("expected ValidationError, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_schedule_requires_timing() {
+        let mgr = memory_manager();
+        let schedule = test_schedule(None, None);
+
+        let err = mgr.create_schedule(&schedule).await.unwrap_err();
+        match err {
+            RustQueueError::ValidationError(msg) => {
+                assert!(
+                    msg.contains("must have cron_expr or every_ms"),
+                    "expected timing requirement message in: {msg}"
+                );
+            }
+            other => panic!("expected ValidationError, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pause_resume_schedule() {
+        let mgr = memory_manager();
+        let schedule = test_schedule(Some("*/5 * * * *"), None);
+
+        // Create the schedule.
+        mgr.create_schedule(&schedule).await.unwrap();
+
+        // Pause it.
+        mgr.pause_schedule("test-schedule").await.unwrap();
+        let paused = mgr
+            .get_schedule("test-schedule")
+            .await
+            .unwrap()
+            .expect("schedule should exist");
+        assert!(paused.paused, "schedule should be paused");
+
+        // Resume it.
+        mgr.resume_schedule("test-schedule").await.unwrap();
+        let resumed = mgr
+            .get_schedule("test-schedule")
+            .await
+            .unwrap()
+            .expect("schedule should exist");
+        assert!(!resumed.paused, "schedule should not be paused");
     }
 
     #[tokio::test]

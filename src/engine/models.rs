@@ -166,6 +166,9 @@ pub struct Schedule {
     pub queue: String,
     pub job_name: String,
     pub job_data: serde_json::Value,
+    /// Options applied to jobs created by this schedule (priority, retries, timeout, etc.)
+    #[serde(default)]
+    pub job_options: Option<crate::engine::queue::JobOptions>,
 
     // Timing
     pub cron_expr: Option<String>,

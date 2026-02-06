@@ -35,6 +35,7 @@ fn test_schedule(name: &str, queue: &str) -> Schedule {
         queue: queue.to_string(),
         job_name: "scheduled-job".to_string(),
         job_data: json!({"scheduled": true}),
+        job_options: None,
         cron_expr: Some("0 0 * * *".to_string()),
         every_ms: None,
         timezone: None,

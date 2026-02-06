@@ -680,6 +680,7 @@ mod tests {
             queue: "reports".to_string(),
             job_name: "generate-report".to_string(),
             job_data: json!({"type": "daily"}),
+            job_options: None,
             cron_expr: Some("0 0 * * *".to_string()),
             every_ms: None,
             timezone: None,
