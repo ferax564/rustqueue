@@ -386,6 +386,45 @@ impl QueueManager {
             .map_err(RustQueueError::Internal)
     }
 
+    // ── Timeout detection ─────────────────────────────────────────────────
+
+    /// Check for active jobs that have exceeded their timeout and fail them.
+    ///
+    /// Returns the number of jobs that were timed out.
+    #[tracing::instrument(skip(self))]
+    pub async fn check_timeouts(&self) -> Result<u32, RustQueueError> {
+        let active_jobs = self
+            .storage
+            .get_active_jobs()
+            .await
+            .map_err(RustQueueError::Internal)?;
+
+        let now = Utc::now();
+        let mut timed_out = 0u32;
+
+        for job in active_jobs {
+            if let Some(timeout_ms) = job.timeout_ms {
+                if let Some(started_at) = job.started_at {
+                    let elapsed = (now - started_at).num_milliseconds();
+                    if elapsed > timeout_ms as i64 {
+                        match self.fail(job.id, "job timed out").await {
+                            Ok(_) => timed_out += 1,
+                            Err(e) => {
+                                tracing::warn!(job_id = %job.id, error = %e, "Failed to timeout job");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if timed_out > 0 {
+            tracing::info!(count = timed_out, "Timed out jobs");
+        }
+
+        Ok(timed_out)
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────
 
     /// Fetch a job by ID, returning `JobNotFound` if it does not exist.
@@ -675,5 +714,55 @@ mod tests {
         for qi in &queues {
             assert_eq!(qi.counts.waiting, 1);
         }
+    }
+
+    #[tokio::test]
+    async fn test_check_timeouts() {
+        let mgr = temp_manager();
+        // Push a job with a very short timeout (1ms)
+        let opts = JobOptions {
+            timeout_ms: Some(1),
+            ..Default::default()
+        };
+        let id = mgr
+            .push("work", "process", json!({}), Some(opts))
+            .await
+            .unwrap();
+
+        // Pull to make Active
+        mgr.pull("work", 1).await.unwrap();
+
+        // Wait a bit for timeout to expire
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        // Run timeout check
+        let count = mgr.check_timeouts().await.unwrap();
+        assert_eq!(count, 1);
+
+        // Job should be retried (moved to Delayed or Waiting) since default max_attempts=3
+        let job = mgr.get_job(id).await.unwrap().unwrap();
+        assert!(
+            matches!(job.state, JobState::Delayed | JobState::Waiting),
+            "expected Delayed or Waiting, got {:?}",
+            job.state
+        );
+        assert_eq!(job.last_error, Some("job timed out".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_check_timeouts_no_timeout_set() {
+        let mgr = temp_manager();
+        let id = mgr
+            .push("work", "process", json!({}), None)
+            .await
+            .unwrap();
+        mgr.pull("work", 1).await.unwrap();
+
+        // No timeout set, so check_timeouts should return 0
+        let count = mgr.check_timeouts().await.unwrap();
+        assert_eq!(count, 0);
+
+        let job = mgr.get_job(id).await.unwrap().unwrap();
+        assert_eq!(job.state, JobState::Active);
     }
 }

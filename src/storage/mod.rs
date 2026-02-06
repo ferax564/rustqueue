@@ -46,4 +46,7 @@ pub trait StorageBackend: Send + Sync + 'static {
     // Discovery
     async fn list_queue_names(&self) -> anyhow::Result<Vec<String>>;
     async fn get_job_by_unique_key(&self, queue: &str, key: &str) -> anyhow::Result<Option<Job>>;
+
+    /// Get all jobs currently in Active state (for timeout/stall detection).
+    async fn get_active_jobs(&self) -> anyhow::Result<Vec<Job>>;
 }

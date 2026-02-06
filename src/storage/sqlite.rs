@@ -384,6 +384,25 @@ impl StorageBackend for SqliteStorage {
             Err(e) => Err(e.into()),
         }
     }
+
+    async fn get_active_jobs(&self) -> Result<Vec<Job>> {
+        let conn = self.conn.lock().unwrap();
+
+        let mut stmt = conn.prepare(
+            "SELECT data FROM jobs WHERE json_extract(data, '$.state') = 'active'",
+        )?;
+
+        let mut active = Vec::new();
+        let mut rows = stmt.query(())?;
+
+        while let Some(row) = rows.next()? {
+            let data: String = row.get(0)?;
+            let job: Job = serde_json::from_str(&data)?;
+            active.push(job);
+        }
+
+        Ok(active)
+    }
 }
 
 // -- Tests --------------------------------------------------------------------

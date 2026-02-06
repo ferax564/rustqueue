@@ -248,6 +248,15 @@ impl StorageBackend for MemoryStorage {
 
         Ok(None)
     }
+
+    async fn get_active_jobs(&self) -> Result<Vec<Job>> {
+        let jobs = self.jobs.read().unwrap();
+        Ok(jobs
+            .values()
+            .filter(|j| j.state == JobState::Active)
+            .cloned()
+            .collect())
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────

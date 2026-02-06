@@ -347,6 +347,20 @@ impl StorageBackend for RedbStorage {
         }
         Ok(None)
     }
+
+    async fn get_active_jobs(&self) -> Result<Vec<Job>> {
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(JOBS_TABLE)?;
+        let mut active = Vec::new();
+        for entry in table.iter()? {
+            let (_, value) = entry?;
+            let job: Job = serde_json::from_slice(value.value())?;
+            if job.state == JobState::Active {
+                active.push(job);
+            }
+        }
+        Ok(active)
+    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
