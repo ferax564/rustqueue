@@ -7,6 +7,7 @@ pub mod health;
 pub mod jobs;
 pub mod prometheus;
 pub mod queues;
+pub mod schedules;
 pub mod websocket;
 
 use std::sync::Arc;
@@ -55,6 +56,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
     let protected = axum::Router::new()
         .merge(jobs::routes())
         .merge(queues::routes())
+        .merge(schedules::routes())
         .merge(websocket::routes())
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
