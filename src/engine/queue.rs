@@ -450,6 +450,41 @@ impl QueueManager {
         Ok(stalled)
     }
 
+    // ── Delayed job promotion ─────────────────────────────────────────────
+
+    /// Promote delayed jobs whose delay has expired to Waiting state.
+    ///
+    /// Returns the number of promoted jobs.
+    #[tracing::instrument(skip(self))]
+    pub async fn promote_delayed_jobs(&self) -> Result<u32, RustQueueError> {
+        let now = Utc::now();
+        let ready = self
+            .storage
+            .get_ready_scheduled(now)
+            .await
+            .map_err(RustQueueError::Internal)?;
+
+        let mut promoted = 0u32;
+
+        for mut job in ready {
+            job.state = JobState::Waiting;
+            job.delay_until = None;
+            job.updated_at = Utc::now();
+
+            if let Err(e) = self.storage.update_job(&job).await {
+                tracing::warn!(job_id = %job.id, error = %e, "Failed to promote delayed job");
+            } else {
+                promoted += 1;
+            }
+        }
+
+        if promoted > 0 {
+            tracing::info!(count = promoted, "Promoted delayed jobs");
+        }
+
+        Ok(promoted)
+    }
+
     // ── Timeout detection ─────────────────────────────────────────────────
 
     /// Check for active jobs that have exceeded their timeout and fail them.
@@ -888,5 +923,41 @@ mod tests {
             job.last_error,
             Some("job stalled (no heartbeat)".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn test_promote_delayed_jobs() {
+        let mgr = temp_manager();
+
+        // Push a delayed job with a very short delay (1ms)
+        let opts = JobOptions {
+            delay_ms: Some(1),
+            ..Default::default()
+        };
+        let id = mgr
+            .push("work", "process", json!({}), Some(opts))
+            .await
+            .unwrap();
+
+        // Verify it's in Delayed state
+        let job = mgr.get_job(id).await.unwrap().unwrap();
+        assert_eq!(job.state, JobState::Delayed);
+
+        // Wait a tiny bit to ensure the delay has expired
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        // Promote
+        let count = mgr.promote_delayed_jobs().await.unwrap();
+        assert_eq!(count, 1);
+
+        // Now it should be Waiting
+        let job = mgr.get_job(id).await.unwrap().unwrap();
+        assert_eq!(job.state, JobState::Waiting);
+        assert!(job.delay_until.is_none());
+
+        // And pullable
+        let pulled = mgr.pull("work", 1).await.unwrap();
+        assert_eq!(pulled.len(), 1);
+        assert_eq!(pulled[0].id, id);
     }
 }

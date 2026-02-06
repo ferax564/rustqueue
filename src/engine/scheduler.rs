@@ -31,6 +31,11 @@ pub fn start_scheduler(
         loop {
             ticker.tick().await;
 
+            // Promote delayed jobs first
+            if let Err(e) = manager.promote_delayed_jobs().await {
+                warn!(error = %e, "Delayed job promotion failed");
+            }
+
             // Check for timed-out jobs
             if let Err(e) = manager.check_timeouts().await {
                 warn!(error = %e, "Timeout check failed");
