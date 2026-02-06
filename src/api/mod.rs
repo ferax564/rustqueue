@@ -49,7 +49,8 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
 
     let public = axum::Router::new()
         .merge(health::routes())
-        .merge(prometheus::routes());
+        .merge(prometheus::routes())
+        .merge(crate::dashboard::routes());
 
     let protected = axum::Router::new()
         .merge(jobs::routes())

@@ -6,6 +6,7 @@
 pub mod api;
 pub mod builder;
 pub mod config;
+pub mod dashboard;
 pub mod engine;
 pub mod protocol;
 pub mod storage;
