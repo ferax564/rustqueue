@@ -1,5 +1,153 @@
 <!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><title>RustQueue Dashboard</title></head>
-<body><h1>RustQueue Dashboard</h1><p>Loading...</p></body>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RustQueue Dashboard</title>
+    <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body>
+<div class="app">
+
+    <!-- ── Header ────────────────────────────────────────────────────────── -->
+    <header class="header">
+        <div class="header-left">
+            <a class="header-logo" href="/dashboard">
+                <svg viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <rect x="2" y="2" width="24" height="24" rx="6" stroke="#6366f1" stroke-width="2"/>
+                    <path d="M8 9h12M8 14h9M8 19h6" stroke="#6366f1" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+                <span class="header-logo-text">Rust<span>Queue</span></span>
+            </a>
+            <span class="header-version" id="header-version">v0.1.0</span>
+        </div>
+        <div class="header-right">
+            <div class="header-status">
+                <span class="status-dot disconnected" id="status-dot"></span>
+                <span id="status-text">Connecting</span>
+            </div>
+            <span class="header-clock" id="header-clock">--:--:--</span>
+        </div>
+    </header>
+
+    <!-- ── Sidebar ───────────────────────────────────────────────────────── -->
+    <nav class="sidebar">
+        <div class="sidebar-section">
+            <div class="sidebar-section-title">Dashboard</div>
+            <ul class="sidebar-nav">
+                <li class="sidebar-nav-item">
+                    <a class="sidebar-nav-link active" data-panel="overview" href="#">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="3" width="7" height="7"/>
+                            <rect x="14" y="3" width="7" height="7"/>
+                            <rect x="14" y="14" width="7" height="7"/>
+                            <rect x="3" y="14" width="7" height="7"/>
+                        </svg>
+                        Overview
+                    </a>
+                </li>
+                <li class="sidebar-nav-item">
+                    <a class="sidebar-nav-link" data-panel="queues" href="#">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="8" y1="6" x2="21" y2="6"/>
+                            <line x1="8" y1="12" x2="21" y2="12"/>
+                            <line x1="8" y1="18" x2="21" y2="18"/>
+                            <line x1="3" y1="6" x2="3.01" y2="6"/>
+                            <line x1="3" y1="12" x2="3.01" y2="12"/>
+                            <line x1="3" y1="18" x2="3.01" y2="18"/>
+                        </svg>
+                        Queues
+                    </a>
+                </li>
+                <li class="sidebar-nav-item">
+                    <a class="sidebar-nav-link" data-panel="events" href="#">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                        </svg>
+                        Live Events
+                    </a>
+                </li>
+            </ul>
+        </div>
+
+        <div class="sidebar-footer">
+            <div class="sidebar-uptime" id="sidebar-uptime">Uptime: --</div>
+        </div>
+    </nav>
+
+    <!-- ── Main Content ──────────────────────────────────────────────────── -->
+    <main class="main">
+
+        <!-- Error Banner -->
+        <div class="error-banner" id="error-banner"></div>
+
+        <!-- ── Overview Panel ────────────────────────────────────────────── -->
+        <section class="panel active" id="panel-overview">
+            <div class="panel-header">
+                <div>
+                    <h1 class="panel-title">Overview</h1>
+                    <p class="panel-subtitle">
+                        <span id="overview-queues-count">0</span> queues registered
+                    </p>
+                </div>
+                <div class="panel-refresh-badge">
+                    <span class="spinner"></span>
+                    Auto-refreshes every 5s
+                </div>
+            </div>
+            <div class="summary-grid" id="overview-cards">
+                <!-- Populated by app.js -->
+            </div>
+        </section>
+
+        <!-- ── Queues Panel ──────────────────────────────────────────────── -->
+        <section class="panel" id="panel-queues">
+            <div class="panel-header">
+                <div>
+                    <h1 class="panel-title">Queues</h1>
+                    <p class="panel-subtitle">Per-queue job breakdown</p>
+                </div>
+                <div class="panel-refresh-badge">
+                    <span class="spinner"></span>
+                    Auto-refreshes every 5s
+                </div>
+            </div>
+            <div class="queues-grid" id="queues-grid">
+                <!-- Populated by app.js -->
+            </div>
+        </section>
+
+        <!-- ── Live Events Panel ─────────────────────────────────────────── -->
+        <section class="panel" id="panel-events">
+            <div class="panel-header">
+                <div>
+                    <h1 class="panel-title">Live Events</h1>
+                    <p class="panel-subtitle">Real-time job state changes via WebSocket</p>
+                </div>
+            </div>
+            <div class="events-toolbar">
+                <div class="events-connection">
+                    <span class="status-dot disconnected" id="events-connection-dot"></span>
+                    <span id="events-connection-text">Connecting</span>
+                </div>
+                <button class="events-btn" id="events-clear-btn">Clear Log</button>
+            </div>
+            <div class="events-log">
+                <div class="events-log-header">
+                    <div>Timestamp</div>
+                    <div>Event</div>
+                    <div>Queue</div>
+                    <div>Job ID</div>
+                </div>
+                <div class="events-log-body" id="events-body">
+                    <!-- Populated by app.js via WebSocket -->
+                </div>
+            </div>
+        </section>
+
+    </main>
+</div>
+
+<script src="/dashboard/app.js"></script>
+</body>
 </html>
