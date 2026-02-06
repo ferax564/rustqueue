@@ -1468,23 +1468,26 @@ The dashboard is a static web application compiled into the RustQueue binary usi
 
 **Exit criteria:** ✅ Dashboard shows all system state. Auth protects all endpoints. Graceful shutdown drains connections with 30s timeout.
 
-### Phase 4: Advanced Features (v0.4) — Weeks 19-26
+### Phase 4: Schedule Engine & Production Completeness (v0.4) — Weeks 19-26 ✅ COMPLETE
 
-**Goal:** Flows, webhooks, rate limiting, and authentication improvements.
+**Goal:** Full schedule execution engine, schedule management APIs, dashboard integration, and production readiness polish.
 
-| Deliverable | Description |
-|---|---|
-| Job dependencies | DAG-based flows with parent/child relationships |
-| Flow API | Create, inspect, and cancel flows |
-| Webhooks | Register, deliver (with retry), and manage webhooks |
-| Rate limiting | Per-queue max concurrency and max rate |
-| Queue ordering | FIFO, LIFO, priority, and fair modes |
-| API key auth | Scoped API keys with granular permissions |
-| TLS | rustls-based TLS for HTTP and TCP |
-| TypeScript SDK | Official npm package |
-| Python SDK | Official PyPI package |
+| Deliverable | Status | Description |
+|---|---|---|
+| Storage trait expansion | ✅ | `get_schedule()` + `list_all_schedules()` — trait now 20 async methods |
+| Schedule CRUD | ✅ | create/get/list/delete/pause/resume in QueueManager with validation |
+| Schedule execution engine | ✅ | Background tick loop evaluates cron (via croner) + interval schedules |
+| Schedule API (HTTP) | ✅ | 6 REST endpoints: POST/GET/DELETE /schedules, pause/resume |
+| Schedule TCP commands | ✅ | 6 commands: schedule_create/list/get/delete/pause/resume |
+| Schedule CLI commands | ✅ | `rustqueue schedules list/create/delete/pause/resume` |
+| Dashboard schedules panel | ✅ | Schedule cards with status, timing, execution count, pause/resume toggle |
+| Dashboard auth hardening | ✅ | Dashboard protected behind auth when authentication is enabled |
+| PostgreSQL serve mode | ✅ | Replaced placeholder with actual PostgresStorage initialization |
+| Integration tests | ✅ | 4 lifecycle tests: interval, cron, pause, max_executions |
 
-**Exit criteria:** Can define a 5-step job flow, receive webhook callbacks, rate limit a queue to 10 jobs/sec.
+**Phase 4 stats:** 10 tasks, 10 commits, 158+ tests (default), 184+ with sqlite
+
+**Exit criteria:** ✅ Schedule engine executes cron/interval jobs, API covers full CRUD, dashboard shows schedules, all backends support schedule storage.
 
 ### Phase 5: Distributed Mode (v0.5) — Weeks 27-36
 

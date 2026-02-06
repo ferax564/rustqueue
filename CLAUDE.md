@@ -23,26 +23,27 @@ cargo fmt                            # Format code
 
 ```
 src/
-├── main.rs           # Binary: CLI (serve/status/push/inspect), server startup, scheduler spawn
+├── main.rs           # Binary: CLI (serve/status/push/inspect/schedules), server startup, scheduler spawn
 ├── lib.rs            # Library root: re-exports RustQueue, QueueManager, Job, etc.
 ├── builder.rs        # RustQueue builder for zero-config embeddable library usage
 ├── api/              # HTTP REST API (axum)
 │   ├── mod.rs        # AppState, router composition (public vs protected routes)
 │   ├── auth.rs       # Bearer token auth middleware (HTTP + config)
 │   ├── jobs.rs       # Job CRUD + progress + heartbeat + DLQ list endpoints
+│   ├── schedules.rs  # Schedule CRUD + pause/resume endpoints
 │   ├── queues.rs     # Queue listing and stats
 │   ├── health.rs     # Health check
 │   ├── prometheus.rs # Prometheus metrics endpoint
 │   └── websocket.rs  # WebSocket event streaming (/api/v1/events)
 ├── engine/           # Core business logic
 │   ├── models.rs     # Data types: Job, Schedule, Worker, enums
-│   ├── queue.rs      # QueueManager: push, pull, ack, fail, progress, heartbeat, timeouts, stalls
-│   ├── scheduler.rs  # Background tick loop: promote delayed, check timeouts, detect stalls
+│   ├── queue.rs      # QueueManager: push, pull, ack, fail, progress, heartbeat, timeouts, stalls, schedule CRUD + execution
+│   ├── scheduler.rs  # Background tick loop: promote delayed, execute schedules, check timeouts, detect stalls
 │   ├── metrics.rs    # Prometheus counter/gauge instrumentation
 │   ├── error.rs      # RustQueueError (thiserror)
 │   └── telemetry.rs  # OpenTelemetry OTLP integration (behind `otel` feature)
 ├── storage/          # Storage abstraction and backends
-│   ├── mod.rs        # StorageBackend trait (18 async methods)
+│   ├── mod.rs        # StorageBackend trait (20 async methods)
 │   ├── redb.rs       # redb embedded backend (default, always compiled)
 │   ├── memory.rs     # In-memory backend (always compiled, great for tests)
 │   ├── sqlite.rs     # SQLite backend (behind `sqlite` feature)
@@ -54,13 +55,13 @@ src/
 
 ## Key Design Decisions
 
-- **Storage trait**: All backends implement `StorageBackend` (18 async methods, see `src/storage/mod.rs`). Swap redb/sqlite/postgres/memory via config without changing engine code.
+- **Storage trait**: All backends implement `StorageBackend` (20 async methods, see `src/storage/mod.rs`). Swap redb/sqlite/postgres/memory via config without changing engine code.
 - **Dual protocol**: HTTP (port 6790) for general use + TCP (port 6789) for high-throughput workers. Both support identical operations.
 - **Crash-only design**: All state is persisted before acknowledging writes. Safe to `kill -9` at any time.
 - **UUID v7 for job IDs**: Time-sortable, globally unique, no coordination needed.
 - **Feature flags**: Optional backends and integrations behind Cargo features (`sqlite`, `postgres`, `otel`, `cli`, `tls`). Only `cli` is default.
 - **Embeddable library**: `RustQueue::memory().build()` or `RustQueue::redb(path).build()` for zero-config use without a server.
-- **Background scheduler**: Tick loop (configurable interval) handles delayed job promotion, timeout detection, stall detection, and retention cleanup.
+- **Background scheduler**: Tick loop (configurable interval) handles delayed job promotion, schedule execution (cron + interval), timeout detection, stall detection, and retention cleanup.
 - **WebSocket events**: Real-time job lifecycle events via `tokio::sync::broadcast` channel (capacity 1024).
 - **Authentication**: Bearer token auth for HTTP (public/protected route split) and TCP (connection-level handshake). Configurable via `[auth]` TOML section.
 - **Graceful shutdown**: `Ctrl+C` triggers coordinated drain with 30s timeout for HTTP, TCP, and scheduler.
@@ -91,7 +92,7 @@ src/
 - **Generic backend harness**: `tests/storage_backend_tests.rs` — `backend_tests!` macro generates 14 canonical tests per storage backend.
 - **Property tests**: State machine transitions, serialization roundtrips.
 - **Benchmarks**: `benches/throughput.rs` measures jobs/sec for push, pull, ack operations.
-- **Current counts**: ~149 tests (default features), ~157 tests (with `sqlite`).
+- **Current counts**: ~158 tests (default features), ~184 tests (with `sqlite`).
 
 ## Configuration Priority
 
@@ -123,6 +124,12 @@ GET    /api/v1/queues/{queue}/stats    # Queue statistics
 GET    /api/v1/health                  # Health check
 GET    /api/v1/metrics/prometheus      # Prometheus metrics
 GET    /api/v1/queues/{queue}/dlq      # List DLQ jobs
+POST   /api/v1/schedules              # Create/upsert schedule
+GET    /api/v1/schedules              # List all schedules
+GET    /api/v1/schedules/{name}       # Get schedule by name
+DELETE /api/v1/schedules/{name}       # Delete schedule
+POST   /api/v1/schedules/{name}/pause  # Pause schedule
+POST   /api/v1/schedules/{name}/resume # Resume schedule
 GET    /api/v1/events                  # WebSocket event stream
 GET    /dashboard                      # Embedded web dashboard
 GET    /                               # Landing page
@@ -130,7 +137,7 @@ GET    /                               # Landing page
 
 ### TCP Commands
 
-`push`, `pull`, `ack`, `fail`, `cancel`, `progress`, `heartbeat`, `get`
+`push`, `pull`, `ack`, `fail`, `cancel`, `progress`, `heartbeat`, `get`, `schedule_create`, `schedule_list`, `schedule_get`, `schedule_delete`, `schedule_pause`, `schedule_resume`
 
 ## CLI Commands
 
@@ -139,6 +146,11 @@ rustqueue serve [--config PATH] [--http-port PORT] [--tcp-port PORT]
 rustqueue status [--host HOST] [--http-port PORT]
 rustqueue push --queue NAME --name JOB_NAME [--data JSON]
 rustqueue inspect JOB_ID [--host HOST] [--http-port PORT]
+rustqueue schedules list [--host HOST] [--http-port PORT]
+rustqueue schedules create --name NAME --queue QUEUE --job-name JOB [--cron EXPR] [--every-ms MS]
+rustqueue schedules delete NAME
+rustqueue schedules pause NAME
+rustqueue schedules resume NAME
 ```
 
 ## Dependencies of Note

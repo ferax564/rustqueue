@@ -10,7 +10,7 @@ A high-performance distributed job queue and task scheduler written in Rust. Zer
 - **Single binary deployment** — Download, run, done.
 - **Multiple storage backends** — redb (default), SQLite, PostgreSQL, or in-memory
 - **Job queuing** with priorities, delays, FIFO/LIFO ordering
-- **Cron scheduling** for recurring tasks
+- **Cron & interval scheduling** — Full schedule engine with cron expressions and interval-based execution
 - **Automatic retries** with configurable backoff (fixed, linear, exponential)
 - **Dead letter queues** for inspecting and retrying failed jobs
 - **Job progress tracking** — Report progress (0-100%) with optional messages
@@ -27,7 +27,7 @@ A high-performance distributed job queue and task scheduler written in Rust. Zer
 - **Landing page** — Marketing page at `/` with feature showcase
 - **CORS + Request tracing** — Cross-origin support and structured HTTP request spans
 - **Embeddable** — Use as a standalone server or as a Rust library with zero config
-- **CLI management** — `status`, `push`, `inspect` commands for operating a running server
+- **CLI management** — `status`, `push`, `inspect`, `schedules` commands for operating a running server
 - **Language-agnostic** — HTTP REST API + TCP protocol works with any language
 
 ## Quick Start
@@ -52,6 +52,12 @@ rustqueue status
 
 # Inspect a job
 rustqueue inspect <job-id>
+
+# Create a cron schedule
+rustqueue schedules create --name hourly-report --queue reports --job-name generate --cron "0 * * * *"
+
+# List schedules
+rustqueue schedules list
 ```
 
 ## Architecture
@@ -168,6 +174,12 @@ GET    /api/v1/queues/{queue}/stats    # Queue statistics
 GET    /api/v1/health                  # Health check
 GET    /api/v1/metrics/prometheus      # Prometheus metrics
 GET    /api/v1/queues/{queue}/dlq      # List dead letter queue jobs
+POST   /api/v1/schedules              # Create schedule (cron or interval)
+GET    /api/v1/schedules              # List all schedules
+GET    /api/v1/schedules/{name}       # Get schedule by name
+DELETE /api/v1/schedules/{name}       # Delete schedule
+POST   /api/v1/schedules/{name}/pause  # Pause schedule
+POST   /api/v1/schedules/{name}/resume # Resume schedule
 GET    /api/v1/events                  # WebSocket event stream
 GET    /dashboard                      # Embedded web dashboard
 GET    /                               # Landing page
@@ -195,6 +207,12 @@ Newline-delimited JSON on port 6789:
 
 → {"cmd":"auth","token":"my-secret-token"}
 ← {"ok":true}
+
+→ {"cmd":"schedule_create","name":"hourly-report","queue":"reports","job_name":"generate","cron_expr":"0 * * * *"}
+← {"ok":true}
+
+→ {"cmd":"schedule_list"}
+← {"ok":true,"schedules":[...]}
 ```
 
 ### WebSocket Events
