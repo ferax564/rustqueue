@@ -4,7 +4,7 @@
 **Version:** 1.0
 **Date:** February 5, 2026
 **Updated:** February 6, 2026
-**Status:** Phase 1, 2 & 3 Complete
+**Status:** Phase 1, 2, 3 & 4 Complete
 **Author:** [Your Name]
 
 ---
@@ -1415,7 +1415,7 @@ The dashboard is a static web application compiled into the RustQueue binary usi
 | Benchmarks | ✅ | Throughput benchmarks for push, pull, ack (criterion) |
 | Tests | ✅ | Unit, integration, property-based tests, full lifecycle test |
 
-**Exit criteria:** ✅ Can push 10,000 jobs/sec, pull and ack them, with zero data loss on crash.
+**Exit criteria:** ✅ Core engine works end-to-end. Push, pull, ack with zero data loss on crash. Throughput with redb: ~340 push/sec (per-operation fsync). See `docs/performance-analysis.md` for optimization plan.
 
 ### Phase 2: Differentiation (v0.2) — Weeks 7-12 ✅ COMPLETE
 
@@ -1489,7 +1489,24 @@ The dashboard is a static web application compiled into the RustQueue binary usi
 
 **Exit criteria:** ✅ Schedule engine executes cron/interval jobs, API covers full CRUD, dashboard shows schedules, all backends support schedule storage.
 
-### Phase 5: Distributed Mode (v0.5) — Weeks 27-36
+### Phase 5: Performance Optimization (v0.4.5) — Weeks 27-30
+
+**Goal:** Close the 147x throughput gap between current performance (~340 push/sec) and target (50,000 push/sec). See `docs/performance-analysis.md` for full analysis.
+
+| Deliverable | Status | Description |
+|---|---|---|
+| Batch transaction API | ⬜ | `batch_insert_jobs()` on StorageBackend — single fsync for N jobs |
+| spawn_blocking for redb | ⬜ | Wrap sync redb I/O in `tokio::task::spawn_blocking` |
+| Secondary index tables | ⬜ | redb tables keyed by (queue, state) for O(log n) dequeue |
+| Write coalescing | ⬜ | Buffer writes with configurable flush interval |
+| Hybrid memory+disk storage | ⬜ | In-memory hot path with periodic redb snapshots |
+| Per-queue table sharding | ⬜ | Partition jobs by queue name in separate redb tables |
+
+**Current benchmarks (redb):** push 2.93ms/op (~340/sec), push+pull+ack 8.54ms (~117/sec), batch/1000 6.44s (~155/sec)
+
+**Exit criteria:** ≥ 10,000 push/sec with redb backend; ≥ 50,000 push/sec with hybrid memory/disk mode.
+
+### Phase 6: Distributed Mode (v0.5) — Weeks 31-40
 
 **Goal:** High-availability cluster mode.
 
@@ -1525,14 +1542,15 @@ Stabilize APIs, write migration guides, achieve production use at 3+ organizatio
 
 ### 18.2 Technical Metrics
 
-| Metric | Target |
-|---|---|
-| Throughput (single node) | ≥ 50,000 jobs/sec |
-| P99 latency (push) | < 5 ms |
-| Binary size | < 15 MB |
-| Memory usage (idle) | < 20 MB |
-| Test coverage | > 80% |
-| Zero CVEs | Continuous |
+| Metric | Target | Current (v0.4) | Status |
+|---|---|---|---|
+| Throughput (single node) | ≥ 50,000 jobs/sec | ~340/sec (redb) | Blocked — Phase 5 |
+| P99 latency (push) | < 5 ms | ~3 ms | OK |
+| Binary size | < 15 MB | 6.8 MB | PASS |
+| Memory usage (idle) | < 20 MB | ~15 MB | PASS |
+| Startup time | < 500 ms | ~10 ms | PASS |
+| Test coverage | > 80% | 158+ tests | OK |
+| Zero CVEs | Continuous | 0 | PASS |
 
 ### 18.3 Community Metrics
 

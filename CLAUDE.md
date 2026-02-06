@@ -67,6 +67,18 @@ src/
 - **Graceful shutdown**: `Ctrl+C` triggers coordinated drain with 30s timeout for HTTP, TCP, and scheduler.
 - **Embedded dashboard**: SPA served via `rust-embed` at `/dashboard` (overview, queues, DLQ, live events). Landing page at `/`.
 
+## Known Performance Limitations
+
+The default redb backend has significant throughput limitations (~340 push/sec vs 50K target). Root causes:
+
+1. **Per-operation fsync**: Each `insert_job()` creates a separate write transaction with `fsync()` (~2.9ms/op)
+2. **O(n) full table scans**: `dequeue()`, `get_active_jobs()`, `get_queue_counts()` iterate every job in the database
+3. **No batch transactions**: StorageBackend trait has no `batch_insert_jobs()` — batch pushes pay N × fsync
+4. **Blocking async runtime**: redb sync I/O runs directly on tokio threads (no `spawn_blocking`)
+5. **Single flat table**: No secondary indexes by queue/state — all queries except get-by-ID scan everything
+
+See `docs/performance-analysis.md` for full analysis and optimization plan.
+
 ## Conventions
 
 - **Error handling**: Use `thiserror` for library errors, `anyhow` for binary/integration code. Storage trait methods return `anyhow::Result`.

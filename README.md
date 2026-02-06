@@ -268,15 +268,17 @@ cargo build --features tls              # + TLS for TCP protocol
 cargo build --no-default-features       # Server only, no CLI commands
 ```
 
-## Performance Targets
+## Performance
 
-| Metric | Target |
-|--------|--------|
-| Throughput (push) | >= 50,000 jobs/sec |
-| Latency (p99 push) | < 5 ms |
-| Memory (idle) | < 20 MB |
-| Binary size | < 15 MB |
-| Startup time | < 500 ms |
+| Metric | Target | Current (v0.4, redb) |
+|--------|--------|----------------------|
+| Throughput (push) | >= 50,000 jobs/sec | ~340/sec |
+| Latency (p50 push) | < 1 ms | ~2.9 ms |
+| Memory (idle) | < 20 MB | ~15 MB |
+| Binary size | < 15 MB | 6.8 MB |
+| Startup time | < 500 ms | ~10 ms |
+
+> **Note:** The current redb backend prioritizes correctness and durability (fsync per write) over throughput. A performance optimization phase is planned to add batch transactions, secondary indexes, write coalescing, and a hybrid memory/disk mode. See `docs/performance-analysis.md` for the full analysis and roadmap.
 
 ## Development
 
