@@ -307,6 +307,45 @@ impl QueueManager {
         Ok(())
     }
 
+    // ── Progress ─────────────────────────────────────────────────────────
+
+    /// Update progress on an active job, optionally appending a log message.
+    ///
+    /// Progress is clamped to 0–100. The job must be in [`JobState::Active`].
+    #[tracing::instrument(skip(self, message), fields(id = %id, progress))]
+    pub async fn update_progress(
+        &self,
+        id: JobId,
+        progress: u8,
+        message: Option<String>,
+    ) -> Result<(), RustQueueError> {
+        let mut job = self.require_job(id).await?;
+
+        if job.state != JobState::Active {
+            return Err(RustQueueError::InvalidState {
+                current: format!("{:?}", job.state),
+                expected: "Active".to_string(),
+            });
+        }
+
+        job.progress = Some(progress.min(100));
+        job.updated_at = Utc::now();
+
+        if let Some(msg) = message {
+            job.logs.push(crate::engine::models::LogEntry {
+                timestamp: Utc::now(),
+                message: msg,
+            });
+        }
+
+        self.storage
+            .update_job(&job)
+            .await
+            .map_err(RustQueueError::Internal)?;
+
+        Ok(())
+    }
+
     // ── Get ──────────────────────────────────────────────────────────────
 
     /// Retrieve a single job by ID, or `None` if it does not exist.
@@ -579,6 +618,43 @@ mod tests {
             .unwrap();
         let job = mgr.get_job(id).await.unwrap().unwrap();
         assert_eq!(job.custom_id, Some("my-custom-id-123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_update_progress() {
+        let mgr = temp_manager();
+        let id = mgr
+            .push("work", "process", json!({}), None)
+            .await
+            .unwrap();
+        mgr.pull("work", 1).await.unwrap();
+
+        mgr.update_progress(id, 50, Some("halfway there".to_string()))
+            .await
+            .unwrap();
+
+        let job = mgr.get_job(id).await.unwrap().unwrap();
+        assert_eq!(job.progress, Some(50));
+        assert_eq!(job.logs.len(), 1);
+        assert_eq!(job.logs[0].message, "halfway there");
+    }
+
+    #[tokio::test]
+    async fn test_update_progress_requires_active_state() {
+        let mgr = temp_manager();
+        let id = mgr
+            .push("work", "process", json!({}), None)
+            .await
+            .unwrap();
+        // Job is Waiting, not Active
+        let err = mgr.update_progress(id, 50, None).await.unwrap_err();
+        match err {
+            RustQueueError::InvalidState { current, expected } => {
+                assert_eq!(current, "Waiting");
+                assert_eq!(expected, "Active");
+            }
+            other => panic!("expected InvalidState, got: {:?}", other),
+        }
     }
 
     #[tokio::test]

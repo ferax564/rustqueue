@@ -71,6 +71,7 @@ async fn process_line(line: &str, manager: &QueueManager) -> Value {
         "ack" => handle_ack(&parsed, manager).await,
         "fail" => handle_fail(&parsed, manager).await,
         "cancel" => handle_cancel(&parsed, manager).await,
+        "progress" => handle_progress(&parsed, manager).await,
         "stats" => handle_stats(&parsed, manager).await,
         _ => error_response("UNKNOWN_COMMAND", &format!("Unknown command: {cmd}")),
     }
@@ -181,6 +182,30 @@ async fn handle_cancel(cmd: &Value, manager: &QueueManager) -> Value {
     };
 
     match manager.cancel(id).await {
+        Ok(()) => json!({"ok": true}),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn handle_progress(cmd: &Value, manager: &QueueManager) -> Value {
+    let id_str = match cmd.get("id").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return error_response("VALIDATION_ERROR", "Missing 'id' field"),
+    };
+    let id = match uuid::Uuid::parse_str(id_str) {
+        Ok(id) => id,
+        Err(_) => return error_response("VALIDATION_ERROR", "Invalid job ID format"),
+    };
+    let progress = match cmd.get("progress").and_then(|v| v.as_u64()) {
+        Some(p) => p as u8,
+        None => return error_response("VALIDATION_ERROR", "Missing 'progress' field"),
+    };
+    let message = cmd
+        .get("message")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    match manager.update_progress(id, progress, message).await {
         Ok(()) => json!({"ok": true}),
         Err(e) => engine_error_response(&e),
     }

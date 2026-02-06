@@ -96,6 +96,12 @@ pub struct FailRequest {
     pub error: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ProgressRequest {
+    pub progress: u8,
+    pub message: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct FailResponse {
     pub ok: bool,
@@ -113,6 +119,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/v1/jobs/{id}/ack", post(ack_job))
         .route("/api/v1/jobs/{id}/fail", post(fail_job))
         .route("/api/v1/jobs/{id}/cancel", post(cancel_job))
+        .route("/api/v1/jobs/{id}/progress", post(update_progress))
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────
@@ -218,6 +225,19 @@ async fn fail_job(
         retry: result.will_retry,
         next_attempt_at: result.next_attempt_at.map(|t| t.to_rfc3339()),
     }))
+}
+
+/// POST /api/v1/jobs/:id/progress — Update job progress.
+async fn update_progress(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<ProgressRequest>,
+) -> Result<Json<OkResponse>, ApiError> {
+    state
+        .queue_manager
+        .update_progress(id, body.progress, body.message)
+        .await?;
+    Ok(Json(OkResponse { ok: true }))
 }
 
 /// POST /api/v1/jobs/:id/cancel — Cancel a job.
