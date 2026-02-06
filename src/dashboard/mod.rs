@@ -5,10 +5,10 @@
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::Path as AxumPath;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use axum::Router;
 use rust_embed::Embed;
 
 use crate::api::AppState;

@@ -420,8 +420,20 @@ Storage is abstracted behind a trait (`StorageBackend`) to allow multiple implem
 ```rust
 #[async_trait]
 pub trait StorageBackend: Send + Sync + 'static {
+    // Completion operations (atomic, backend-aware)
+    async fn complete_job(
+        &self,
+        id: JobId,
+        result: Option<serde_json::Value>,
+    ) -> Result<CompleteJobOutcome>;
+    async fn complete_jobs_batch(
+        &self,
+        items: &[(JobId, Option<serde_json::Value>)],
+    ) -> Result<Vec<CompleteJobOutcome>>;
+
     // Job operations
     async fn insert_job(&self, job: &Job) -> Result<JobId>;
+    async fn insert_jobs_batch(&self, jobs: &[Job]) -> Result<Vec<JobId>>;
     async fn get_job(&self, id: JobId) -> Result<Option<Job>>;
     async fn update_job(&self, job: &Job) -> Result<()>;
     async fn delete_job(&self, id: JobId) -> Result<()>;
@@ -439,11 +451,20 @@ pub trait StorageBackend: Send + Sync + 'static {
     
     // Cleanup
     async fn remove_completed_before(&self, before: DateTime<Utc>) -> Result<u64>;
+    async fn remove_failed_before(&self, before: DateTime<Utc>) -> Result<u64>;
+    async fn remove_dlq_before(&self, before: DateTime<Utc>) -> Result<u64>;
     
     // Cron schedules
     async fn upsert_schedule(&self, schedule: &Schedule) -> Result<()>;
     async fn get_active_schedules(&self) -> Result<Vec<Schedule>>;
     async fn delete_schedule(&self, name: &str) -> Result<()>;
+    async fn get_schedule(&self, name: &str) -> Result<Option<Schedule>>;
+    async fn list_all_schedules(&self) -> Result<Vec<Schedule>>;
+
+    // Discovery
+    async fn list_queue_names(&self) -> Result<Vec<String>>;
+    async fn get_job_by_unique_key(&self, queue: &str, key: &str) -> Result<Option<Job>>;
+    async fn get_active_jobs(&self) -> Result<Vec<Job>>;
 }
 ```
 
@@ -629,6 +650,12 @@ A job progresses through the following states:
 | Scheduling precision | ± 1 second | Acceptable for cron-style workloads |
 | Startup time | < 500 ms (cold start) | Fast restarts after crashes or deployments |
 | Recovery time | < 5 seconds | Time to full operation after crash (WAL replay) |
+
+Current benchmark snapshots (February 6, 2026) used for phase tracking:
+
+- Single-job TCP control (`batch_size=1`): ~334 push/sec, ~56 push+pull+ack cycles/sec
+- Batched TCP profile (`batch_size=50`): ~10,929 push/sec, ~3,692 push+pull+ack cycles/sec
+- References: `docs/competitor-benchmark-2026-02-06-immediate-r2-latest.md`, `docs/competitor-benchmark-2026-02-06.md`, `docs/performance-analysis.md`
 
 ### 9.2 Reliability
 
@@ -1088,8 +1115,9 @@ tcp_port = 6789
 http_port = 6790
 
 [storage]
-backend = "redb"                  # "redb", "sqlite", "postgres"
+backend = "redb"                  # "redb", "in_memory", "sqlite", "postgres"
 path = "/var/lib/rustqueue/data"  # For redb/sqlite
+redb_durability = "immediate"     # "none" (unsafe fastest), "eventual", "immediate" (safest)
 # postgres_url = "postgres://..."  # For postgres backend
 
 [auth]
@@ -1489,22 +1517,38 @@ The dashboard is a static web application compiled into the RustQueue binary usi
 
 **Exit criteria:** ✅ Schedule engine executes cron/interval jobs, API covers full CRUD, dashboard shows schedules, all backends support schedule storage.
 
-### Phase 5: Performance Optimization (v0.4.5) — Weeks 27-30
+### Phase 5: Performance Optimization (v0.9 in progress) — Weeks 27-30+
 
-**Goal:** Close the 147x throughput gap between current performance (~340 push/sec) and target (50,000 push/sec). See `docs/performance-analysis.md` for full analysis.
+**Goal:** Close the single-job throughput gap while preserving the large gains from batched/coalesced paths. See `docs/performance-analysis.md` for root-cause analysis and roadmap.
 
 | Deliverable | Status | Description |
 |---|---|---|
-| Batch transaction API | ⬜ | `batch_insert_jobs()` on StorageBackend — single fsync for N jobs |
-| spawn_blocking for redb | ⬜ | Wrap sync redb I/O in `tokio::task::spawn_blocking` |
-| Secondary index tables | ⬜ | redb tables keyed by (queue, state) for O(log n) dequeue |
-| Write coalescing | ⬜ | Buffer writes with configurable flush interval |
+| Batch transaction API | ✅ | `insert_jobs_batch()` implemented and used by API/engine batch push |
+| spawn_blocking for redb | ✅ | redb sync I/O moved off async workers via blocking pool |
+| Secondary index tables | ✅ | queue/state/priority scans replaced with indexed dequeue and query paths |
+| Atomic single-job completion path | ✅ | `complete_job()` backend API reduces ack transition overhead |
+| Write coalescing primitive | 🟨 | `complete_jobs_batch()` implemented with redb single-transaction override |
+| Batched TCP commands | ✅ | `push_batch` + `ack_batch` now supported in protocol and tests |
+| Competitor benchmark suite extensions | ✅ | Redis, RabbitMQ, BullMQ, Celery + RustQueue batch controls |
+| Automatic timed coalescing (single-job path) | ⬜ | Server-side buffered writes/flush policy for non-batched clients |
 | Hybrid memory+disk storage | ⬜ | In-memory hot path with periodic redb snapshots |
 | Per-queue table sharding | ⬜ | Partition jobs by queue name in separate redb tables |
 
-**Current benchmarks (redb):** push 2.93ms/op (~340/sec), push+pull+ack 8.54ms (~117/sec), batch/1000 6.44s (~155/sec)
+**Current benchmark snapshots (redb, 2026-02-06):**
 
-**Exit criteria:** ≥ 10,000 push/sec with redb backend; ≥ 50,000 push/sec with hybrid memory/disk mode.
+- Single-job TCP control (`batch_size=1`): ~334 push/sec, ~73 consume/sec, ~56 end-to-end/sec
+- Batched TCP profile (`batch_size=50`): ~10,929 push/sec, ~5,970 consume/sec, ~3,692 end-to-end/sec
+
+**References:** `docs/competitor-benchmark-2026-02-06.md`, `docs/competitor-benchmark-2026-02-06-immediate-r2-latest.md`, `docs/competitor-gap-analysis-2026-02-06.md`
+
+**Next steps (priority order):**
+
+1. Implement automatic timed write coalescing for single-job commands (`push`/`ack`) to remove protocol-level opt-in requirement.
+2. Extend batch semantics beyond TCP with SDK/client helpers so default usage adopts high-throughput paths.
+3. Re-run competitor suite with fixed control+batch profiles and publish trend lines per durability mode.
+4. Prototype hybrid memory/disk mode to target sustained >50K push/sec.
+
+**Exit criteria:** ≥ 10,000 push/sec in single-job TCP profile with redb; ≥ 50,000 push/sec with hybrid memory/disk mode.
 
 ### Phase 6: Distributed Mode (v0.5) — Weeks 31-40
 
@@ -1542,9 +1586,12 @@ Stabilize APIs, write migration guides, achieve production use at 3+ organizatio
 
 ### 18.2 Technical Metrics
 
-| Metric | Target | Current (v0.4) | Status |
+| Metric | Target | Current (v0.9) | Status |
 |---|---|---|---|
-| Throughput (single node) | ≥ 50,000 jobs/sec | ~340/sec (redb) | Blocked — Phase 5 |
+| Throughput (push, single-job TCP) | ≥ 50,000 jobs/sec | ~334/sec | Blocked — Phase 5 |
+| Throughput (push+pull+ack, single-job TCP) | ≥ 30,000 jobs/sec | ~56/sec | Blocked — Phase 5 |
+| Throughput (push, batched TCP `batch_size=50`) | ≥ 50,000 jobs/sec | ~10,929/sec | In Progress |
+| Throughput (push+pull+ack, batched TCP `batch_size=50`) | ≥ 30,000 jobs/sec | ~3,692/sec | In Progress |
 | P99 latency (push) | < 5 ms | ~3 ms | OK |
 | Binary size | < 15 MB | 6.8 MB | PASS |
 | Memory usage (idle) | < 20 MB | ~15 MB | PASS |

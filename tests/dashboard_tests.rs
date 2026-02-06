@@ -70,11 +70,7 @@ async fn test_landing_page_root_returns_html() {
     let base_url = start_test_server().await;
     let client = Client::new();
 
-    let resp = client
-        .get(&base_url)
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(&base_url).send().await.unwrap();
 
     assert_eq!(resp.status(), 200);
 
@@ -92,8 +88,7 @@ async fn test_landing_page_root_returns_html() {
 
     let body = resp.text().await.unwrap();
     assert!(
-        body.contains("Queueing Infrastructure Without the")
-            && body.contains("Ops Tax"),
+        body.contains("Queueing Infrastructure Without the") && body.contains("Ops Tax"),
         "expected landing page hero fragments, got: {body}"
     );
 }

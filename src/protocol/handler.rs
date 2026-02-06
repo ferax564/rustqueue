@@ -3,13 +3,13 @@
 
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, warn};
 
 use crate::config::AuthConfig;
 use crate::engine::models::Schedule;
-use crate::engine::queue::{JobOptions, QueueManager};
+use crate::engine::queue::{BatchAckItem, BatchPushItem, JobOptions, QueueManager};
 
 /// Handle a single TCP connection, processing commands until the client disconnects.
 ///
@@ -20,11 +20,8 @@ use crate::engine::queue::{JobOptions, QueueManager};
 /// be `{"cmd":"auth","token":"<bearer-token>"}`. All subsequent commands are allowed
 /// only after successful authentication. When auth is disabled, all commands are
 /// allowed without an auth handshake.
-pub async fn handle_connection<S>(
-    stream: S,
-    manager: Arc<QueueManager>,
-    auth_config: &AuthConfig,
-) where
+pub async fn handle_connection<S>(stream: S, manager: Arc<QueueManager>, auth_config: &AuthConfig)
+where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let peer = "unknown";
@@ -128,8 +125,10 @@ async fn process_line(line: &str, manager: &QueueManager) -> Value {
 
     match cmd {
         "push" => handle_push(&parsed, manager).await,
+        "push_batch" => handle_push_batch(&parsed, manager).await,
         "pull" => handle_pull(&parsed, manager).await,
         "ack" => handle_ack(&parsed, manager).await,
+        "ack_batch" => handle_ack_batch(&parsed, manager).await,
         "fail" => handle_fail(&parsed, manager).await,
         "cancel" => handle_cancel(&parsed, manager).await,
         "progress" => handle_progress(&parsed, manager).await,
@@ -171,21 +170,76 @@ async fn handle_push(cmd: &Value, manager: &QueueManager) -> Value {
     }
 }
 
+async fn handle_push_batch(cmd: &Value, manager: &QueueManager) -> Value {
+    let queue = match cmd.get("queue").and_then(|v| v.as_str()) {
+        Some(q) => q,
+        None => return error_response("VALIDATION_ERROR", "Missing 'queue' field"),
+    };
+    let jobs = match cmd.get("jobs").and_then(|v| v.as_array()) {
+        Some(jobs) => jobs,
+        None => return error_response("VALIDATION_ERROR", "Missing or invalid 'jobs' field"),
+    };
+
+    let mut items = Vec::with_capacity(jobs.len());
+    for (idx, entry) in jobs.iter().enumerate() {
+        let obj = match entry.as_object() {
+            Some(obj) => obj,
+            None => {
+                return error_response(
+                    "VALIDATION_ERROR",
+                    &format!("jobs[{idx}] must be an object"),
+                );
+            }
+        };
+
+        let name = match obj.get("name").and_then(|v| v.as_str()) {
+            Some(name) => name.to_string(),
+            None => {
+                return error_response(
+                    "VALIDATION_ERROR",
+                    &format!("jobs[{idx}] missing 'name' field"),
+                );
+            }
+        };
+        let data = obj.get("data").cloned().unwrap_or(json!({}));
+
+        let options: Option<JobOptions> = obj
+            .get("options")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .or_else(|| serde_json::from_value(entry.clone()).ok());
+
+        items.push(BatchPushItem {
+            name,
+            data,
+            options,
+        });
+    }
+
+    match manager.push_batch(queue, items).await {
+        Ok(ids) => json!({
+            "ok": true,
+            "ids": ids.into_iter().map(|id| id.to_string()).collect::<Vec<_>>()
+        }),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
 async fn handle_pull(cmd: &Value, manager: &QueueManager) -> Value {
     let queue = match cmd.get("queue").and_then(|v| v.as_str()) {
         Some(q) => q,
         None => return error_response("VALIDATION_ERROR", "Missing 'queue' field"),
     };
-    let count = cmd
-        .get("count")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(1) as u32;
+    let count = cmd.get("count").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
 
     match manager.pull(queue, count).await {
         Ok(jobs) => {
             if count == 1 {
                 // Single-job mode: return the job directly (or null).
-                let job_val = jobs.into_iter().next().map(|j| json!(j)).unwrap_or(Value::Null);
+                let job_val = jobs
+                    .into_iter()
+                    .next()
+                    .map(|j| json!(j))
+                    .unwrap_or(Value::Null);
                 json!({"ok": true, "job": job_val})
             } else {
                 let jobs_val: Vec<Value> = jobs.into_iter().map(|j| json!(j)).collect();
@@ -209,6 +263,109 @@ async fn handle_ack(cmd: &Value, manager: &QueueManager) -> Value {
 
     match manager.ack(id, result).await {
         Ok(()) => json!({"ok": true}),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn handle_ack_batch(cmd: &Value, manager: &QueueManager) -> Value {
+    let mut items: Vec<BatchAckItem> = Vec::new();
+
+    if let Some(entries) = cmd.get("items").and_then(|v| v.as_array()) {
+        items.reserve(entries.len());
+        for (idx, entry) in entries.iter().enumerate() {
+            let obj = match entry.as_object() {
+                Some(obj) => obj,
+                None => {
+                    return error_response(
+                        "VALIDATION_ERROR",
+                        &format!("items[{idx}] must be an object"),
+                    );
+                }
+            };
+
+            let id_str = match obj.get("id").and_then(|v| v.as_str()) {
+                Some(id) => id,
+                None => {
+                    return error_response(
+                        "VALIDATION_ERROR",
+                        &format!("items[{idx}] missing 'id' field"),
+                    );
+                }
+            };
+            let id = match uuid::Uuid::parse_str(id_str) {
+                Ok(id) => id,
+                Err(_) => {
+                    return error_response(
+                        "VALIDATION_ERROR",
+                        &format!("items[{idx}] has invalid job ID format"),
+                    );
+                }
+            };
+            let result = obj.get("result").cloned();
+            items.push(BatchAckItem { id, result });
+        }
+    } else if let Some(ids) = cmd.get("ids").and_then(|v| v.as_array()) {
+        items.reserve(ids.len());
+        for (idx, id_value) in ids.iter().enumerate() {
+            let id_str = match id_value.as_str() {
+                Some(id) => id,
+                None => {
+                    return error_response(
+                        "VALIDATION_ERROR",
+                        &format!("ids[{idx}] must be a string"),
+                    );
+                }
+            };
+            let id = match uuid::Uuid::parse_str(id_str) {
+                Ok(id) => id,
+                Err(_) => {
+                    return error_response(
+                        "VALIDATION_ERROR",
+                        &format!("ids[{idx}] has invalid job ID format"),
+                    );
+                }
+            };
+            items.push(BatchAckItem { id, result: None });
+        }
+    } else {
+        return error_response(
+            "VALIDATION_ERROR",
+            "Missing 'items' or 'ids' field for ack_batch",
+        );
+    }
+
+    match manager.ack_batch(items).await {
+        Ok(results) => {
+            let acked = results.iter().filter(|r| r.ok).count();
+            let failed = results.len().saturating_sub(acked);
+            let entries: Vec<Value> = results
+                .into_iter()
+                .map(|result| {
+                    if result.ok {
+                        json!({
+                            "id": result.id.to_string(),
+                            "ok": true
+                        })
+                    } else {
+                        json!({
+                            "id": result.id.to_string(),
+                            "ok": false,
+                            "error": {
+                                "code": result.error_code.unwrap_or_else(|| "INTERNAL_ERROR".to_string()),
+                                "message": result.error_message.unwrap_or_else(|| "unknown error".to_string()),
+                            }
+                        })
+                    }
+                })
+                .collect();
+
+            json!({
+                "ok": failed == 0,
+                "acked": acked,
+                "failed": failed,
+                "results": entries,
+            })
+        }
         Err(e) => engine_error_response(&e),
     }
 }
@@ -326,9 +483,15 @@ async fn handle_schedule_create(cmd: &Value, manager: &QueueManager) -> Value {
         None => return error_response("VALIDATION_ERROR", "Missing 'job_name' field"),
     };
     let job_data = cmd.get("job_data").cloned().unwrap_or(json!({}));
-    let cron_expr = cmd.get("cron_expr").and_then(|v| v.as_str()).map(String::from);
+    let cron_expr = cmd
+        .get("cron_expr")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let every_ms = cmd.get("every_ms").and_then(|v| v.as_u64());
-    let timezone = cmd.get("timezone").and_then(|v| v.as_str()).map(String::from);
+    let timezone = cmd
+        .get("timezone")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let max_executions = cmd.get("max_executions").and_then(|v| v.as_u64());
     let job_options: Option<JobOptions> = cmd
         .get("job_options")

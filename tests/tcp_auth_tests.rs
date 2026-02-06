@@ -93,11 +93,7 @@ async fn test_tcp_auth_disabled_allows_commands() {
     );
 
     // Stats should also work
-    send_cmd(
-        &mut writer,
-        json!({"cmd": "stats", "queue": "test-q"}),
-    )
-    .await;
+    send_cmd(&mut writer, json!({"cmd": "stats", "queue": "test-q"})).await;
     let resp = read_response(&mut reader).await;
     assert!(
         resp["ok"].as_bool().unwrap(),
@@ -141,20 +137,13 @@ async fn test_tcp_auth_required_rejects_unauthenticated() {
     );
 
     // Also verify stats is rejected
-    send_cmd(
-        &mut writer,
-        json!({"cmd": "stats", "queue": "test-q"}),
-    )
-    .await;
+    send_cmd(&mut writer, json!({"cmd": "stats", "queue": "test-q"})).await;
     let resp = read_response(&mut reader).await;
     assert!(
         !resp["ok"].as_bool().unwrap(),
         "stats should also be rejected when not authenticated"
     );
-    assert_eq!(
-        resp["error"]["code"].as_str().unwrap(),
-        "UNAUTHORIZED",
-    );
+    assert_eq!(resp["error"]["code"].as_str().unwrap(), "UNAUTHORIZED",);
 }
 
 /// Full auth flow: authenticate first, then use regular commands.
@@ -169,11 +158,7 @@ async fn test_tcp_auth_flow() {
     let (mut reader, mut writer) = connect_tcp(port).await;
 
     // 1. Try auth with an invalid token first
-    send_cmd(
-        &mut writer,
-        json!({"cmd": "auth", "token": "wrong-token"}),
-    )
-    .await;
+    send_cmd(&mut writer, json!({"cmd": "auth", "token": "wrong-token"})).await;
     let resp = read_response(&mut reader).await;
     assert!(
         !resp["ok"].as_bool().unwrap(),
@@ -198,11 +183,7 @@ async fn test_tcp_auth_flow() {
     );
 
     // 3. Authenticate with the valid token
-    send_cmd(
-        &mut writer,
-        json!({"cmd": "auth", "token": token}),
-    )
-    .await;
+    send_cmd(&mut writer, json!({"cmd": "auth", "token": token})).await;
     let resp = read_response(&mut reader).await;
     assert!(
         resp["ok"].as_bool().unwrap(),
@@ -223,11 +204,7 @@ async fn test_tcp_auth_flow() {
     let job_id = resp["id"].as_str().unwrap().to_string();
 
     // 5. Pull should work too
-    send_cmd(
-        &mut writer,
-        json!({"cmd": "pull", "queue": "auth-q"}),
-    )
-    .await;
+    send_cmd(&mut writer, json!({"cmd": "pull", "queue": "auth-q"})).await;
     let resp = read_response(&mut reader).await;
     assert!(
         resp["ok"].as_bool().unwrap(),
@@ -240,11 +217,7 @@ async fn test_tcp_auth_flow() {
     );
 
     // 6. Ack should work
-    send_cmd(
-        &mut writer,
-        json!({"cmd": "ack", "id": job_id}),
-    )
-    .await;
+    send_cmd(&mut writer, json!({"cmd": "ack", "id": job_id})).await;
     let resp = read_response(&mut reader).await;
     assert!(
         resp["ok"].as_bool().unwrap(),

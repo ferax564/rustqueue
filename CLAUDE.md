@@ -69,15 +69,28 @@ src/
 
 ## Known Performance Limitations
 
-The default redb backend has significant throughput limitations (~340 push/sec vs 50K target). Root causes:
+The default redb backend has significant throughput limitations on single-job command paths (~334 push/sec and ~56 push+pull+ack cycles/sec in the latest single-job TCP baseline run vs 50K/30K targets). Batched TCP mode is much faster (~10.9K push/sec, ~3.7K push+pull+ack cycles/sec) but still below long-term targets.
 
-1. **Per-operation fsync**: Each `insert_job()` creates a separate write transaction with `fsync()` (~2.9ms/op)
-2. **O(n) full table scans**: `dequeue()`, `get_active_jobs()`, `get_queue_counts()` iterate every job in the database
-3. **No batch transactions**: StorageBackend trait has no `batch_insert_jobs()` — batch pushes pay N × fsync
-4. **Blocking async runtime**: redb sync I/O runs directly on tokio threads (no `spawn_blocking`)
-5. **Single flat table**: No secondary indexes by queue/state — all queries except get-by-ID scan everything
+Root causes for the single-job path:
 
-See `docs/performance-analysis.md` for full analysis and optimization plan.
+1. **Per-transition durability cost**: lifecycle operations still commit write transactions frequently (`insert`, `dequeue transition`, `complete/fail update`)
+2. **Write amplification on state changes**: v0.6 indexes mean transitions update main row + index rows in one transaction
+3. **Protocol overhead**: single-job TCP path is strict request/response JSON per command (batch commands now exist but are opt-in)
+4. **Some scans remain**: cleanup/list-queues/unique-key lookups still scan broad job sets
+5. **Durability trade-off is configurable**: `storage.redb_durability` supports `none`, `eventual`, and `immediate`; benchmark impact is workload-dependent (and `none` did not consistently outperform `immediate` in same-day repeated runs)
+
+References:
+
+- `docs/performance-analysis.md`
+- `docs/competitor-benchmark-2026-02-06.md`
+- `docs/competitor-benchmark-2026-02-06-immediate-r2-latest.md`
+- `docs/competitor-gap-analysis-2026-02-06.md`
+
+Immediate next steps:
+
+1. Add automatic timed write coalescing for single-job `push`/`ack` flows.
+2. Expand SDK/client helpers so batch commands are the default high-throughput path.
+3. Re-run competitor suite on fixed control (`batch_size=1`) and batch (`batch_size=50`) profiles for trend tracking.
 
 ## Conventions
 
@@ -149,7 +162,7 @@ GET    /                               # Landing page
 
 ### TCP Commands
 
-`push`, `pull`, `ack`, `fail`, `cancel`, `progress`, `heartbeat`, `get`, `schedule_create`, `schedule_list`, `schedule_get`, `schedule_delete`, `schedule_pause`, `schedule_resume`
+`push`, `push_batch`, `pull`, `ack`, `ack_batch`, `fail`, `cancel`, `progress`, `heartbeat`, `get`, `schedule_create`, `schedule_list`, `schedule_get`, `schedule_delete`, `schedule_pause`, `schedule_resume`
 
 ## CLI Commands
 

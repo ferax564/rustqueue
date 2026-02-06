@@ -193,7 +193,11 @@ mod tests {
 
     #[test]
     fn test_job_new_defaults() {
-        let job = Job::new("emails", "send-welcome", serde_json::json!({"to": "a@b.com"}));
+        let job = Job::new(
+            "emails",
+            "send-welcome",
+            serde_json::json!({"to": "a@b.com"}),
+        );
 
         assert_eq!(job.queue, "emails");
         assert_eq!(job.name, "send-welcome");

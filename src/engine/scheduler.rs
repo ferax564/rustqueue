@@ -30,7 +30,10 @@ pub fn start_scheduler(
         // Skip the first immediate tick
         ticker.tick().await;
 
-        info!(interval_ms = tick_interval_ms, stall_timeout_ms, "Background scheduler started");
+        info!(
+            interval_ms = tick_interval_ms,
+            stall_timeout_ms, "Background scheduler started"
+        );
 
         let mut tick_count: u64 = 0;
 

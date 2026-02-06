@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use rustqueue::api::{self, AppState};
 use rustqueue::config::AuthConfig;
@@ -88,7 +88,12 @@ async fn test_auth_enabled_rejects_no_token() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["ok"], false);
     assert_eq!(body["error"]["code"], "UNAUTHORIZED");
-    assert!(body["error"]["message"].as_str().unwrap().contains("Missing"));
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Missing")
+    );
 }
 
 // ── Test 3: Auth enabled rejects requests with bad token ─────────────────────
@@ -116,10 +121,12 @@ async fn test_auth_enabled_rejects_bad_token() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["ok"], false);
     assert_eq!(body["error"]["code"], "UNAUTHORIZED");
-    assert!(body["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Invalid"));
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid")
+    );
 }
 
 // ── Test 4: Auth enabled accepts valid token ─────────────────────────────────

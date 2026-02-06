@@ -438,9 +438,7 @@ impl StorageBackend for SqliteStorage {
     async fn list_queue_names(&self) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
 
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT json_extract(data, '$.queue') FROM jobs",
-        )?;
+        let mut stmt = conn.prepare("SELECT DISTINCT json_extract(data, '$.queue') FROM jobs")?;
 
         let mut names = std::collections::BTreeSet::new();
         let mut rows = stmt.query(())?;
@@ -478,9 +476,8 @@ impl StorageBackend for SqliteStorage {
     async fn get_active_jobs(&self) -> Result<Vec<Job>> {
         let conn = self.conn.lock().unwrap();
 
-        let mut stmt = conn.prepare(
-            "SELECT data FROM jobs WHERE json_extract(data, '$.state') = 'active'",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT data FROM jobs WHERE json_extract(data, '$.state') = 'active'")?;
 
         let mut active = Vec::new();
         let mut rows = stmt.query(())?;
@@ -526,7 +523,11 @@ mod tests {
         let id = storage.insert_job(&job).await.unwrap();
         assert_eq!(id, job.id);
 
-        let retrieved = storage.get_job(id).await.unwrap().expect("job should exist");
+        let retrieved = storage
+            .get_job(id)
+            .await
+            .unwrap()
+            .expect("job should exist");
         assert_eq!(retrieved.id, job.id);
         assert_eq!(retrieved.queue, "emails");
         assert_eq!(retrieved.name, "test-job");
@@ -616,7 +617,13 @@ mod tests {
         let j_other = test_job("other");
 
         for job in [
-            &j_waiting, &j_active, &j_completed, &j_failed, &j_delayed, &j_dlq, &j_other,
+            &j_waiting,
+            &j_active,
+            &j_completed,
+            &j_failed,
+            &j_delayed,
+            &j_dlq,
+            &j_other,
         ] {
             storage.insert_job(job).await.unwrap();
         }

@@ -3,6 +3,7 @@
 //! [`QueueManager`] wraps an `Arc<dyn StorageBackend>` and exposes push, pull,
 //! ack, fail, cancel, and query operations with proper state-machine validation.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
@@ -14,7 +15,7 @@ use crate::api::websocket::JobEvent;
 use crate::engine::error::RustQueueError;
 use crate::engine::metrics as metric_names;
 use crate::engine::models::{BackoffStrategy, Job, JobId, JobState, QueueCounts, Schedule};
-use crate::storage::StorageBackend;
+use crate::storage::{CompleteJobOutcome, StorageBackend};
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -49,6 +50,32 @@ pub struct FailResult {
 pub struct QueueInfo {
     pub name: String,
     pub counts: QueueCounts,
+}
+
+/// Single item in a batch push operation.
+#[derive(Debug, Clone)]
+pub struct BatchPushItem {
+    pub name: String,
+    pub data: serde_json::Value,
+    pub options: Option<JobOptions>,
+}
+
+/// Single item in a batch acknowledgement operation.
+#[derive(Debug, Clone)]
+pub struct BatchAckItem {
+    pub id: JobId,
+    pub result: Option<serde_json::Value>,
+}
+
+/// Result for one item in a batch acknowledgement operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchAckResult {
+    pub id: JobId,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_message: Option<String>,
 }
 
 // ── QueueManager ─────────────────────────────────────────────────────────────
@@ -90,22 +117,8 @@ impl QueueManager {
         }
     }
 
-    // ── Push ─────────────────────────────────────────────────────────────
-
-    /// Enqueue a new job, applying the supplied [`JobOptions`].
-    ///
-    /// Returns the generated [`JobId`].
-    #[tracing::instrument(skip(self, data, opts), fields(queue, name))]
-    pub async fn push(
-        &self,
-        queue: &str,
-        name: &str,
-        data: serde_json::Value,
-        opts: Option<JobOptions>,
-    ) -> Result<JobId, RustQueueError> {
-        let mut job = Job::new(queue, name, data);
-
-        // Apply optional overrides.
+    /// Apply optional push options to a job before it is persisted.
+    fn apply_job_options(job: &mut Job, opts: Option<JobOptions>) {
         if let Some(opts) = opts {
             if let Some(p) = opts.priority {
                 job.priority = p;
@@ -153,6 +166,23 @@ impl QueueManager {
                 job.state = JobState::Delayed;
             }
         }
+    }
+
+    // ── Push ─────────────────────────────────────────────────────────────
+
+    /// Enqueue a new job, applying the supplied [`JobOptions`].
+    ///
+    /// Returns the generated [`JobId`].
+    #[tracing::instrument(skip(self, data, opts), fields(queue, name))]
+    pub async fn push(
+        &self,
+        queue: &str,
+        name: &str,
+        data: serde_json::Value,
+        opts: Option<JobOptions>,
+    ) -> Result<JobId, RustQueueError> {
+        let mut job = Job::new(queue, name, data);
+        Self::apply_job_options(&mut job, opts);
 
         // Unique-key deduplication check.
         if let Some(ref uk) = job.unique_key {
@@ -179,6 +209,62 @@ impl QueueManager {
         info!(job_id = %id, "Job pushed");
 
         Ok(id)
+    }
+
+    /// Enqueue multiple jobs and persist them via the backend batch API.
+    ///
+    /// Jobs are validated and prepared first, then inserted through a single
+    /// storage call. Backends may implement this as a single transaction.
+    #[tracing::instrument(skip(self, items), fields(queue, batch_size = items.len()))]
+    pub async fn push_batch(
+        &self,
+        queue: &str,
+        items: Vec<BatchPushItem>,
+    ) -> Result<Vec<JobId>, RustQueueError> {
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut jobs = Vec::with_capacity(items.len());
+        let mut unique_keys_in_batch = HashSet::new();
+
+        for item in items {
+            let mut job = Job::new(queue, &item.name, item.data);
+            Self::apply_job_options(&mut job, item.options);
+
+            if let Some(ref uk) = job.unique_key {
+                if !unique_keys_in_batch.insert(uk.clone()) {
+                    return Err(RustQueueError::DuplicateKey(uk.clone()));
+                }
+
+                let existing = self
+                    .storage
+                    .get_job_by_unique_key(queue, uk)
+                    .await
+                    .map_err(RustQueueError::Internal)?;
+                if existing.is_some() {
+                    return Err(RustQueueError::DuplicateKey(uk.clone()));
+                }
+            }
+
+            jobs.push(job);
+        }
+
+        let ids = self
+            .storage
+            .insert_jobs_batch(&jobs)
+            .await
+            .map_err(RustQueueError::Internal)?;
+
+        metrics::counter!(metric_names::JOBS_PUSHED_TOTAL).increment(ids.len() as u64);
+
+        for id in &ids {
+            self.emit_event("job.pushed", *id, queue);
+        }
+
+        info!(queue, count = ids.len(), "Batch jobs pushed");
+
+        Ok(ids)
     }
 
     // ── Pull ─────────────────────────────────────────────────────────────
@@ -212,32 +298,23 @@ impl QueueManager {
         id: JobId,
         result: Option<serde_json::Value>,
     ) -> Result<(), RustQueueError> {
-        let mut job = self.require_job(id).await?;
-
-        if job.state != JobState::Active {
-            return Err(RustQueueError::InvalidState {
-                current: format!("{:?}", job.state),
-                expected: "Active".to_string(),
-            });
-        }
-
-        let now = Utc::now();
-        job.state = JobState::Completed;
-        job.completed_at = Some(now);
-        job.updated_at = now;
-        job.result = result;
-
-        if job.remove_on_complete {
-            self.storage
-                .delete_job(id)
-                .await
-                .map_err(RustQueueError::Internal)?;
-        } else {
-            self.storage
-                .update_job(&job)
-                .await
-                .map_err(RustQueueError::Internal)?;
-        }
+        let job = match self
+            .storage
+            .complete_job(id, result)
+            .await
+            .map_err(RustQueueError::Internal)?
+        {
+            CompleteJobOutcome::Completed(job) => job,
+            CompleteJobOutcome::NotFound => {
+                return Err(RustQueueError::JobNotFound(id.to_string()));
+            }
+            CompleteJobOutcome::InvalidState(current) => {
+                return Err(RustQueueError::InvalidState {
+                    current: format!("{:?}", current),
+                    expected: "Active".to_string(),
+                });
+            }
+        };
 
         metrics::counter!(metric_names::JOBS_COMPLETED_TOTAL).increment(1);
 
@@ -248,15 +325,84 @@ impl QueueManager {
         Ok(())
     }
 
+    /// Acknowledge completion for multiple jobs in one backend call.
+    ///
+    /// Returns one result per input item. A failure for one job does not
+    /// prevent other jobs in the batch from being processed.
+    #[tracing::instrument(skip(self, items), fields(batch_size = items.len()))]
+    pub async fn ack_batch(
+        &self,
+        items: Vec<BatchAckItem>,
+    ) -> Result<Vec<BatchAckResult>, RustQueueError> {
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let payload: Vec<(JobId, Option<serde_json::Value>)> = items
+            .iter()
+            .map(|item| (item.id, item.result.clone()))
+            .collect();
+
+        let outcomes = self
+            .storage
+            .complete_jobs_batch(&payload)
+            .await
+            .map_err(RustQueueError::Internal)?;
+
+        let mut completed = 0u64;
+        let mut results = Vec::with_capacity(items.len());
+
+        for (item, outcome) in items.into_iter().zip(outcomes.into_iter()) {
+            match outcome {
+                CompleteJobOutcome::Completed(job) => {
+                    completed += 1;
+                    self.emit_event("job.completed", item.id, &job.queue);
+                    results.push(BatchAckResult {
+                        id: item.id,
+                        ok: true,
+                        error_code: None,
+                        error_message: None,
+                    });
+                }
+                CompleteJobOutcome::NotFound => {
+                    results.push(BatchAckResult {
+                        id: item.id,
+                        ok: false,
+                        error_code: Some("JOB_NOT_FOUND".to_string()),
+                        error_message: Some(format!("Job '{}' not found", item.id)),
+                    });
+                }
+                CompleteJobOutcome::InvalidState(current) => {
+                    results.push(BatchAckResult {
+                        id: item.id,
+                        ok: false,
+                        error_code: Some("INVALID_STATE".to_string()),
+                        error_message: Some(format!(
+                            "Job is in invalid state '{current:?}' for operation (expected: Active)"
+                        )),
+                    });
+                }
+            }
+        }
+
+        if completed > 0 {
+            metrics::counter!(metric_names::JOBS_COMPLETED_TOTAL).increment(completed);
+        }
+
+        info!(
+            acked = completed,
+            failed = results.iter().filter(|r| !r.ok).count(),
+            "Batch jobs acknowledged"
+        );
+
+        Ok(results)
+    }
+
     // ── Fail ─────────────────────────────────────────────────────────────
 
     /// Report a job failure. The engine decides whether to retry or move to DLQ.
     #[tracing::instrument(skip(self), fields(id = %id, error))]
-    pub async fn fail(
-        &self,
-        id: JobId,
-        error: &str,
-    ) -> Result<FailResult, RustQueueError> {
+    pub async fn fail(&self, id: JobId, error: &str) -> Result<FailResult, RustQueueError> {
         let mut job = self.require_job(id).await?;
 
         if job.state != JobState::Active {
@@ -866,10 +1012,7 @@ mod tests {
     #[tokio::test]
     async fn test_push_and_pull() {
         let mgr = temp_manager();
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
 
         let pulled = mgr.pull("work", 1).await.unwrap();
         assert_eq!(pulled.len(), 1);
@@ -881,18 +1024,13 @@ mod tests {
     #[tokio::test]
     async fn test_ack_job() {
         let mgr = temp_manager();
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
 
         // Pull to make it Active.
         mgr.pull("work", 1).await.unwrap();
 
         // Ack with a result.
-        mgr.ack(id, Some(json!({"output": "done"})))
-            .await
-            .unwrap();
+        mgr.ack(id, Some(json!({"output": "done"}))).await.unwrap();
 
         let job = mgr.get_job(id).await.unwrap().expect("job should exist");
         assert_eq!(job.state, JobState::Completed);
@@ -901,13 +1039,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ack_batch_mixed_results() {
+        let mgr = temp_manager();
+        let id_ok = mgr
+            .push("work", "process-ok", json!({}), None)
+            .await
+            .unwrap();
+        let id_invalid_state = mgr
+            .push("work", "process-invalid", json!({}), None)
+            .await
+            .unwrap();
+        let missing_id = uuid::Uuid::now_v7();
+
+        // Activate only one job.
+        let pulled = mgr.pull("work", 1).await.unwrap();
+        assert_eq!(pulled.len(), 1);
+        assert_eq!(pulled[0].id, id_ok);
+
+        let results = mgr
+            .ack_batch(vec![
+                BatchAckItem {
+                    id: id_ok,
+                    result: Some(json!({"ok": true})),
+                },
+                BatchAckItem {
+                    id: id_invalid_state,
+                    result: None,
+                },
+                BatchAckItem {
+                    id: missing_id,
+                    result: None,
+                },
+            ])
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 3);
+
+        assert!(results[0].ok);
+        assert!(!results[1].ok);
+        assert_eq!(results[1].error_code.as_deref(), Some("INVALID_STATE"));
+        assert!(!results[2].ok);
+        assert_eq!(results[2].error_code.as_deref(), Some("JOB_NOT_FOUND"));
+
+        let completed = mgr.get_job(id_ok).await.unwrap().unwrap();
+        assert_eq!(completed.state, JobState::Completed);
+        assert_eq!(completed.result, Some(json!({"ok": true})));
+    }
+
+    #[tokio::test]
     async fn test_fail_job_with_retries() {
         let mgr = temp_manager();
         // Default max_attempts = 3, so after 1 failure it should retry.
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
 
         mgr.pull("work", 1).await.unwrap();
 
@@ -947,10 +1131,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_waiting_job() {
         let mgr = temp_manager();
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
 
         mgr.cancel(id).await.unwrap();
 
@@ -961,10 +1142,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_active_job_fails() {
         let mgr = temp_manager();
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
 
         // Pull to make it Active.
         mgr.pull("work", 1).await.unwrap();
@@ -1041,10 +1219,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_progress() {
         let mgr = temp_manager();
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
         mgr.pull("work", 1).await.unwrap();
 
         mgr.update_progress(id, 50, Some("halfway there".to_string()))
@@ -1060,10 +1235,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_progress_requires_active_state() {
         let mgr = temp_manager();
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
         // Job is Waiting, not Active
         let err = mgr.update_progress(id, 50, None).await.unwrap_err();
         match err {
@@ -1131,10 +1303,7 @@ mod tests {
     #[tokio::test]
     async fn test_check_timeouts_no_timeout_set() {
         let mgr = temp_manager();
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
         mgr.pull("work", 1).await.unwrap();
 
         // No timeout set, so check_timeouts should return 0
@@ -1148,10 +1317,7 @@ mod tests {
     #[tokio::test]
     async fn test_heartbeat() {
         let mgr = temp_manager();
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
         mgr.pull("work", 1).await.unwrap();
 
         mgr.heartbeat(id).await.unwrap();
@@ -1163,10 +1329,7 @@ mod tests {
     #[tokio::test]
     async fn test_heartbeat_requires_active() {
         let mgr = temp_manager();
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
         // Job is Waiting, not Active
         let err = mgr.heartbeat(id).await.unwrap_err();
         match err {
@@ -1181,10 +1344,7 @@ mod tests {
     #[tokio::test]
     async fn test_detect_stalls() {
         let mgr = temp_manager();
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
         mgr.pull("work", 1).await.unwrap();
 
         // Wait a bit, then detect stalls with a very short timeout
@@ -1270,10 +1430,7 @@ mod tests {
         let mgr = temp_manager();
 
         // Push a job, pull it, ack it so it becomes Completed.
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
         mgr.pull("work", 1).await.unwrap();
         mgr.ack(id, None).await.unwrap();
 
@@ -1282,16 +1439,10 @@ mod tests {
         assert_eq!(job.state, JobState::Completed);
         job.completed_at = Some(Utc::now() - Duration::days(30));
         job.updated_at = Utc::now() - Duration::days(30);
-        mgr.storage
-            .update_job(&job)
-            .await
-            .unwrap();
+        mgr.storage.update_job(&job).await.unwrap();
 
         // Run cleanup with a 7-day TTL — the 30-day-old job should be removed.
-        let (completed, failed, dlq) = mgr
-            .cleanup_expired_jobs("7d", "30d", "90d")
-            .await
-            .unwrap();
+        let (completed, failed, dlq) = mgr.cleanup_expired_jobs("7d", "30d", "90d").await.unwrap();
         assert_eq!(completed, 1);
         assert_eq!(failed, 0);
         assert_eq!(dlq, 0);
@@ -1400,18 +1551,12 @@ mod tests {
         let mgr = temp_manager();
 
         // Push, pull, and ack a job — it becomes Completed just now.
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
         mgr.pull("work", 1).await.unwrap();
         mgr.ack(id, None).await.unwrap();
 
         // Run cleanup with 7d TTL — recent job should survive.
-        let (completed, failed, dlq) = mgr
-            .cleanup_expired_jobs("7d", "30d", "90d")
-            .await
-            .unwrap();
+        let (completed, failed, dlq) = mgr.cleanup_expired_jobs("7d", "30d", "90d").await.unwrap();
         assert_eq!(completed, 0);
         assert_eq!(failed, 0);
         assert_eq!(dlq, 0);

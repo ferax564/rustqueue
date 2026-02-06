@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use rustqueue::api::{self, AppState};
 use rustqueue::config::AuthConfig;
@@ -51,7 +51,11 @@ async fn test_production_scenario() {
         .await
         .unwrap();
 
-    assert_eq!(health_resp.status(), 200, "health endpoint should be public");
+    assert_eq!(
+        health_resp.status(),
+        200,
+        "health endpoint should be public"
+    );
     let health_body: Value = health_resp.json().await.unwrap();
     assert_eq!(health_body["ok"], true);
     assert_eq!(health_body["status"], "healthy");
@@ -87,10 +91,16 @@ async fn test_production_scenario() {
         .await
         .unwrap();
 
-    assert_eq!(push_resp.status(), 201, "push with valid token should return 201");
+    assert_eq!(
+        push_resp.status(),
+        201,
+        "push with valid token should return 201"
+    );
     let push_body: Value = push_resp.json().await.unwrap();
     assert_eq!(push_body["ok"], true);
-    let job_id = push_body["id"].as_str().expect("response should contain a job id");
+    let job_id = push_body["id"]
+        .as_str()
+        .expect("response should contain a job id");
     uuid::Uuid::parse_str(job_id).expect("id should be a valid UUID");
 
     // ── Step 4: Pull the job with valid auth token ───────────────────────
@@ -102,10 +112,17 @@ async fn test_production_scenario() {
         .await
         .unwrap();
 
-    assert_eq!(pull_resp.status(), 200, "pull with valid token should succeed");
+    assert_eq!(
+        pull_resp.status(),
+        200,
+        "pull with valid token should succeed"
+    );
     let pull_body: Value = pull_resp.json().await.unwrap();
     assert_eq!(pull_body["ok"], true);
-    assert!(pull_body["job"].is_object(), "pull should return a job object");
+    assert!(
+        pull_body["job"].is_object(),
+        "pull should return a job object"
+    );
     assert_eq!(
         pull_body["job"]["id"], job_id,
         "pulled job should match pushed job id"
@@ -164,10 +181,7 @@ async fn test_production_scenario() {
     // ── Step 7: Verify CORS preflight works ──────────────────────────────
 
     let cors_resp = client
-        .request(
-            reqwest::Method::OPTIONS,
-            format!("{base}/api/v1/health"),
-        )
+        .request(reqwest::Method::OPTIONS, format!("{base}/api/v1/health"))
         .header("Origin", "https://example.com")
         .header("Access-Control-Request-Method", "GET")
         .header("Access-Control-Request-Headers", "Authorization")

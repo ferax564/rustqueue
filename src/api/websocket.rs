@@ -7,10 +7,10 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{ws::Message, State, WebSocketUpgrade},
+    Router,
+    extract::{State, WebSocketUpgrade, ws::Message},
     response::Response,
     routing::get,
-    Router,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -41,10 +41,7 @@ pub fn routes() -> Router<Arc<AppState>> {
 
 // ── Handler ─────────────────────────────────────────────────────────────────
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-) -> Response {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
     let rx = state.event_tx.subscribe();
     ws.on_upgrade(move |socket| handle_socket(socket, rx))
 }

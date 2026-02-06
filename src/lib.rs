@@ -14,6 +14,8 @@ pub mod storage;
 // Re-export core types for library consumers
 pub use builder::RustQueue;
 pub use engine::error::RustQueueError;
-pub use engine::models::{BackoffStrategy, Job, JobId, JobState, QueueCounts, QueueOrdering, Schedule};
+pub use engine::models::{
+    BackoffStrategy, Job, JobId, JobState, QueueCounts, QueueOrdering, Schedule,
+};
 pub use engine::queue::{FailResult, JobOptions, QueueInfo, QueueManager};
 pub use storage::StorageBackend;

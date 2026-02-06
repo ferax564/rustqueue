@@ -3,7 +3,6 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing::{info, warn};
 
-
 #[cfg(feature = "tls")]
 fn load_certs(path: &str) -> anyhow::Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
     let file = std::fs::File::open(path)?;
@@ -22,7 +21,11 @@ fn load_key(path: &str) -> anyhow::Result<rustls::pki_types::PrivateKeyDer<'stat
 }
 
 #[derive(Parser)]
-#[command(name = "rustqueue", version, about = "A high-performance distributed job scheduler")]
+#[command(
+    name = "rustqueue",
+    version,
+    about = "A high-performance distributed job scheduler"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -158,12 +161,8 @@ async fn main() -> anyhow::Result<()> {
         } => {
             // 1. Load config from TOML file, fall back to defaults
             let mut config = match std::fs::read_to_string(&config_path) {
-                Ok(contents) => {
-                    toml::from_str::<rustqueue::config::RustQueueConfig>(&contents)?
-                }
-                Err(_) => {
-                    rustqueue::config::RustQueueConfig::default()
-                }
+                Ok(contents) => toml::from_str::<rustqueue::config::RustQueueConfig>(&contents)?,
+                Err(_) => rustqueue::config::RustQueueConfig::default(),
             };
 
             // 2. Initialize tracing based on config
@@ -215,9 +214,7 @@ async fn main() -> anyhow::Result<()> {
                         .with_env_filter(env_filter)
                         .init();
                 } else {
-                    tracing_subscriber::fmt()
-                        .with_env_filter(env_filter)
-                        .init();
+                    tracing_subscriber::fmt().with_env_filter(env_filter).init();
                 }
             }
 
@@ -236,12 +233,30 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // 3. Initialize storage backend based on config
-            let storage: Arc<dyn rustqueue::storage::StorageBackend> = match config.storage.backend {
+            let storage: Arc<dyn rustqueue::storage::StorageBackend> = match config.storage.backend
+            {
                 rustqueue::config::StorageBackendType::Redb => {
                     std::fs::create_dir_all(&config.storage.path)?;
                     let db_path = std::path::Path::new(&config.storage.path).join("rustqueue.redb");
-                    let s = Arc::new(rustqueue::storage::RedbStorage::new(&db_path)?);
-                    info!(path = %db_path.display(), "RedbStorage initialized");
+                    let durability = match config.storage.redb_durability {
+                        rustqueue::config::RedbDurabilityConfig::None => {
+                            rustqueue::storage::RedbDurability::None
+                        }
+                        rustqueue::config::RedbDurabilityConfig::Immediate => {
+                            rustqueue::storage::RedbDurability::Immediate
+                        }
+                        rustqueue::config::RedbDurabilityConfig::Eventual => {
+                            rustqueue::storage::RedbDurability::Eventual
+                        }
+                    };
+                    let s = Arc::new(rustqueue::storage::RedbStorage::new_with_durability(
+                        &db_path, durability,
+                    )?);
+                    info!(
+                        path = %db_path.display(),
+                        durability = ?config.storage.redb_durability,
+                        "RedbStorage initialized"
+                    );
                     s
                 }
                 rustqueue::config::StorageBackendType::InMemory => {
@@ -259,17 +274,20 @@ async fn main() -> anyhow::Result<()> {
                 }
                 #[cfg(feature = "postgres")]
                 rustqueue::config::StorageBackendType::Postgres => {
-                    let url = config.storage.postgres_url.as_ref()
-                        .ok_or_else(|| anyhow::anyhow!(
+                    let url = config.storage.postgres_url.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!(
                             "PostgreSQL backend requires storage.postgres_url in config"
-                        ))?;
+                        )
+                    })?;
                     let s = Arc::new(rustqueue::storage::PostgresStorage::new(url).await?);
                     info!("PostgresStorage initialized");
                     s
                 }
                 #[allow(unreachable_patterns)]
                 other => {
-                    anyhow::bail!("Storage backend '{other:?}' is not compiled in. Enable the corresponding feature flag.");
+                    anyhow::bail!(
+                        "Storage backend '{other:?}' is not compiled in. Enable the corresponding feature flag."
+                    );
                 }
             };
 
@@ -472,10 +490,7 @@ async fn main() -> anyhow::Result<()> {
             host,
             http_port,
         } => {
-            let url = format!(
-                "http://{}:{}/api/v1/queues/{}/jobs",
-                host, http_port, queue
-            );
+            let url = format!("http://{}:{}/api/v1/queues/{}/jobs", host, http_port, queue);
             let payload: serde_json::Value =
                 serde_json::from_str(&data).unwrap_or_else(|_| serde_json::json!({}));
             let body = serde_json::json!({
@@ -510,7 +525,11 @@ async fn main() -> anyhow::Result<()> {
         }
 
         #[cfg(feature = "cli")]
-        Commands::Schedules { action, host, http_port } => {
+        Commands::Schedules {
+            action,
+            host,
+            http_port,
+        } => {
             let base = format!("http://{}:{}/api/v1/schedules", host, http_port);
             let client = reqwest::Client::new();
 
@@ -523,7 +542,10 @@ async fn main() -> anyhow::Result<()> {
                             if schedules.is_empty() {
                                 println!("No schedules found.");
                             } else {
-                                println!("{:<25} {:<15} {:<25} {:>6} {:<7}", "Name", "Queue", "Timing", "Runs", "Paused");
+                                println!(
+                                    "{:<25} {:<15} {:<25} {:>6} {:<7}",
+                                    "Name", "Queue", "Timing", "Runs", "Paused"
+                                );
                                 println!("{}", "-".repeat(80));
                                 for s in schedules {
                                     let name = s["name"].as_str().unwrap_or("?");
@@ -537,7 +559,10 @@ async fn main() -> anyhow::Result<()> {
                                     };
                                     let runs = s["execution_count"].as_u64().unwrap_or(0);
                                     let paused = s["paused"].as_bool().unwrap_or(false);
-                                    println!("{:<25} {:<15} {:<25} {:>6} {:<7}", name, queue, timing, runs, paused);
+                                    println!(
+                                        "{:<25} {:<15} {:<25} {:>6} {:<7}",
+                                        name, queue, timing, runs, paused
+                                    );
                                 }
                             }
                         }
@@ -545,16 +570,28 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("Error: {}", body);
                     }
                 }
-                ScheduleAction::Create { name, queue, job_name, data, cron, every_ms } => {
-                    let payload: serde_json::Value = serde_json::from_str(&data).unwrap_or(serde_json::json!({}));
+                ScheduleAction::Create {
+                    name,
+                    queue,
+                    job_name,
+                    data,
+                    cron,
+                    every_ms,
+                } => {
+                    let payload: serde_json::Value =
+                        serde_json::from_str(&data).unwrap_or(serde_json::json!({}));
                     let mut body = serde_json::json!({
                         "name": name,
                         "queue": queue,
                         "job_name": job_name,
                         "job_data": payload,
                     });
-                    if let Some(c) = cron { body["cron_expr"] = serde_json::json!(c); }
-                    if let Some(ms) = every_ms { body["every_ms"] = serde_json::json!(ms); }
+                    if let Some(c) = cron {
+                        body["cron_expr"] = serde_json::json!(c);
+                    }
+                    if let Some(ms) = every_ms {
+                        body["every_ms"] = serde_json::json!(ms);
+                    }
                     let resp = client.post(&base).json(&body).send().await?;
                     let result: serde_json::Value = resp.json().await?;
                     if result["ok"].as_bool() == Some(true) {

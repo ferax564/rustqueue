@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use rustqueue::api::{self, AppState};
 use rustqueue::config::AuthConfig;
@@ -63,7 +63,12 @@ async fn start_server_with_shutdown() -> (
         }
     });
 
-    (format!("http://{http_addr}"), shutdown_tx, http_handle, tcp_handle)
+    (
+        format!("http://{http_addr}"),
+        shutdown_tx,
+        http_handle,
+        tcp_handle,
+    )
 }
 
 /// Verify that the server completes in-flight work and stops after shutdown signal.
@@ -83,7 +88,11 @@ async fn test_graceful_shutdown_completes_inflight() {
         .await
         .unwrap();
 
-    assert_eq!(push_resp.status(), 201, "push should succeed before shutdown");
+    assert_eq!(
+        push_resp.status(),
+        201,
+        "push should succeed before shutdown"
+    );
     let push_body: Value = push_resp.json().await.unwrap();
     assert_eq!(push_body["ok"], true);
     let job_id = push_body["id"].as_str().unwrap().to_string();

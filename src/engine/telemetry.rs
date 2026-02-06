@@ -4,8 +4,8 @@
 //! that exports spans to an OpenTelemetry collector via OTLP.
 
 use anyhow::Result;
-use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::KeyValue;
+use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::WithExportConfig;
 
 /// Create a tracing-opentelemetry layer configured for OTLP export.
@@ -33,9 +33,10 @@ where
 
     let provider = opentelemetry_sdk::trace::TracerProvider::builder()
         .with_batch_exporter(exporter, opentelemetry_sdk::runtime::Tokio)
-        .with_resource(opentelemetry_sdk::Resource::new(vec![
-            KeyValue::new("service.name", service_name.to_string()),
-        ]))
+        .with_resource(opentelemetry_sdk::Resource::new(vec![KeyValue::new(
+            "service.name",
+            service_name.to_string(),
+        )]))
         .build();
 
     let tracer = provider.tracer("rustqueue");

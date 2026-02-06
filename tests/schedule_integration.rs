@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use rustqueue::api::{self, AppState};
 use rustqueue::config::{AuthConfig, RetentionConfig};
@@ -22,9 +22,7 @@ use rustqueue::storage::MemoryStorage;
 async fn start_test_server_with_scheduler() -> (String, tokio::task::JoinHandle<()>) {
     let (event_tx, _) = tokio::sync::broadcast::channel(1024);
     let storage = Arc::new(MemoryStorage::new());
-    let queue_manager = Arc::new(
-        QueueManager::new(storage).with_event_sender(event_tx.clone()),
-    );
+    let queue_manager = Arc::new(QueueManager::new(storage).with_event_sender(event_tx.clone()));
 
     // Start scheduler with a fast 50ms tick so tests complete quickly.
     let scheduler_handle = start_scheduler(
@@ -43,9 +41,7 @@ async fn start_test_server_with_scheduler() -> (String, tokio::task::JoinHandle<
     });
     let app = api::router(state);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -122,9 +118,7 @@ async fn test_interval_schedule_lifecycle() {
     // Verify execution_count >= 2 via GET.
     let (status, body) = get_schedule(&client, &base, "fast-interval").await;
     assert_eq!(status, 200);
-    let exec_count = body["schedule"]["execution_count"]
-        .as_u64()
-        .unwrap_or(0);
+    let exec_count = body["schedule"]["execution_count"].as_u64().unwrap_or(0);
     assert!(
         exec_count >= 2,
         "expected execution_count >= 2, got {exec_count}"
@@ -185,9 +179,7 @@ async fn test_schedule_pause_stops_execution() {
 
     // Verify some jobs were created.
     let (_, body) = get_schedule(&client, &base, "pausable-sched").await;
-    let count_before_pause = body["schedule"]["execution_count"]
-        .as_u64()
-        .unwrap_or(0);
+    let count_before_pause = body["schedule"]["execution_count"].as_u64().unwrap_or(0);
     assert!(
         count_before_pause >= 1,
         "expected at least 1 execution before pause, got {count_before_pause}"
@@ -203,18 +195,17 @@ async fn test_schedule_pause_stops_execution() {
 
     // Record current execution count.
     let (_, body) = get_schedule(&client, &base, "pausable-sched").await;
-    let count_at_pause = body["schedule"]["execution_count"]
-        .as_u64()
-        .unwrap_or(0);
-    assert_eq!(body["schedule"]["paused"], true, "schedule should be paused");
+    let count_at_pause = body["schedule"]["execution_count"].as_u64().unwrap_or(0);
+    assert_eq!(
+        body["schedule"]["paused"], true,
+        "schedule should be paused"
+    );
 
     // Wait longer — no new jobs should be created while paused.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let (_, body) = get_schedule(&client, &base, "pausable-sched").await;
-    let count_after_wait = body["schedule"]["execution_count"]
-        .as_u64()
-        .unwrap_or(0);
+    let count_after_wait = body["schedule"]["execution_count"].as_u64().unwrap_or(0);
     // Allow at most 1 extra due to a potential race between pause request and
     // an in-flight scheduler tick.
     assert!(
@@ -234,9 +225,7 @@ async fn test_schedule_pause_stops_execution() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
     let (_, body) = get_schedule(&client, &base, "pausable-sched").await;
-    let count_after_resume = body["schedule"]["execution_count"]
-        .as_u64()
-        .unwrap_or(0);
+    let count_after_resume = body["schedule"]["execution_count"].as_u64().unwrap_or(0);
     assert!(
         count_after_resume > count_after_wait,
         "expected new executions after resume (after wait: {count_after_wait}, after resume: {count_after_resume})"
@@ -275,9 +264,7 @@ async fn test_cron_schedule_creates_jobs() {
     // Verify execution_count is at least 1 (first fire).
     let (status, body) = get_schedule(&client, &base, "cron-sched").await;
     assert_eq!(status, 200);
-    let exec_count = body["schedule"]["execution_count"]
-        .as_u64()
-        .unwrap_or(0);
+    let exec_count = body["schedule"]["execution_count"].as_u64().unwrap_or(0);
     assert!(
         exec_count >= 1,
         "cron schedule should have fired at least once, got execution_count={exec_count}"
@@ -342,9 +329,7 @@ async fn test_max_executions_auto_pauses() {
         body["schedule"]["paused"], true,
         "schedule should be auto-paused after reaching max_executions"
     );
-    let exec_count = body["schedule"]["execution_count"]
-        .as_u64()
-        .unwrap_or(0);
+    let exec_count = body["schedule"]["execution_count"].as_u64().unwrap_or(0);
     assert_eq!(
         exec_count, 3,
         "execution_count should be exactly 3 (max_executions limit), got {exec_count}"

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio_tungstenite::connect_async;
 
 use rustqueue::api::{self, AppState};
@@ -14,9 +14,7 @@ use rustqueue::storage::MemoryStorage;
 async fn test_websocket_receives_push_event() {
     let (event_tx, _) = tokio::sync::broadcast::channel(1024);
     let storage = Arc::new(MemoryStorage::new());
-    let queue_manager = Arc::new(
-        QueueManager::new(storage).with_event_sender(event_tx.clone()),
-    );
+    let queue_manager = Arc::new(QueueManager::new(storage).with_event_sender(event_tx.clone()));
 
     let state = Arc::new(AppState {
         queue_manager: Arc::clone(&queue_manager),
@@ -46,14 +44,11 @@ async fn test_websocket_receives_push_event() {
         .unwrap();
 
     // Read the event
-    let msg = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        ws_stream.next(),
-    )
-    .await
-    .expect("Timeout waiting for WS message")
-    .expect("WS stream ended")
-    .expect("WS error");
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws_stream.next())
+        .await
+        .expect("Timeout waiting for WS message")
+        .expect("WS stream ended")
+        .expect("WS error");
 
     let text = msg.to_text().unwrap();
     let event: Value = serde_json::from_str(text).unwrap();
@@ -68,9 +63,7 @@ async fn test_websocket_receives_push_event() {
 async fn test_websocket_receives_completed_event() {
     let (event_tx, _) = tokio::sync::broadcast::channel(1024);
     let storage = Arc::new(MemoryStorage::new());
-    let queue_manager = Arc::new(
-        QueueManager::new(storage).with_event_sender(event_tx.clone()),
-    );
+    let queue_manager = Arc::new(QueueManager::new(storage).with_event_sender(event_tx.clone()));
 
     let state = Arc::new(AppState {
         queue_manager: Arc::clone(&queue_manager),
@@ -94,7 +87,10 @@ async fn test_websocket_receives_completed_event() {
         .expect("Failed to connect WebSocket");
 
     // Push, pull, and ack a job
-    let id = queue_manager.push("work", "task", json!({}), None).await.unwrap();
+    let id = queue_manager
+        .push("work", "task", json!({}), None)
+        .await
+        .unwrap();
     queue_manager.pull("work", 1).await.unwrap();
 
     // Drain the push event first
@@ -105,7 +101,10 @@ async fn test_websocket_receives_completed_event() {
         .unwrap();
 
     // Now ack
-    queue_manager.ack(id, Some(json!({"done": true}))).await.unwrap();
+    queue_manager
+        .ack(id, Some(json!({"done": true})))
+        .await
+        .unwrap();
 
     // Read the completed event
     let msg = tokio::time::timeout(std::time::Duration::from_secs(2), ws_stream.next())
@@ -126,9 +125,7 @@ async fn test_websocket_receives_completed_event() {
 async fn test_websocket_receives_cancelled_event() {
     let (event_tx, _) = tokio::sync::broadcast::channel(1024);
     let storage = Arc::new(MemoryStorage::new());
-    let queue_manager = Arc::new(
-        QueueManager::new(storage).with_event_sender(event_tx.clone()),
-    );
+    let queue_manager = Arc::new(QueueManager::new(storage).with_event_sender(event_tx.clone()));
 
     let state = Arc::new(AppState {
         queue_manager: Arc::clone(&queue_manager),
@@ -152,7 +149,10 @@ async fn test_websocket_receives_cancelled_event() {
         .expect("Failed to connect WebSocket");
 
     // Push and cancel a job
-    let id = queue_manager.push("work", "task", json!({}), None).await.unwrap();
+    let id = queue_manager
+        .push("work", "task", json!({}), None)
+        .await
+        .unwrap();
 
     // Drain the push event
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ws_stream.next())
@@ -185,9 +185,7 @@ async fn test_websocket_receives_failed_event_on_dlq() {
 
     let (event_tx, _) = tokio::sync::broadcast::channel(1024);
     let storage = Arc::new(MemoryStorage::new());
-    let queue_manager = Arc::new(
-        QueueManager::new(storage).with_event_sender(event_tx.clone()),
-    );
+    let queue_manager = Arc::new(QueueManager::new(storage).with_event_sender(event_tx.clone()));
 
     let state = Arc::new(AppState {
         queue_manager: Arc::clone(&queue_manager),
@@ -250,9 +248,7 @@ async fn test_websocket_receives_failed_event_on_dlq() {
 async fn test_websocket_no_event_on_retry() {
     let (event_tx, _) = tokio::sync::broadcast::channel(1024);
     let storage = Arc::new(MemoryStorage::new());
-    let queue_manager = Arc::new(
-        QueueManager::new(storage).with_event_sender(event_tx.clone()),
-    );
+    let queue_manager = Arc::new(QueueManager::new(storage).with_event_sender(event_tx.clone()));
 
     let state = Arc::new(AppState {
         queue_manager: Arc::clone(&queue_manager),
@@ -294,11 +290,8 @@ async fn test_websocket_no_event_on_retry() {
     assert!(result.will_retry, "job should be retried, not moved to DLQ");
 
     // There should be NO "job.failed" event because retries don't emit events
-    let timeout_result = tokio::time::timeout(
-        std::time::Duration::from_millis(200),
-        ws_stream.next(),
-    )
-    .await;
+    let timeout_result =
+        tokio::time::timeout(std::time::Duration::from_millis(200), ws_stream.next()).await;
 
     assert!(
         timeout_result.is_err(),

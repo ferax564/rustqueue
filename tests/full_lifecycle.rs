@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use rustqueue::api::{self, AppState};
 use rustqueue::engine::queue::QueueManager;
@@ -58,7 +58,9 @@ async fn test_full_job_lifecycle() {
     assert_eq!(push_resp.status(), 201, "push should return 201 Created");
     let push_body: Value = push_resp.json().await.unwrap();
     assert_eq!(push_body["ok"], true);
-    let job_id = push_body["id"].as_str().expect("response should contain a job id");
+    let job_id = push_body["id"]
+        .as_str()
+        .expect("response should contain a job id");
     uuid::Uuid::parse_str(job_id).expect("id should be a valid UUID");
 
     // ── Step 2: Pull the job via HTTP, verify correct ID and Active state ─
@@ -72,9 +74,18 @@ async fn test_full_job_lifecycle() {
     assert_eq!(pull_resp.status(), 200);
     let pull_body: Value = pull_resp.json().await.unwrap();
     assert_eq!(pull_body["ok"], true);
-    assert!(pull_body["job"].is_object(), "pull should return a job object");
-    assert_eq!(pull_body["job"]["id"], job_id, "pulled job should match pushed job id");
-    assert_eq!(pull_body["job"]["state"], "active", "pulled job should be in active state");
+    assert!(
+        pull_body["job"].is_object(),
+        "pull should return a job object"
+    );
+    assert_eq!(
+        pull_body["job"]["id"], job_id,
+        "pulled job should match pushed job id"
+    );
+    assert_eq!(
+        pull_body["job"]["state"], "active",
+        "pulled job should be in active state"
+    );
 
     // ── Step 3: Ack the job, verify success ──────────────────────────────
 
@@ -100,8 +111,14 @@ async fn test_full_job_lifecycle() {
     assert_eq!(stats_resp.status(), 200);
     let stats_body: Value = stats_resp.json().await.unwrap();
     assert_eq!(stats_body["ok"], true);
-    assert_eq!(stats_body["counts"]["waiting"], 0, "no jobs should be waiting");
-    assert_eq!(stats_body["counts"]["completed"], 1, "one job should be completed");
+    assert_eq!(
+        stats_body["counts"]["waiting"], 0,
+        "no jobs should be waiting"
+    );
+    assert_eq!(
+        stats_body["counts"]["completed"], 1,
+        "one job should be completed"
+    );
 
     // ── Step 5: Check health endpoint — 200 OK ──────────────────────────
 
@@ -111,7 +128,11 @@ async fn test_full_job_lifecycle() {
         .await
         .unwrap();
 
-    assert_eq!(health_resp.status(), 200, "health endpoint should return 200");
+    assert_eq!(
+        health_resp.status(),
+        200,
+        "health endpoint should return 200"
+    );
     let health_body: Value = health_resp.json().await.unwrap();
     assert_eq!(health_body["ok"], true);
     assert_eq!(health_body["status"], "healthy");
@@ -156,7 +177,10 @@ async fn test_full_job_lifecycle() {
     assert_eq!(fail_resp.status(), 200);
     let fail_body: Value = fail_resp.json().await.unwrap();
     assert_eq!(fail_body["ok"], true);
-    assert_eq!(fail_body["retry"], false, "with max_attempts=1 the job should not retry");
+    assert_eq!(
+        fail_body["retry"], false,
+        "with max_attempts=1 the job should not retry"
+    );
 
     // Verify the job is now in DLQ state.
     let dlq_get_resp = client
@@ -166,7 +190,10 @@ async fn test_full_job_lifecycle() {
         .unwrap();
 
     let dlq_get_body: Value = dlq_get_resp.json().await.unwrap();
-    assert_eq!(dlq_get_body["job"]["state"], "dlq", "job should be in DLQ after exhausting retries");
+    assert_eq!(
+        dlq_get_body["job"]["state"], "dlq",
+        "job should be in DLQ after exhausting retries"
+    );
 
     // ── Step 7: Delayed job — push with delay, pull immediately gets nothing
 
@@ -212,7 +239,11 @@ async fn test_full_job_lifecycle() {
         .await
         .unwrap();
 
-    assert_eq!(unique_push1.status(), 201, "first push with unique key should succeed");
+    assert_eq!(
+        unique_push1.status(),
+        201,
+        "first push with unique key should succeed"
+    );
 
     let unique_push2 = client
         .post(format!("{base}/api/v1/queues/lifecycle/jobs"))

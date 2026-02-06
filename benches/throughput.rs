@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use serde_json::json;
 use tempfile::tempdir;
 
@@ -101,5 +101,10 @@ fn batch_push(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, push_single_job, push_pull_ack_roundtrip, batch_push);
+criterion_group!(
+    benches,
+    push_single_job,
+    push_pull_ack_roundtrip,
+    batch_push
+);
 criterion_main!(benches);

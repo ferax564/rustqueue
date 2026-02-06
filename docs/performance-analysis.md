@@ -1,14 +1,45 @@
 # RustQueue Performance Analysis
 
 **Date:** February 6, 2026
-**Version:** v0.4 (Phase 4 complete)
-**Status:** CRITICAL — throughput 147x below target
+**Version:** v0.9 (A1 + A3 + B1/B2 + atomic ack + durability modes + batch ack coalescing + TCP batch commands)
+**Status:** MAJOR IMPROVEMENT IN BATCHED MODE — single-job path still far below target
 
 ---
 
 ## Executive Summary
 
-RustQueue's current throughput is ~340 push/sec with the default redb backend, versus the PRD target of 50,000 push/sec. The gap is 147x. The root causes are well-understood and addressable: per-operation fsync in redb, O(n) full table scans for dequeue, and no batch transaction support. This document details the bottlenecks, measured results, and a concrete optimization plan.
+RustQueue's single-job throughput with the default redb backend remains far below the PRD target of 50,000 push/sec. However, adding write-coalescing primitives (`complete_jobs_batch`) and TCP batch commands (`push_batch`, `ack_batch`) produced a major throughput jump in batched mode. The remaining bottleneck is mostly on single-job command paths and command-level round-trips.
+
+---
+
+## Implementation Update (v0.9)
+
+Implemented in this phase:
+
+1. **Write coalescing primitive added**: storage trait now supports `complete_jobs_batch()` for batched completion/ack.
+2. **redb batch completion override added**: redb completes many jobs in one write transaction/commit.
+3. **TCP batch commands added**: protocol now supports `push_batch` and `ack_batch`.
+4. **Benchmark harness updated**: competitor runner now supports `--rustqueue-tcp-batch-size` to exercise single vs batched TCP mode.
+5. **Durability modes retained**: redb still supports `none`/`eventual`/`immediate`.
+
+Current high-throughput competitor suite run (`scripts/benchmark_competitors.py --ops 500 --repeats 2 --redb-durability immediate --rustqueue-tcp-batch-size 50`):
+
+| System | Produce ops/s | Consume ops/s | End-to-end ops/s |
+|--------|---------------:|--------------:|-----------------:|
+| rustqueue_http | 245 | 105 | 73 |
+| rustqueue_tcp | 10,929 | 5,970 | 3,692 |
+| redis_list | 3,005 | 3,448 | 1,704 |
+| rabbitmq | 27,637 | 1,922 | 1,519 |
+| bullmq | 1,728 | 1,804 | 545 |
+| celery | 983 | 513 | 342 |
+
+Interpretation:
+
+- Batched TCP now coalesces write commits for both push and ack paths, and reduces protocol round-trips substantially.
+- In this profile, RustQueue TCP is now the fastest system on consume and end-to-end.
+- Produce throughput is still below RabbitMQ in this run.
+- This is not a pure single-job comparison: RustQueue TCP is explicitly running with `batch_size=50`.
+- Single-job control remains much lower (`docs/competitor-benchmark-2026-02-06-immediate-r2-latest.json`: TCP ~334 produce / ~73 consume / ~56 end-to-end).
 
 ---
 
@@ -58,7 +89,7 @@ RustQueue's current throughput is ~340 push/sec with the default redb backend, v
 
 ### 1. Per-Operation fsync (redb write model) — PRIMARY BOTTLENECK
 
-**Location:** `src/storage/redb.rs:55-67`
+**Location:** `src/storage/redb.rs:247-266` (insert) and `src/storage/redb.rs:317-344` (update)
 
 Every call to `insert_job()` creates its own write transaction:
 
@@ -80,80 +111,68 @@ The same pattern repeats in `update_job()`, `delete_job()`, `move_to_dlq()`, and
 
 **Impact:** Batch pushes of 1000 jobs take 6.44 seconds because each job gets its own write transaction (1000 × fsync).
 
-### 2. O(n) Full Table Scan for Dequeue — SECONDARY BOTTLENECK
+### 2. Full-table dequeue scan removed for hot paths — RESOLVED IN v0.6
 
-**Location:** `src/storage/redb.rs:110-156`
+**Location:** `src/storage/redb.rs`
 
-The `dequeue()` method iterates **every job in the entire database** to find waiting jobs in a specific queue:
+`dequeue()` now performs a prefix-range scan over the queue/state/priority index and only loads selected job IDs from the main table. The same index-driven pattern now powers `get_queue_counts()`, `get_dlq_jobs()`, and `get_active_jobs()`, while `get_ready_scheduled()` scans delayed-state index entries instead of the full jobs table.
 
-```rust
-async fn dequeue(&self, queue: &str, count: u32) -> Result<Vec<Job>> {
-    let write_txn = self.db.begin_write()?;
-    let mut table = write_txn.open_table(JOBS_TABLE)?;
+**Impact:** The asymptotic read/query behavior is improved, especially for large databases with many queues/states.
 
-    // Scan ALL jobs — O(n) where n = total jobs across ALL queues
-    let mut candidates: Vec<Job> = Vec::new();
-    for entry in table.iter()? {
-        let (_, value) = entry?;
-        let job: Job = serde_json::from_slice(value.value())?;  // deserialize every job
-        if job.queue == queue && job.state == JobState::Waiting {
-            candidates.push(job);
-        }
-    }
-    // ... sort and take count
-}
-```
+### 3. No Batch Transaction Support — RESOLVED IN v0.5
 
-With 100,000 jobs in the database, dequeue deserializes all 100,000 to find the handful that are waiting in the requested queue. This is O(n) in the total database size, not the queue size.
+**Current locations:** `src/storage/mod.rs`, `src/engine/queue.rs`, `src/api/jobs.rs`
 
-**Impact:** Dequeue latency grows linearly with total job count. At 100K jobs, this becomes the dominant bottleneck.
+This was true in v0.4 and is now fixed.
 
-### 3. No Batch Transaction Support
-
-**Location:** `src/storage/mod.rs:28` (StorageBackend trait)
-
-The `StorageBackend` trait only exposes `insert_job(&self, job: &Job)` — one job at a time. There is no `batch_insert_jobs()` method. The HTTP batch push handler calls `push()` in a loop:
+The storage trait now exposes `insert_jobs_batch(&self, jobs: &[Job])`, redb implements it as a single transaction commit, and the HTTP batch push handler uses `QueueManager::push_batch()` instead of calling single push in a loop.
 
 ```rust
-// In HTTP handler: each push is a separate transaction
-for job_data in batch {
-    manager.push(queue, name, data, opts).await?;
-    // → storage.insert_job() → begin_write + commit + fsync
-}
+let ids = queue_manager.push_batch(queue, items).await?;
+// -> storage.insert_jobs_batch() -> begin_write + N inserts + single commit/fsync
 ```
 
-This means batch operations pay N × fsync cost instead of amortizing a single fsync across N inserts.
+This removes the guaranteed N x fsync penalty for API batch pushes.
 
-### 4. All Scan Operations Are O(n)
+### 4. Remaining scan-heavy calls
 
-The same full-table-scan pattern appears in:
+Some operations still iterate large portions of `JOBS_TABLE`, notably:
 
-| Method | Location | Scans |
-|--------|----------|-------|
-| `dequeue()` | redb.rs:110 | All jobs, filter by queue+state |
-| `get_queue_counts()` | redb.rs:158 | All jobs, filter by queue |
-| `get_ready_scheduled()` | redb.rs:185 | All jobs, filter by state+delay_until |
-| `get_dlq_jobs()` | redb.rs:224 | All jobs, filter by queue+state |
-| `get_active_jobs()` | redb.rs:~340 | All jobs, filter by state |
-| `remove_completed_before()` | redb.rs:244 | All jobs, filter by state+updated_at |
-| `list_queue_names()` | redb.rs:~300 | All jobs, collect unique queues |
+| Method | Current behavior |
+|--------|------------------|
+| `remove_completed_before()` | scans all jobs and filters by completed timestamp |
+| `remove_failed_before()` | scans all jobs and filters by failed + updated_at |
+| `remove_dlq_before()` | scans all jobs and filters by DLQ + updated_at |
+| `list_queue_names()` | scans all jobs and deduplicates queue names |
+| `get_job_by_unique_key()` | scans all jobs and filters by queue + unique key |
 
-As the database grows, **every background scheduler tick** (which calls `get_ready_scheduled`, `get_active_jobs`, etc.) does multiple O(n) scans.
+These calls are less hot than dequeue/ack in the current benchmark but still matter for long-running nodes and scheduler ticks.
 
-### 5. Blocking Async Runtime
+### 5. Blocking Async Runtime — RESOLVED IN v0.5
 
-**Location:** `src/storage/redb.rs:26-27`
+**Current location:** `src/storage/redb.rs`
 
 ```rust
-/// All operations are synchronous under the hood; the async trait methods call
-/// redb directly without `spawn_blocking` since redb operations are fast for v0.1.
+self.run_blocking("insert_job", move |db| {
+    // synchronous redb I/O
+}).await
 ```
 
-redb operations are synchronous I/O. Calling them directly from async context blocks the tokio runtime thread. Under high concurrency, this starves other async tasks (HTTP handling, WebSocket events, TCP connections).
+redb operations are still synchronous I/O, but they now run on Tokio's blocking pool via `spawn_blocking`, preventing runtime worker starvation under load.
 
-### 6. Single Flat Table Design
+### 6. Ack round-trip overhead reduced — RESOLVED IN v0.7
 
-All jobs across all queues are stored in a single `JOBS_TABLE` keyed by UUID. There are no secondary indexes by queue name, state, priority, or timestamp. This makes any query other than "get job by ID" a full table scan.
+`ack()` now delegates to storage-level `complete_job()` so redb can do state validation and completion update/delete in one transaction:
+
+- trait API: `src/storage/mod.rs`
+- queue manager usage: `src/engine/queue.rs`
+- redb override: `src/storage/redb.rs`
+
+This reduced end-to-end overhead, but does not remove multi-transition commit costs for the full lifecycle.
+
+### 7. Write amplification from durable index maintenance
+
+Single-job transitions now write `JOBS_TABLE` plus two secondary indexes in the same transaction. For state changes (`Waiting -> Active -> Completed`, retries, DLQ transitions), index rows are removed and reinserted. This improves read complexity but increases per-operation write work on the already fsync-bound path.
 
 ---
 
@@ -161,11 +180,13 @@ All jobs across all queues are stored in a single `JOBS_TABLE` keyed by UUID. Th
 
 | Metric | Current | Target | Gap | Priority |
 |--------|---------|--------|-----|----------|
-| Push throughput | ~340/sec | 50,000/sec | 147x | P0 |
-| Push+ack throughput | ~117/sec | 30,000/sec | 256x | P0 |
-| P50 push latency | 2.93 ms | < 1 ms | 2.9x | P1 |
-| Dequeue at 100K jobs | O(n) scan | O(log n) | Degrades | P0 |
-| Batch push 1000 | 6.44s | < 100ms | 64x | P0 |
+| Push throughput (TCP, single-job profile) | ~334/sec | 50,000/sec | 150x | P0 |
+| Push+ack throughput (TCP, single-job profile) | ~56/sec | 30,000/sec | 538x | P0 |
+| Push throughput (TCP, batch_size=50 profile) | ~10,929/sec | 50,000/sec | 4.6x | P0 |
+| Push+ack throughput (TCP, batch_size=50 profile) | ~3,692/sec | 30,000/sec | 8.1x | P0 |
+| P50 push latency (criterion, last measured) | ~2.9 ms | < 1 ms | 2.9x | P1 |
+| Dequeue at high cardinality | Index prefix scan | O(log n) | Improved | P1 |
+| Batch push 1000 (criterion, v0.5 run) | ~3.30s | < 100ms | 33x | P0 |
 | Binary size | 6.8 MB | < 15 MB | OK | - |
 | Memory (idle) | ~15 MB | < 20 MB | OK | - |
 | Startup | ~10 ms | < 500 ms | OK | - |
@@ -176,12 +197,12 @@ All jobs across all queues are stored in a single `JOBS_TABLE` keyed by UUID. Th
 
 ### Phase A: Quick Wins (estimated 5-10x improvement)
 
-#### A1. Batch Transaction API
+#### A1. Batch Transaction API — DONE (v0.5)
 
-Add `batch_insert_jobs(&self, jobs: &[Job])` to StorageBackend trait. Single write transaction + single fsync for N jobs.
+Implemented `insert_jobs_batch(&self, jobs: &[Job])` in `StorageBackend` and redb. API batch push now routes through `QueueManager::push_batch()` to use this path.
 
 ```rust
-async fn batch_insert_jobs(&self, jobs: &[Job]) -> Result<Vec<JobId>> {
+async fn insert_jobs_batch(&self, jobs: &[Job]) -> Result<Vec<JobId>> {
     let write_txn = self.db.begin_write()?;
     let ids = {
         let mut table = write_txn.open_table(JOBS_TABLE)?;
@@ -197,7 +218,7 @@ async fn batch_insert_jobs(&self, jobs: &[Job]) -> Result<Vec<JobId>> {
 }
 ```
 
-**Expected impact:** Batch push/1000 goes from 6.44s → ~50-100ms (single fsync + N inserts in memory). That's 10,000-20,000 jobs/sec for batch operations.
+**Measured impact so far:** the current throughput suite improved materially (see v0.5 update table above), but still not at target; additional index and write-coalescing work is required.
 
 #### A2. Write Coalescing / Buffered Writes
 
@@ -215,47 +236,46 @@ struct BufferedRedbStorage {
 
 **Expected impact:** Individual pushes go from ~340/sec → ~5,000-10,000/sec (amortized fsync across multiple operations).
 
-#### A3. spawn_blocking for redb Operations
+#### A3. spawn_blocking for redb Operations — DONE (v0.5)
 
 Wrap all redb calls in `tokio::task::spawn_blocking()` to prevent blocking the async runtime:
 
 ```rust
 async fn insert_job(&self, job: &Job) -> Result<JobId> {
-    let db = self.db.clone(); // redb::Database is Arc internally
     let job = job.clone();
-    tokio::task::spawn_blocking(move || {
+    self.run_blocking("insert_job", move |db| {
         // ... synchronous redb operations
-    }).await?
+    }).await
 }
 ```
 
-**Expected impact:** Better concurrent throughput under load. Won't increase single-operation speed but prevents runtime starvation.
+**Measured impact so far:** single-operation latency stayed roughly flat while batch and concurrency behavior improved; this change primarily protects runtime responsiveness under concurrent load.
 
 ### Phase B: Index Optimization (estimated 10-50x improvement for queries)
 
-#### B1. Secondary Index Tables in redb
+#### B1. Secondary Index Tables in redb — DONE (v0.6)
 
 Add auxiliary redb tables for common query patterns:
 
 ```rust
 // Queue+State index: key = (queue, state, priority, created_at, job_id)
 const QUEUE_STATE_INDEX: TableDefinition<&[u8], &[u8]> =
-    TableDefinition::new("idx_queue_state");
+    TableDefinition::new("jobs_queue_state_priority_idx");
 
 // State index: key = (state, updated_at, job_id)
 const STATE_INDEX: TableDefinition<&[u8], &[u8]> =
-    TableDefinition::new("idx_state");
+    TableDefinition::new("jobs_state_updated_idx");
 ```
 
-- `dequeue("emails", 10)` → range scan on QUEUE_STATE_INDEX for `("emails", "waiting", ...)` → O(log n + k) where k = result count
-- `get_active_jobs()` → range scan on STATE_INDEX for `("active", ...)` → O(log n + k)
-- `get_ready_scheduled()` → range scan on STATE_INDEX for `("delayed", ...)` then filter by delay_until
+- `dequeue("emails", 10)` now uses range scan on queue/state prefix (priority-sorted keyspace)
+- `get_active_jobs()` now uses state prefix range scan
+- `get_ready_scheduled()` now scans delayed-state index entries then filters by `delay_until`
 
-**Expected impact:** Dequeue goes from O(n) to O(log n). At 100K jobs, this is ~17 iterations instead of 100,000.
+**Observed impact:** Query complexity is improved, but single-job benchmark throughput did not improve yet because write-path durability and index maintenance dominate.
 
-#### B2. Maintain Indexes in Same Transaction
+#### B2. Maintain Indexes in Same Transaction — DONE (v0.6)
 
-All write operations (insert, update, delete) must update both the main table and index tables within the same transaction. This adds no extra fsync cost since they share the transaction.
+All write operations now update both index tables in the same transaction as `JOBS_TABLE` writes. This keeps consistency, but it increases per-operation write work (remove old keys + insert new keys on state transitions).
 
 ### Phase C: Architecture Changes (estimated 50-100x improvement)
 
@@ -309,19 +329,23 @@ JSON serialization/deserialization adds overhead (~50μs per job). A binary prot
 
 ## Recommended Implementation Order
 
-| Priority | Optimization | Effort | Impact | Risk |
-|----------|-------------|--------|--------|------|
-| 1 | A1: Batch transaction API | Small | 10-20x for batches | Low |
-| 2 | A3: spawn_blocking | Small | Better concurrency | Low |
-| 3 | B1+B2: Secondary index tables | Medium | 10-50x for queries | Medium |
-| 4 | A2: Write coalescing | Medium | 5-10x for singles | Medium (durability trade-off) |
-| 5 | C1: Hybrid memory+disk | Large | 50-100x | High (durability trade-off) |
-| 6 | C2: Per-queue sharding | Medium | 2-10x for dequeue | Low |
-| 7 | D1: TCP pipelining | Medium | 2-5x for TCP | Low |
-| 8 | C3: Lock-free memory | Small | 2-3x under contention | Low |
-| 9 | D2: Binary protocol | Large | 2-5x | Medium (compatibility) |
+| Priority | Optimization | Status | Effort | Impact | Risk |
+|----------|-------------|--------|--------|--------|------|
+| 1 | A1: Batch transaction API | Done (v0.5) | Small | 10-20x for batches | Low |
+| 2 | A3: spawn_blocking | Done (v0.5) | Small | Better concurrency | Low |
+| 3 | B1+B2: Secondary index tables | Done (v0.6) | Medium | Better query scaling | Medium |
+| 4 | Atomic ack completion path | Done (v0.7) | Small | Fewer hot-path round trips | Low |
+| 5 | redb durability mode (`none`/`eventual`/`immediate`) | Done (v0.8) | Small | Workload dependent | Medium |
+| 6 | A2: Write coalescing (`complete_jobs_batch`) | Done (v0.9, partial) | Medium | Large for ack-heavy batches | Medium |
+| 7 | D1: TCP batch commands (`push_batch`/`ack_batch`) | Done (v0.9, first pass) | Medium | Large for TCP throughput | Low |
+| 8 | A2b: Automatic timed write coalescing (no client batching required) | Next | Medium | 5-10x for singles | Medium (durability trade-off) |
+| 9 | C1: Hybrid memory+disk | Planned | Large | 50-100x | High (durability trade-off) |
+| 10 | C2: Per-queue sharding | Planned | Medium | 2-10x for dequeue | Low |
+| 11 | D1b: TCP pipelining for mixed command streams | Planned | Medium | 2-5x for TCP | Low |
+| 12 | C3: Lock-free memory | Planned | Small | 2-3x under contention | Low |
+| 13 | D2: Binary protocol | Planned | Large | 2-5x | Medium (compatibility) |
 
-**Realistic target after Phase A+B:** ~5,000-20,000 push/sec (redb with indexes + batching)
+**Realistic target after current v0.9 path:** strong batched throughput, but still constrained on single-job command workloads
 **Realistic target after Phase C:** ~50,000-100,000 push/sec (hybrid memory/disk)
 
 ---
@@ -330,7 +354,7 @@ JSON serialization/deserialization adds overhead (~50μs per job). A binary prot
 
 | Backend | Write Model | Dequeue Model | Expected Throughput |
 |---------|-------------|---------------|---------------------|
-| redb | fsync per txn | O(n) full scan | ~340/sec (current) |
+| redb | txn commits + index maintenance (single-job) / coalesced commits (batched) | Index prefix range scan | ~334/sec single-job TCP, ~10,929/sec batched TCP |
 | SQLite (WAL) | fsync per txn, WAL batching | SQL indexes | ~2,000-5,000/sec |
 | PostgreSQL | Shared buffer pool, WAL | B-tree indexes, SKIP LOCKED | ~10,000-30,000/sec |
 | In-Memory | No I/O | HashMap lookup | ~100,000-500,000/sec |
@@ -342,4 +366,4 @@ The PRD's 50,000 push/sec target is achievable with the right storage strategy b
 
 ## Conclusion
 
-The performance gap is not a fundamental architectural flaw — it's an expected consequence of Phase 1-4 prioritizing correctness and feature completeness over throughput. The `StorageBackend` trait abstraction means optimizations can be implemented incrementally without changing the engine, API, or protocol layers. The optimization plan above provides a clear path from ~340/sec to the 50,000/sec target.
+The performance story now splits into two modes. Batched TCP mode has improved dramatically and can outperform several competitors in consume/end-to-end throughput on this local suite, while single-job command mode remains far below target. The next highest-impact step is automatic coalescing for single-job flows (so users get batching benefits without changing clients), followed by protocol and architecture upgrades for high-throughput modes.

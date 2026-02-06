@@ -170,8 +170,8 @@ impl StorageBackend for PostgresStorage {
 
         match row {
             Some((data,)) => {
-                let job: Job = serde_json::from_value(data)
-                    .context("failed to deserialize job from JSONB")?;
+                let job: Job =
+                    serde_json::from_value(data).context("failed to deserialize job from JSONB")?;
                 Ok(Some(job))
             }
             None => Ok(None),
@@ -212,7 +212,11 @@ impl StorageBackend for PostgresStorage {
     // -- Queue operations -----------------------------------------------------
 
     async fn dequeue(&self, queue: &str, count: u32) -> Result<Vec<Job>> {
-        let mut tx = self.pool.begin().await.context("failed to begin transaction")?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin transaction")?;
 
         // Select and lock waiting jobs -- `FOR UPDATE SKIP LOCKED` ensures
         // concurrent workers do not contend on the same rows.
@@ -254,7 +258,9 @@ impl StorageBackend for PostgresStorage {
             result.push(job);
         }
 
-        tx.commit().await.context("failed to commit dequeue transaction")?;
+        tx.commit()
+            .await
+            .context("failed to commit dequeue transaction")?;
         Ok(result)
     }
 
@@ -326,28 +332,25 @@ impl StorageBackend for PostgresStorage {
         let data = serde_json::to_value(&updated)?;
         let state_str = Self::state_str(&updated.state);
 
-        sqlx::query(
-            "UPDATE jobs SET state = $2, data = $3 WHERE id = $1",
-        )
-        .bind(updated.id)
-        .bind(&state_str)
-        .bind(&data)
-        .execute(&self.pool)
-        .await
-        .context("failed to move job to DLQ")?;
+        sqlx::query("UPDATE jobs SET state = $2, data = $3 WHERE id = $1")
+            .bind(updated.id)
+            .bind(&state_str)
+            .bind(&data)
+            .execute(&self.pool)
+            .await
+            .context("failed to move job to DLQ")?;
 
         Ok(())
     }
 
     async fn get_dlq_jobs(&self, queue: &str, limit: u32) -> Result<Vec<Job>> {
-        let rows: Vec<(serde_json::Value,)> = sqlx::query_as(
-            "SELECT data FROM jobs WHERE queue = $1 AND state = 'dlq' LIMIT $2",
-        )
-        .bind(queue)
-        .bind(limit as i32)
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to fetch DLQ jobs")?;
+        let rows: Vec<(serde_json::Value,)> =
+            sqlx::query_as("SELECT data FROM jobs WHERE queue = $1 AND state = 'dlq' LIMIT $2")
+                .bind(queue)
+                .bind(limit as i32)
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to fetch DLQ jobs")?;
 
         let mut jobs = Vec::with_capacity(rows.len());
         for (data,) in rows {
@@ -399,12 +402,11 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn remove_failed_before(&self, before: DateTime<Utc>) -> Result<u64> {
-        let rows: Vec<(uuid::Uuid, serde_json::Value)> = sqlx::query_as(
-            "SELECT id, data FROM jobs WHERE state = 'failed'",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to fetch failed jobs for cleanup")?;
+        let rows: Vec<(uuid::Uuid, serde_json::Value)> =
+            sqlx::query_as("SELECT id, data FROM jobs WHERE state = 'failed'")
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to fetch failed jobs for cleanup")?;
 
         let mut to_remove: Vec<uuid::Uuid> = Vec::new();
 
@@ -432,12 +434,11 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn remove_dlq_before(&self, before: DateTime<Utc>) -> Result<u64> {
-        let rows: Vec<(uuid::Uuid, serde_json::Value)> = sqlx::query_as(
-            "SELECT id, data FROM jobs WHERE state = 'dlq'",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to fetch DLQ jobs for cleanup")?;
+        let rows: Vec<(uuid::Uuid, serde_json::Value)> =
+            sqlx::query_as("SELECT id, data FROM jobs WHERE state = 'dlq'")
+                .fetch_all(&self.pool)
+                .await
+                .context("failed to fetch DLQ jobs for cleanup")?;
 
         let mut to_remove: Vec<uuid::Uuid> = Vec::new();
 
@@ -467,8 +468,7 @@ impl StorageBackend for PostgresStorage {
     // -- Cron schedules -------------------------------------------------------
 
     async fn upsert_schedule(&self, schedule: &Schedule) -> Result<()> {
-        let data =
-            serde_json::to_value(schedule).context("failed to serialize schedule")?;
+        let data = serde_json::to_value(schedule).context("failed to serialize schedule")?;
 
         sqlx::query(
             "INSERT INTO schedules (name, data) VALUES ($1, $2) \
@@ -484,11 +484,10 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn get_active_schedules(&self) -> Result<Vec<Schedule>> {
-        let rows: Vec<(serde_json::Value,)> =
-            sqlx::query_as("SELECT data FROM schedules")
-                .fetch_all(&self.pool)
-                .await
-                .context("failed to fetch schedules")?;
+        let rows: Vec<(serde_json::Value,)> = sqlx::query_as("SELECT data FROM schedules")
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to fetch schedules")?;
 
         let mut schedules = Vec::new();
         for (data,) in rows {
@@ -530,11 +529,10 @@ impl StorageBackend for PostgresStorage {
     }
 
     async fn list_all_schedules(&self) -> Result<Vec<Schedule>> {
-        let rows: Vec<(serde_json::Value,)> =
-            sqlx::query_as("SELECT data FROM schedules")
-                .fetch_all(&self.pool)
-                .await
-                .context("failed to fetch all schedules")?;
+        let rows: Vec<(serde_json::Value,)> = sqlx::query_as("SELECT data FROM schedules")
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to fetch all schedules")?;
 
         let mut schedules = Vec::with_capacity(rows.len());
         for (data,) in rows {
@@ -547,11 +545,10 @@ impl StorageBackend for PostgresStorage {
     // -- Discovery ------------------------------------------------------------
 
     async fn list_queue_names(&self) -> Result<Vec<String>> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT DISTINCT queue FROM jobs ORDER BY queue")
-                .fetch_all(&self.pool)
-                .await
-                .context("failed to list queue names")?;
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT queue FROM jobs ORDER BY queue")
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to list queue names")?;
 
         Ok(rows.into_iter().map(|(name,)| name).collect())
     }

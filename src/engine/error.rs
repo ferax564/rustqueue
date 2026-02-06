@@ -177,7 +177,10 @@ mod tests {
             "Queue 'notifications' is paused"
         );
 
-        assert_eq!(RustQueueError::RateLimited.to_string(), "Rate limit exceeded");
+        assert_eq!(
+            RustQueueError::RateLimited.to_string(),
+            "Rate limit exceeded"
+        );
 
         assert_eq!(RustQueueError::Unauthorized.to_string(), "Unauthorized");
 

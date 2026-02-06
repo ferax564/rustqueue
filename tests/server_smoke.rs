@@ -50,8 +50,13 @@ async fn start_full_server() -> (String, std::net::SocketAddr) {
     // Leak the sender so it outlives the spawned server task (never sends shutdown).
     let _keep_tx = Box::leak(Box::new(shutdown_tx));
     tokio::spawn(async move {
-        rustqueue::protocol::start_tcp_server(tcp_listener, queue_manager, auth_config, shutdown_rx)
-            .await;
+        rustqueue::protocol::start_tcp_server(
+            tcp_listener,
+            queue_manager,
+            auth_config,
+            shutdown_rx,
+        )
+        .await;
     });
 
     (format!("http://{http_addr}"), tcp_addr)

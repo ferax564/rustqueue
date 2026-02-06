@@ -2,16 +2,16 @@
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::{Json, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::Router;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::api::{ApiError, AppState};
 use crate::engine::models::Job;
-use crate::engine::queue::JobOptions;
+use crate::engine::queue::{BatchPushItem, JobOptions};
 
 // ── Request / Response types ────────────────────────────────────────────────
 
@@ -119,7 +119,10 @@ pub struct FailResponse {
 
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/api/v1/queues/{queue}/jobs", post(push_jobs).get(pull_jobs))
+        .route(
+            "/api/v1/queues/{queue}/jobs",
+            post(push_jobs).get(pull_jobs),
+        )
         .route("/api/v1/queues/{queue}/dlq", get(get_dlq_jobs))
         .route("/api/v1/jobs/{id}", get(get_job))
         .route("/api/v1/jobs/{id}/ack", post(ack_job))
@@ -153,15 +156,16 @@ async fn push_jobs(
             ))
         }
         PushJobBody::Batch(reqs) => {
-            let mut ids = Vec::with_capacity(reqs.len());
-            for req in reqs {
-                let opts = build_options(req.options);
-                let id = state
-                    .queue_manager
-                    .push(&queue, &req.name, req.data, Some(opts))
-                    .await?;
-                ids.push(id.to_string());
-            }
+            let batch_items = reqs
+                .into_iter()
+                .map(|req| BatchPushItem {
+                    name: req.name,
+                    data: req.data,
+                    options: Some(build_options(req.options)),
+                })
+                .collect();
+            let ids = state.queue_manager.push_batch(&queue, batch_items).await?;
+            let ids = ids.into_iter().map(|id| id.to_string()).collect();
             Ok((
                 StatusCode::CREATED,
                 Json(PushResponse::Batch(PushBatchResponse { ok: true, ids })),
@@ -202,11 +206,11 @@ async fn get_job(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<GetJobResponse>, ApiError> {
-    let job = state
-        .queue_manager
-        .get_job(id)
-        .await?
-        .ok_or_else(|| ApiError::from(crate::engine::error::RustQueueError::JobNotFound(id.to_string())))?;
+    let job = state.queue_manager.get_job(id).await?.ok_or_else(|| {
+        ApiError::from(crate::engine::error::RustQueueError::JobNotFound(
+            id.to_string(),
+        ))
+    })?;
     Ok(Json(GetJobResponse { ok: true, job }))
 }
 

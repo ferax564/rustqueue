@@ -86,6 +86,22 @@ pub enum StorageBackendType {
     Postgres,
 }
 
+/// Durability level for redb write commits.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RedbDurabilityConfig {
+    /// Do not persist commits unless followed by a higher durability commit.
+    ///
+    /// Highest throughput, but unsafe for crash durability and can cause file growth
+    /// if used exclusively for long periods.
+    None,
+    /// Persist on each commit before returning.
+    #[default]
+    Immediate,
+    /// Queue persistence and return earlier for better throughput.
+    Eventual,
+}
+
 /// Persistent storage settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StorageConfig {
@@ -95,6 +111,9 @@ pub struct StorageConfig {
     /// Path to the data directory (for Redb / Sqlite).
     #[serde(default = "default_storage_path")]
     pub path: String,
+    /// redb write durability mode (only used when `backend = "redb"`).
+    #[serde(default)]
+    pub redb_durability: RedbDurabilityConfig,
     /// Connection string for Postgres (only used when `backend = "postgres"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub postgres_url: Option<String>,
@@ -105,6 +124,7 @@ impl Default for StorageConfig {
         Self {
             backend: StorageBackendType::default(),
             path: default_storage_path(),
+            redb_durability: RedbDurabilityConfig::default(),
             postgres_url: None,
         }
     }
@@ -365,6 +385,7 @@ mod tests {
         // Storage
         assert_eq!(cfg.storage.backend, StorageBackendType::Redb);
         assert_eq!(cfg.storage.path, "./data");
+        assert_eq!(cfg.storage.redb_durability, RedbDurabilityConfig::Immediate);
         assert_eq!(cfg.storage.postgres_url, None);
 
         // Auth
@@ -429,6 +450,7 @@ postgres_url = "postgres://localhost/rustqueue"
         // Overridden values
         assert_eq!(cfg.server.host, "127.0.0.1");
         assert_eq!(cfg.storage.backend, StorageBackendType::Postgres);
+        assert_eq!(cfg.storage.redb_durability, RedbDurabilityConfig::Immediate);
         assert_eq!(
             cfg.storage.postgres_url.as_deref(),
             Some("postgres://localhost/rustqueue")
@@ -481,5 +503,20 @@ key_path = "/etc/certs/server.key"
         let inmemory = StorageBackendType::InMemory;
         let json = serde_json::to_string(&inmemory).unwrap();
         assert_eq!(json, "\"in_memory\"");
+    }
+
+    #[test]
+    fn test_redb_durability_serde() {
+        let none = RedbDurabilityConfig::None;
+        let json = serde_json::to_string(&none).unwrap();
+        assert_eq!(json, "\"none\"");
+
+        let immediate = RedbDurabilityConfig::Immediate;
+        let json = serde_json::to_string(&immediate).unwrap();
+        assert_eq!(json, "\"immediate\"");
+
+        let eventual = RedbDurabilityConfig::Eventual;
+        let json = serde_json::to_string(&eventual).unwrap();
+        assert_eq!(json, "\"eventual\"");
     }
 }

@@ -43,10 +43,7 @@ async fn test_cors_preflight_returns_headers() {
 
     // Send an OPTIONS preflight request with the standard CORS headers.
     let resp = client
-        .request(
-            reqwest::Method::OPTIONS,
-            format!("{base}/api/v1/health"),
-        )
+        .request(reqwest::Method::OPTIONS, format!("{base}/api/v1/health"))
         .header("Origin", "https://example.com")
         .header("Access-Control-Request-Method", "GET")
         .header("Access-Control-Request-Headers", "Content-Type")
@@ -63,17 +60,13 @@ async fn test_cors_preflight_returns_headers() {
 
     // It should also include Access-Control-Allow-Methods.
     assert!(
-        resp.headers()
-            .get("access-control-allow-methods")
-            .is_some(),
+        resp.headers().get("access-control-allow-methods").is_some(),
         "missing Access-Control-Allow-Methods header"
     );
 
     // It should also include Access-Control-Allow-Headers.
     assert!(
-        resp.headers()
-            .get("access-control-allow-headers")
-            .is_some(),
+        resp.headers().get("access-control-allow-headers").is_some(),
         "missing Access-Control-Allow-Headers header"
     );
 }

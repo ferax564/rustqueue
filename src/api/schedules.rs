@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::{Json, Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::Router;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -92,10 +92,7 @@ async fn create_schedule(
     state.queue_manager.create_schedule(&schedule).await?;
     Ok((
         StatusCode::CREATED,
-        Json(ScheduleResponse {
-            ok: true,
-            schedule,
-        }),
+        Json(ScheduleResponse { ok: true, schedule }),
     ))
 }
 
@@ -124,10 +121,7 @@ async fn get_schedule(
                 name.clone(),
             ))
         })?;
-    Ok(Json(ScheduleResponse {
-        ok: true,
-        schedule,
-    }))
+    Ok(Json(ScheduleResponse { ok: true, schedule }))
 }
 
 /// DELETE /api/v1/schedules/:name — Delete a schedule.

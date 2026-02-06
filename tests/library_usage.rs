@@ -33,10 +33,7 @@ async fn test_redb_library_usage() {
     let db_path = dir.path().join("test.redb");
     let rq = RustQueue::redb(&db_path).unwrap().build().unwrap();
 
-    let id = rq
-        .push("work", "task", json!({}), None)
-        .await
-        .unwrap();
+    let id = rq.push("work", "task", json!({}), None).await.unwrap();
     let jobs = rq.pull("work", 1).await.unwrap();
     assert_eq!(jobs.len(), 1);
     assert_eq!(jobs[0].id, id);

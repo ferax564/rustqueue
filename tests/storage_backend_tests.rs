@@ -21,7 +21,6 @@ use rustqueue::storage::SqliteStorage;
 #[cfg(feature = "postgres")]
 use rustqueue::storage::PostgresStorage;
 
-
 /// Helper: create a job in the given queue with sensible defaults.
 fn test_job(queue: &str) -> Job {
     Job::new(queue, "test-job", json!({"key": "value"}))

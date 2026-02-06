@@ -2,10 +2,10 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
-use axum::routing::get;
 use axum::Json;
 use axum::Router;
+use axum::extract::State;
+use axum::routing::get;
 use serde::Serialize;
 
 use crate::api::AppState;

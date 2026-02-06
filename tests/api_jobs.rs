@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use rustqueue::api::{self, AppState};
 use rustqueue::engine::queue::QueueManager;
@@ -409,9 +409,18 @@ async fn test_error_response_format() {
     // { "ok": false, "error": { "code": "...", "message": "...", "details": null } }
     assert_eq!(body["ok"], false);
     assert!(body["error"].is_object(), "error should be an object");
-    assert!(body["error"]["code"].is_string(), "error.code should be a string");
-    assert!(body["error"]["message"].is_string(), "error.message should be a string");
-    assert!(body["error"]["details"].is_null(), "error.details should be null");
+    assert!(
+        body["error"]["code"].is_string(),
+        "error.code should be a string"
+    );
+    assert!(
+        body["error"]["message"].is_string(),
+        "error.message should be a string"
+    );
+    assert!(
+        body["error"]["details"].is_null(),
+        "error.details should be null"
+    );
 
     // Verify specific values.
     assert_eq!(body["error"]["code"], "JOB_NOT_FOUND");
@@ -423,11 +432,19 @@ async fn test_error_response_format() {
 
     // Ensure there are no extra top-level keys.
     let obj = body.as_object().unwrap();
-    assert_eq!(obj.len(), 2, "response should have exactly 2 keys: ok and error");
+    assert_eq!(
+        obj.len(),
+        2,
+        "response should have exactly 2 keys: ok and error"
+    );
 
     // Ensure there are no extra keys in error.
     let error_obj = body["error"].as_object().unwrap();
-    assert_eq!(error_obj.len(), 3, "error should have exactly 3 keys: code, message, details");
+    assert_eq!(
+        error_obj.len(),
+        3,
+        "error should have exactly 3 keys: code, message, details"
+    );
 }
 
 // ── Test 12: Prometheus metrics endpoint ─────────────────────────────────────
@@ -585,7 +602,11 @@ async fn test_dlq_endpoint_respects_limit() {
     assert_eq!(dlq_resp.status(), 200);
     let dlq_body: Value = dlq_resp.json().await.unwrap();
     let dlq_jobs = dlq_body["jobs"].as_array().unwrap();
-    assert_eq!(dlq_jobs.len(), 2, "limit=2 should return at most 2 DLQ jobs");
+    assert_eq!(
+        dlq_jobs.len(),
+        2,
+        "limit=2 should return at most 2 DLQ jobs"
+    );
 }
 
 #[tokio::test]

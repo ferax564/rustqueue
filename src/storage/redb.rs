@@ -5,27 +5,197 @@
 //! - `SCHEDULES_TABLE` — schedule name (UTF-8 bytes) -> JSON-serialized `Schedule`
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, Durability, ReadableTable, ReadableTableMetadata, Table, TableDefinition};
 
 use crate::engine::models::{Job, JobId, JobState, QueueCounts, Schedule};
-use crate::storage::StorageBackend;
+use crate::storage::{CompleteJobOutcome, StorageBackend};
 
 /// Main job storage: key = UUID bytes (16), value = JSON bytes.
 const JOBS_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("jobs");
 
+/// Secondary index: queue/state/priority/created_at/job_id -> job_id
+const JOBS_QUEUE_STATE_PRIORITY_INDEX: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("jobs_queue_state_priority_idx");
+
+/// Secondary index: state/updated_at/job_id -> job_id
+const JOBS_STATE_UPDATED_INDEX: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("jobs_state_updated_idx");
+
 /// Schedule storage: key = schedule name bytes, value = JSON bytes.
 const SCHEDULES_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("schedules");
 
+/// Durability level for redb write transactions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedbDurability {
+    /// Do not persist commits unless followed by a higher durability commit.
+    ///
+    /// This yields the highest throughput but weak crash durability.
+    None,
+    /// Commit returns only after data is persisted to disk.
+    Immediate,
+    /// Commit queues persistence and returns earlier for higher throughput.
+    Eventual,
+}
+
+impl Default for RedbDurability {
+    fn default() -> Self {
+        Self::Immediate
+    }
+}
+
+fn state_code(state: JobState) -> u8 {
+    match state {
+        JobState::Created => 0,
+        JobState::Waiting => 1,
+        JobState::Delayed => 2,
+        JobState::Active => 3,
+        JobState::Completed => 4,
+        JobState::Failed => 5,
+        JobState::Dlq => 6,
+        JobState::Cancelled => 7,
+        JobState::Blocked => 8,
+    }
+}
+
+fn encode_i64_lex(value: i64) -> [u8; 8] {
+    ((value as u64) ^ 0x8000_0000_0000_0000).to_be_bytes()
+}
+
+fn encode_priority_desc(priority: i32) -> [u8; 4] {
+    let shifted = (priority as u32) ^ 0x8000_0000;
+    (!shifted).to_be_bytes()
+}
+
+fn queue_state_prefix(queue: &str, state: JobState) -> Vec<u8> {
+    let queue_bytes = queue.as_bytes();
+    let mut key = Vec::with_capacity(4 + queue_bytes.len() + 1);
+    key.extend_from_slice(&(queue_bytes.len() as u32).to_be_bytes());
+    key.extend_from_slice(queue_bytes);
+    key.push(state_code(state));
+    key
+}
+
+fn state_prefix(state: JobState) -> Vec<u8> {
+    vec![state_code(state)]
+}
+
+fn queue_state_priority_key(job: &Job) -> Vec<u8> {
+    let queue_bytes = job.queue.as_bytes();
+    let mut key = Vec::with_capacity(4 + queue_bytes.len() + 1 + 4 + 8 + 16);
+    key.extend_from_slice(&(queue_bytes.len() as u32).to_be_bytes());
+    key.extend_from_slice(queue_bytes);
+    key.push(state_code(job.state));
+    key.extend_from_slice(&encode_priority_desc(job.priority));
+    key.extend_from_slice(&encode_i64_lex(job.created_at.timestamp_micros()));
+    key.extend_from_slice(job.id.as_bytes());
+    key
+}
+
+fn state_updated_key(job: &Job) -> Vec<u8> {
+    let mut key = Vec::with_capacity(1 + 8 + 16);
+    key.push(state_code(job.state));
+    key.extend_from_slice(&encode_i64_lex(job.updated_at.timestamp_micros()));
+    key.extend_from_slice(job.id.as_bytes());
+    key
+}
+
+fn prefix_upper_bound(prefix: &[u8]) -> Option<Vec<u8>> {
+    let mut end = prefix.to_vec();
+    for i in (0..end.len()).rev() {
+        if end[i] != 0xFF {
+            end[i] += 1;
+            end.truncate(i + 1);
+            return Some(end);
+        }
+    }
+    None
+}
+
+fn parse_index_job_id(bytes: &[u8]) -> Result<JobId> {
+    JobId::from_slice(bytes).context("invalid job id bytes in index")
+}
+
+fn insert_job_indexes(
+    queue_index: &mut Table<'_, &[u8], &[u8]>,
+    state_index: &mut Table<'_, &[u8], &[u8]>,
+    job: &Job,
+) -> Result<()> {
+    let queue_key = queue_state_priority_key(job);
+    let state_key = state_updated_key(job);
+    let id = job.id.as_bytes().as_slice();
+
+    queue_index.insert(queue_key.as_slice(), id)?;
+    state_index.insert(state_key.as_slice(), id)?;
+    Ok(())
+}
+
+fn remove_job_indexes(
+    queue_index: &mut Table<'_, &[u8], &[u8]>,
+    state_index: &mut Table<'_, &[u8], &[u8]>,
+    job: &Job,
+) -> Result<()> {
+    let queue_key = queue_state_priority_key(job);
+    let state_key = state_updated_key(job);
+
+    queue_index.remove(queue_key.as_slice())?;
+    state_index.remove(state_key.as_slice())?;
+    Ok(())
+}
+
+fn complete_job_in_tables(
+    jobs: &mut Table<'_, &[u8], &[u8]>,
+    queue_index: &mut Table<'_, &[u8], &[u8]>,
+    state_index: &mut Table<'_, &[u8], &[u8]>,
+    id: JobId,
+    result: Option<serde_json::Value>,
+) -> Result<CompleteJobOutcome> {
+    let key = id.as_bytes().as_slice();
+    let mut job: Job = {
+        let stored = jobs.get(key)?;
+        let Some(stored) = stored else {
+            return Ok(CompleteJobOutcome::NotFound);
+        };
+        serde_json::from_slice(stored.value())
+            .context("failed to deserialize existing job during complete_job")?
+    };
+
+    if job.state != JobState::Active {
+        return Ok(CompleteJobOutcome::InvalidState(job.state));
+    }
+
+    let previous = job.clone();
+    let now = Utc::now();
+    job.state = JobState::Completed;
+    job.completed_at = Some(now);
+    job.updated_at = now;
+    job.result = result;
+
+    remove_job_indexes(queue_index, state_index, &previous)?;
+
+    if job.remove_on_complete {
+        jobs.remove(key)?;
+    } else {
+        let value = serde_json::to_vec(&job)
+            .context("failed to serialize completed job during complete_job")?;
+        jobs.insert(key, value.as_slice())?;
+        insert_job_indexes(queue_index, state_index, &job)?;
+    }
+
+    Ok(CompleteJobOutcome::Completed(job))
+}
+
 /// Embedded storage backend using redb — a pure-Rust, ACID, embedded key-value store.
 ///
-/// All operations are synchronous under the hood; the async trait methods call
-/// redb directly without `spawn_blocking` since redb operations are fast for v0.1.
+/// redb is synchronous, so each storage call is run in `spawn_blocking` to avoid
+/// blocking Tokio runtime worker threads.
 pub struct RedbStorage {
-    db: Database,
+    db: Arc<Database>,
+    durability: RedbDurability,
 }
 
 impl RedbStorage {
@@ -33,18 +203,88 @@ impl RedbStorage {
     ///
     /// On first open the required tables are created automatically.
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let db = Database::create(path.as_ref())
-            .with_context(|| format!("failed to open redb at {:?}", path.as_ref()))?;
+        Self::new_with_durability(path, RedbDurability::Immediate)
+    }
+
+    /// Create or open a redb database at the given path with explicit write durability.
+    pub fn new_with_durability(path: impl AsRef<Path>, durability: RedbDurability) -> Result<Self> {
+        let db = Arc::new(
+            Database::create(path.as_ref())
+                .with_context(|| format!("failed to open redb at {:?}", path.as_ref()))?,
+        );
 
         // Ensure tables exist by opening a write transaction.
-        let write_txn = db.begin_write()?;
+        let write_txn = Self::begin_write_txn(&db, durability)?;
         {
             let _jobs = write_txn.open_table(JOBS_TABLE)?;
+            let _queue_state_priority = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+            let _state_updated = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
             let _schedules = write_txn.open_table(SCHEDULES_TABLE)?;
         }
         write_txn.commit()?;
+        Self::rebuild_indexes_if_needed(&db, durability)?;
 
-        Ok(Self { db })
+        Ok(Self { db, durability })
+    }
+
+    fn begin_write_txn(
+        db: &Arc<Database>,
+        durability: RedbDurability,
+    ) -> Result<redb::WriteTransaction> {
+        let mut write_txn = db.begin_write()?;
+        match durability {
+            RedbDurability::None => write_txn.set_durability(Durability::None),
+            RedbDurability::Immediate => {}
+            RedbDurability::Eventual => write_txn.set_durability(Durability::Eventual),
+        }
+        Ok(write_txn)
+    }
+
+    fn rebuild_indexes_if_needed(db: &Arc<Database>, durability: RedbDurability) -> Result<()> {
+        let should_rebuild = {
+            let read_txn = db.begin_read()?;
+            let jobs = read_txn.open_table(JOBS_TABLE)?;
+            let queue_index = read_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+            let state_index = read_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+
+            let jobs_len = jobs.len()?;
+            jobs_len > 0 && (queue_index.len()? != jobs_len || state_index.len()? != jobs_len)
+        };
+
+        if !should_rebuild {
+            return Ok(());
+        }
+
+        let write_txn = Self::begin_write_txn(db, durability)?;
+        {
+            let jobs = write_txn.open_table(JOBS_TABLE)?;
+            let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+            let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+
+            queue_index.retain(|_, _| false)?;
+            state_index.retain(|_, _| false)?;
+
+            for entry in jobs.iter()? {
+                let (_, value) = entry?;
+                let job: Job = serde_json::from_slice(value.value())
+                    .context("failed to deserialize job while rebuilding indexes")?;
+                insert_job_indexes(&mut queue_index, &mut state_index, &job)?;
+            }
+        }
+        write_txn.commit()?;
+        Ok(())
+    }
+
+    /// Run a synchronous redb operation on the blocking pool.
+    async fn run_blocking<T, F>(&self, operation: &'static str, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<Database>) -> Result<T> + Send + 'static,
+    {
+        let db = Arc::clone(&self.db);
+        tokio::task::spawn_blocking(move || f(db))
+            .await
+            .with_context(|| format!("redb {operation} task failed"))?
     }
 }
 
@@ -53,393 +293,704 @@ impl StorageBackend for RedbStorage {
     // ── Job CRUD ────────────────────────────────────────────────────────
 
     async fn insert_job(&self, job: &Job) -> Result<JobId> {
-        let id = job.id;
-        let key = id.as_bytes().as_slice();
-        let value = serde_json::to_vec(job).context("failed to serialize job")?;
+        let job = job.clone();
+        let durability = self.durability;
+        self.run_blocking("insert_job", move |db| {
+            let id = job.id;
+            let key = id.as_bytes().as_slice();
+            let value = serde_json::to_vec(&job).context("failed to serialize job")?;
 
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut table = write_txn.open_table(JOBS_TABLE)?;
-            table.insert(key, value.as_slice())?;
-        }
-        write_txn.commit()?;
-        Ok(id)
+            let write_txn = Self::begin_write_txn(&db, durability)?;
+            {
+                let mut jobs = write_txn.open_table(JOBS_TABLE)?;
+                let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+                let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+
+                jobs.insert(key, value.as_slice())?;
+                insert_job_indexes(&mut queue_index, &mut state_index, &job)?;
+            }
+            write_txn.commit()?;
+            Ok(id)
+        })
+        .await
+    }
+
+    async fn insert_jobs_batch(&self, jobs: &[Job]) -> Result<Vec<JobId>> {
+        let jobs = jobs.to_vec();
+        let durability = self.durability;
+        self.run_blocking("insert_jobs_batch", move |db| {
+            let write_txn = Self::begin_write_txn(&db, durability)?;
+            let ids = {
+                let mut jobs_table = write_txn.open_table(JOBS_TABLE)?;
+                let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+                let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+                let mut ids = Vec::with_capacity(jobs.len());
+                for job in &jobs {
+                    let id = job.id;
+                    let key = id.as_bytes().as_slice();
+                    let value = serde_json::to_vec(job).context("failed to serialize job")?;
+                    jobs_table.insert(key, value.as_slice())?;
+                    insert_job_indexes(&mut queue_index, &mut state_index, job)?;
+                    ids.push(id);
+                }
+                ids
+            };
+            write_txn.commit()?;
+            Ok(ids)
+        })
+        .await
     }
 
     async fn get_job(&self, id: JobId) -> Result<Option<Job>> {
-        let key = id.as_bytes().as_slice();
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(JOBS_TABLE)?;
+        self.run_blocking("get_job", move |db| {
+            let key = id.as_bytes().as_slice();
+            let read_txn = db.begin_read()?;
+            let table = read_txn.open_table(JOBS_TABLE)?;
 
-        match table.get(key)? {
-            Some(value) => {
-                let job: Job =
-                    serde_json::from_slice(value.value()).context("failed to deserialize job")?;
-                Ok(Some(job))
+            match table.get(key)? {
+                Some(value) => {
+                    let job: Job = serde_json::from_slice(value.value())
+                        .context("failed to deserialize job")?;
+                    Ok(Some(job))
+                }
+                None => Ok(None),
             }
-            None => Ok(None),
-        }
+        })
+        .await
     }
 
     async fn update_job(&self, job: &Job) -> Result<()> {
-        let key = job.id.as_bytes().as_slice();
-        let value = serde_json::to_vec(job).context("failed to serialize job")?;
+        let job = job.clone();
+        let durability = self.durability;
+        self.run_blocking("update_job", move |db| {
+            let key = job.id.as_bytes().as_slice();
+            let value = serde_json::to_vec(&job).context("failed to serialize job")?;
 
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut table = write_txn.open_table(JOBS_TABLE)?;
-            table.insert(key, value.as_slice())?;
-        }
-        write_txn.commit()?;
-        Ok(())
+            let write_txn = Self::begin_write_txn(&db, durability)?;
+            {
+                let mut jobs = write_txn.open_table(JOBS_TABLE)?;
+                let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+                let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+
+                let previous = jobs
+                    .get(key)?
+                    .map(|existing| {
+                        serde_json::from_slice::<Job>(existing.value())
+                            .context("failed to deserialize existing job during update")
+                    })
+                    .transpose()?;
+
+                if let Some(previous) = previous.as_ref() {
+                    remove_job_indexes(&mut queue_index, &mut state_index, previous)?;
+                }
+
+                jobs.insert(key, value.as_slice())?;
+                insert_job_indexes(&mut queue_index, &mut state_index, &job)?;
+            }
+            write_txn.commit()?;
+            Ok(())
+        })
+        .await
     }
 
     async fn delete_job(&self, id: JobId) -> Result<()> {
-        let key = id.as_bytes().as_slice();
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut table = write_txn.open_table(JOBS_TABLE)?;
-            table.remove(key)?;
+        let durability = self.durability;
+        self.run_blocking("delete_job", move |db| {
+            let key = id.as_bytes().as_slice();
+            let write_txn = Self::begin_write_txn(&db, durability)?;
+            {
+                let mut jobs = write_txn.open_table(JOBS_TABLE)?;
+                let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+                let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+
+                let previous = jobs
+                    .get(key)?
+                    .map(|existing| {
+                        serde_json::from_slice::<Job>(existing.value())
+                            .context("failed to deserialize existing job during delete")
+                    })
+                    .transpose()?;
+
+                jobs.remove(key)?;
+                if let Some(previous) = previous.as_ref() {
+                    remove_job_indexes(&mut queue_index, &mut state_index, previous)?;
+                }
+            }
+            write_txn.commit()?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn complete_job(
+        &self,
+        id: JobId,
+        result: Option<serde_json::Value>,
+    ) -> Result<CompleteJobOutcome> {
+        let durability = self.durability;
+        self.run_blocking("complete_job", move |db| {
+            let write_txn = Self::begin_write_txn(&db, durability)?;
+            let outcome = {
+                let mut jobs = write_txn.open_table(JOBS_TABLE)?;
+                let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+                let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+                complete_job_in_tables(&mut jobs, &mut queue_index, &mut state_index, id, result)?
+            };
+            write_txn.commit()?;
+            Ok(outcome)
+        })
+        .await
+    }
+
+    async fn complete_jobs_batch(
+        &self,
+        items: &[(JobId, Option<serde_json::Value>)],
+    ) -> Result<Vec<CompleteJobOutcome>> {
+        if items.is_empty() {
+            return Ok(Vec::new());
         }
-        write_txn.commit()?;
-        Ok(())
+
+        let items = items.to_vec();
+        let durability = self.durability;
+        self.run_blocking("complete_jobs_batch", move |db| {
+            let write_txn = Self::begin_write_txn(&db, durability)?;
+            let outcomes = {
+                let mut jobs = write_txn.open_table(JOBS_TABLE)?;
+                let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+                let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+                let mut outcomes = Vec::with_capacity(items.len());
+
+                for (id, result) in items {
+                    outcomes.push(complete_job_in_tables(
+                        &mut jobs,
+                        &mut queue_index,
+                        &mut state_index,
+                        id,
+                        result,
+                    )?);
+                }
+                outcomes
+            };
+            write_txn.commit()?;
+            Ok(outcomes)
+        })
+        .await
     }
 
     // ── Queue operations ────────────────────────────────────────────────
 
     async fn dequeue(&self, queue: &str, count: u32) -> Result<Vec<Job>> {
-        let write_txn = self.db.begin_write()?;
-        let result = {
-            let mut table = write_txn.open_table(JOBS_TABLE)?;
+        if count == 0 {
+            return Ok(Vec::new());
+        }
 
-            // Scan all jobs, filter by queue + Waiting state.
-            let mut candidates: Vec<Job> = Vec::new();
-            for entry in table.iter()? {
-                let (_, value) = entry?;
-                let job: Job = serde_json::from_slice(value.value())?;
-                if job.queue == queue && job.state == JobState::Waiting {
-                    candidates.push(job);
+        let queue = queue.to_string();
+        let durability = self.durability;
+        self.run_blocking("dequeue", move |db| {
+            let write_txn = Self::begin_write_txn(&db, durability)?;
+            let result = {
+                let mut jobs_table = write_txn.open_table(JOBS_TABLE)?;
+                let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+                let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+
+                let waiting_prefix = queue_state_prefix(&queue, JobState::Waiting);
+                let waiting_end = prefix_upper_bound(&waiting_prefix);
+                let mut selected = Vec::with_capacity(count as usize);
+                let mut stale_queue_keys = Vec::new();
+
+                let range = if let Some(ref end) = waiting_end {
+                    queue_index.range(waiting_prefix.as_slice()..end.as_slice())?
+                } else {
+                    queue_index.range(waiting_prefix.as_slice()..)?
+                };
+
+                for entry in range {
+                    let (index_key, index_value) = entry?;
+                    let id = parse_index_job_id(index_value.value())?;
+                    let stored = jobs_table.get(id.as_bytes().as_slice())?;
+                    let Some(stored) = stored else {
+                        stale_queue_keys.push(index_key.value().to_vec());
+                        continue;
+                    };
+
+                    let job: Job = serde_json::from_slice(stored.value())
+                        .context("failed to deserialize indexed waiting job during dequeue")?;
+                    if job.queue != queue || job.state != JobState::Waiting {
+                        stale_queue_keys.push(index_key.value().to_vec());
+                        continue;
+                    }
+
+                    selected.push(job);
+                    if selected.len() >= count as usize {
+                        break;
+                    }
                 }
-            }
 
-            // Sort: priority DESC, then created_at ASC (FIFO tiebreaker).
-            candidates.sort_by(|a, b| {
-                b.priority
-                    .cmp(&a.priority)
-                    .then_with(|| a.created_at.cmp(&b.created_at))
-            });
+                for key in stale_queue_keys {
+                    queue_index.remove(key.as_slice())?;
+                }
 
-            // Take up to `count` and transition to Active.
-            let now = Utc::now();
-            let selected: Vec<Job> = candidates
-                .into_iter()
-                .take(count as usize)
-                .map(|mut job| {
+                let now = Utc::now();
+                let mut activated = Vec::with_capacity(selected.len());
+                for mut job in selected {
+                    let previous = job.clone();
                     job.state = JobState::Active;
                     job.started_at = Some(now);
                     job.updated_at = now;
-                    job
-                })
-                .collect();
 
-            // Write updated jobs back.
-            for job in &selected {
-                let key = job.id.as_bytes().as_slice();
-                let value = serde_json::to_vec(job)?;
-                table.insert(key, value.as_slice())?;
-            }
+                    let key = job.id.as_bytes().as_slice();
+                    let value = serde_json::to_vec(&job)?;
+                    jobs_table.insert(key, value.as_slice())?;
 
-            selected
-        };
-        write_txn.commit()?;
-        Ok(result)
+                    remove_job_indexes(&mut queue_index, &mut state_index, &previous)?;
+                    insert_job_indexes(&mut queue_index, &mut state_index, &job)?;
+                    activated.push(job);
+                }
+
+                activated
+            };
+            write_txn.commit()?;
+            Ok(result)
+        })
+        .await
     }
 
     async fn get_queue_counts(&self, queue: &str) -> Result<QueueCounts> {
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(JOBS_TABLE)?;
+        let queue = queue.to_string();
+        self.run_blocking("get_queue_counts", move |db| {
+            let read_txn = db.begin_read()?;
+            let queue_index = read_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
 
-        let mut counts = QueueCounts::default();
-        for entry in table.iter()? {
-            let (_, value) = entry?;
-            let job: Job = serde_json::from_slice(value.value())?;
-            if job.queue != queue {
-                continue;
+            let count_for_state = |state: JobState| -> Result<u64> {
+                let prefix = queue_state_prefix(&queue, state);
+                let end = prefix_upper_bound(&prefix);
+                let range = if let Some(ref end) = end {
+                    queue_index.range(prefix.as_slice()..end.as_slice())?
+                } else {
+                    queue_index.range(prefix.as_slice()..)?
+                };
+
+                let mut count = 0u64;
+                for entry in range {
+                    let _ = entry?;
+                    count += 1;
+                }
+                Ok(count)
+            };
+
+            let mut counts = QueueCounts {
+                waiting: count_for_state(JobState::Created)? + count_for_state(JobState::Waiting)?,
+                active: count_for_state(JobState::Active)?,
+                delayed: count_for_state(JobState::Delayed)?,
+                completed: count_for_state(JobState::Completed)?,
+                failed: count_for_state(JobState::Failed)?,
+                dlq: count_for_state(JobState::Dlq)?,
+            };
+
+            // Keep compatibility with callers expecting non-negative counters.
+            if counts.waiting == 0
+                && counts.active == 0
+                && counts.delayed == 0
+                && counts.completed == 0
+                && counts.failed == 0
+                && counts.dlq == 0
+            {
+                counts = QueueCounts::default();
             }
-            match job.state {
-                JobState::Waiting | JobState::Created => counts.waiting += 1,
-                JobState::Active => counts.active += 1,
-                JobState::Delayed => counts.delayed += 1,
-                JobState::Completed => counts.completed += 1,
-                JobState::Failed => counts.failed += 1,
-                JobState::Dlq => counts.dlq += 1,
-                // Cancelled, Blocked are not tracked in QueueCounts for v0.1.
-                _ => {}
-            }
-        }
-        Ok(counts)
+            Ok(counts)
+        })
+        .await
     }
 
     // ── Scheduled jobs ──────────────────────────────────────────────────
 
     async fn get_ready_scheduled(&self, now: DateTime<Utc>) -> Result<Vec<Job>> {
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(JOBS_TABLE)?;
+        self.run_blocking("get_ready_scheduled", move |db| {
+            let read_txn = db.begin_read()?;
+            let jobs_table = read_txn.open_table(JOBS_TABLE)?;
+            let state_index = read_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
 
-        let mut ready = Vec::new();
-        for entry in table.iter()? {
-            let (_, value) = entry?;
-            let job: Job = serde_json::from_slice(value.value())?;
-            if job.state == JobState::Delayed {
+            let mut ready = Vec::new();
+
+            let delayed_prefix = state_prefix(JobState::Delayed);
+            let delayed_end = prefix_upper_bound(&delayed_prefix);
+            let range = if let Some(ref end) = delayed_end {
+                state_index.range(delayed_prefix.as_slice()..end.as_slice())?
+            } else {
+                state_index.range(delayed_prefix.as_slice()..)?
+            };
+
+            for entry in range {
+                let (_, value) = entry?;
+                let id = parse_index_job_id(value.value())?;
+
+                let stored = jobs_table.get(id.as_bytes().as_slice())?;
+                let Some(stored) = stored else {
+                    continue;
+                };
+                let job: Job = serde_json::from_slice(stored.value())
+                    .context("failed to deserialize delayed job from index")?;
+
+                if job.state != JobState::Delayed {
+                    continue;
+                }
                 if let Some(delay_until) = job.delay_until {
                     if delay_until <= now {
                         ready.push(job);
                     }
                 }
             }
-        }
-        Ok(ready)
+            Ok(ready)
+        })
+        .await
     }
 
     // ── DLQ ─────────────────────────────────────────────────────────────
 
     async fn move_to_dlq(&self, job: &Job, reason: &str) -> Result<()> {
-        let mut updated = job.clone();
-        updated.state = JobState::Dlq;
-        updated.last_error = Some(reason.to_string());
-        updated.updated_at = Utc::now();
+        let job = job.clone();
+        let reason = reason.to_string();
+        let durability = self.durability;
+        self.run_blocking("move_to_dlq", move |db| {
+            let mut updated = job.clone();
+            updated.state = JobState::Dlq;
+            updated.last_error = Some(reason);
+            updated.updated_at = Utc::now();
 
-        let key = updated.id.as_bytes().as_slice();
-        let value = serde_json::to_vec(&updated)?;
+            let key = updated.id.as_bytes().as_slice();
+            let value = serde_json::to_vec(&updated)?;
 
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut table = write_txn.open_table(JOBS_TABLE)?;
-            table.insert(key, value.as_slice())?;
-        }
-        write_txn.commit()?;
-        Ok(())
+            let write_txn = Self::begin_write_txn(&db, durability)?;
+            {
+                let mut jobs_table = write_txn.open_table(JOBS_TABLE)?;
+                let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+                let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+
+                let previous = jobs_table
+                    .get(key)?
+                    .map(|existing| {
+                        serde_json::from_slice::<Job>(existing.value())
+                            .context("failed to deserialize existing job during move_to_dlq")
+                    })
+                    .transpose()?
+                    .unwrap_or(job);
+
+                remove_job_indexes(&mut queue_index, &mut state_index, &previous)?;
+                jobs_table.insert(key, value.as_slice())?;
+                insert_job_indexes(&mut queue_index, &mut state_index, &updated)?;
+            }
+            write_txn.commit()?;
+            Ok(())
+        })
+        .await
     }
 
     async fn get_dlq_jobs(&self, queue: &str, limit: u32) -> Result<Vec<Job>> {
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(JOBS_TABLE)?;
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
 
-        let mut dlq_jobs = Vec::new();
-        for entry in table.iter()? {
-            let (_, value) = entry?;
-            let job: Job = serde_json::from_slice(value.value())?;
-            if job.queue == queue && job.state == JobState::Dlq {
+        let queue = queue.to_string();
+        self.run_blocking("get_dlq_jobs", move |db| {
+            let read_txn = db.begin_read()?;
+            let jobs_table = read_txn.open_table(JOBS_TABLE)?;
+            let queue_index = read_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+
+            let mut dlq_jobs = Vec::new();
+            let dlq_prefix = queue_state_prefix(&queue, JobState::Dlq);
+            let dlq_end = prefix_upper_bound(&dlq_prefix);
+            let range = if let Some(ref end) = dlq_end {
+                queue_index.range(dlq_prefix.as_slice()..end.as_slice())?
+            } else {
+                queue_index.range(dlq_prefix.as_slice()..)?
+            };
+
+            for entry in range {
+                let (_, value) = entry?;
+                let id = parse_index_job_id(value.value())?;
+                let stored = jobs_table.get(id.as_bytes().as_slice())?;
+                let Some(stored) = stored else {
+                    continue;
+                };
+                let job: Job = serde_json::from_slice(stored.value())
+                    .context("failed to deserialize dlq job from index")?;
+                if job.state != JobState::Dlq || job.queue != queue {
+                    continue;
+                }
                 dlq_jobs.push(job);
                 if dlq_jobs.len() >= limit as usize {
                     break;
                 }
             }
-        }
-        Ok(dlq_jobs)
+            Ok(dlq_jobs)
+        })
+        .await
     }
 
     // ── Cleanup ─────────────────────────────────────────────────────────
 
     async fn remove_completed_before(&self, before: DateTime<Utc>) -> Result<u64> {
-        let write_txn = self.db.begin_write()?;
-        let removed = {
-            let mut table = write_txn.open_table(JOBS_TABLE)?;
+        let durability = self.durability;
+        self.run_blocking("remove_completed_before", move |db| {
+            let write_txn = Self::begin_write_txn(&db, durability)?;
+            let removed = {
+                let mut jobs_table = write_txn.open_table(JOBS_TABLE)?;
+                let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+                let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
 
-            // Collect IDs to remove first (cannot mutate while iterating).
-            let mut to_remove: Vec<[u8; 16]> = Vec::new();
-            for entry in table.iter()? {
-                let (key, value) = entry?;
-                let job: Job = serde_json::from_slice(value.value())?;
-                if job.state == JobState::Completed {
-                    if let Some(completed_at) = job.completed_at {
-                        if completed_at < before {
-                            let mut id_bytes = [0u8; 16];
-                            id_bytes.copy_from_slice(key.value());
-                            to_remove.push(id_bytes);
+                // Collect jobs first (cannot mutate while iterating).
+                let mut to_remove: Vec<Job> = Vec::new();
+                for entry in jobs_table.iter()? {
+                    let (_, value) = entry?;
+                    let job: Job = serde_json::from_slice(value.value())?;
+                    if job.state == JobState::Completed {
+                        if let Some(completed_at) = job.completed_at {
+                            if completed_at < before {
+                                to_remove.push(job);
+                            }
                         }
                     }
                 }
-            }
 
-            let count = to_remove.len() as u64;
-            for id_bytes in &to_remove {
-                table.remove(id_bytes.as_slice())?;
-            }
-            count
-        };
-        write_txn.commit()?;
-        Ok(removed)
+                let count = to_remove.len() as u64;
+                for job in &to_remove {
+                    jobs_table.remove(job.id.as_bytes().as_slice())?;
+                    remove_job_indexes(&mut queue_index, &mut state_index, job)?;
+                }
+                count
+            };
+            write_txn.commit()?;
+            Ok(removed)
+        })
+        .await
     }
 
     async fn remove_failed_before(&self, before: DateTime<Utc>) -> Result<u64> {
-        let write_txn = self.db.begin_write()?;
-        let removed = {
-            let mut table = write_txn.open_table(JOBS_TABLE)?;
+        let durability = self.durability;
+        self.run_blocking("remove_failed_before", move |db| {
+            let write_txn = Self::begin_write_txn(&db, durability)?;
+            let removed = {
+                let mut jobs_table = write_txn.open_table(JOBS_TABLE)?;
+                let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+                let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
 
-            let mut to_remove: Vec<[u8; 16]> = Vec::new();
-            for entry in table.iter()? {
-                let (key, value) = entry?;
-                let job: Job = serde_json::from_slice(value.value())?;
-                if job.state == JobState::Failed && job.updated_at < before {
-                    let mut id_bytes = [0u8; 16];
-                    id_bytes.copy_from_slice(key.value());
-                    to_remove.push(id_bytes);
+                let mut to_remove: Vec<Job> = Vec::new();
+                for entry in jobs_table.iter()? {
+                    let (_, value) = entry?;
+                    let job: Job = serde_json::from_slice(value.value())?;
+                    if job.state == JobState::Failed && job.updated_at < before {
+                        to_remove.push(job);
+                    }
                 }
-            }
 
-            let count = to_remove.len() as u64;
-            for id_bytes in &to_remove {
-                table.remove(id_bytes.as_slice())?;
-            }
-            count
-        };
-        write_txn.commit()?;
-        Ok(removed)
+                let count = to_remove.len() as u64;
+                for job in &to_remove {
+                    jobs_table.remove(job.id.as_bytes().as_slice())?;
+                    remove_job_indexes(&mut queue_index, &mut state_index, job)?;
+                }
+                count
+            };
+            write_txn.commit()?;
+            Ok(removed)
+        })
+        .await
     }
 
     async fn remove_dlq_before(&self, before: DateTime<Utc>) -> Result<u64> {
-        let write_txn = self.db.begin_write()?;
-        let removed = {
-            let mut table = write_txn.open_table(JOBS_TABLE)?;
+        let durability = self.durability;
+        self.run_blocking("remove_dlq_before", move |db| {
+            let write_txn = Self::begin_write_txn(&db, durability)?;
+            let removed = {
+                let mut jobs_table = write_txn.open_table(JOBS_TABLE)?;
+                let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
+                let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
 
-            let mut to_remove: Vec<[u8; 16]> = Vec::new();
-            for entry in table.iter()? {
-                let (key, value) = entry?;
-                let job: Job = serde_json::from_slice(value.value())?;
-                if job.state == JobState::Dlq && job.updated_at < before {
-                    let mut id_bytes = [0u8; 16];
-                    id_bytes.copy_from_slice(key.value());
-                    to_remove.push(id_bytes);
+                let mut to_remove: Vec<Job> = Vec::new();
+                for entry in jobs_table.iter()? {
+                    let (_, value) = entry?;
+                    let job: Job = serde_json::from_slice(value.value())?;
+                    if job.state == JobState::Dlq && job.updated_at < before {
+                        to_remove.push(job);
+                    }
                 }
-            }
 
-            let count = to_remove.len() as u64;
-            for id_bytes in &to_remove {
-                table.remove(id_bytes.as_slice())?;
-            }
-            count
-        };
-        write_txn.commit()?;
-        Ok(removed)
+                let count = to_remove.len() as u64;
+                for job in &to_remove {
+                    jobs_table.remove(job.id.as_bytes().as_slice())?;
+                    remove_job_indexes(&mut queue_index, &mut state_index, job)?;
+                }
+                count
+            };
+            write_txn.commit()?;
+            Ok(removed)
+        })
+        .await
     }
 
     // ── Cron schedules ──────────────────────────────────────────────────
 
     async fn upsert_schedule(&self, schedule: &Schedule) -> Result<()> {
-        let key = schedule.name.as_bytes();
-        let value = serde_json::to_vec(schedule).context("failed to serialize schedule")?;
+        let schedule = schedule.clone();
+        let durability = self.durability;
+        self.run_blocking("upsert_schedule", move |db| {
+            let key = schedule.name.as_bytes();
+            let value = serde_json::to_vec(&schedule).context("failed to serialize schedule")?;
 
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut table = write_txn.open_table(SCHEDULES_TABLE)?;
-            table.insert(key, value.as_slice())?;
-        }
-        write_txn.commit()?;
-        Ok(())
+            let write_txn = Self::begin_write_txn(&db, durability)?;
+            {
+                let mut table = write_txn.open_table(SCHEDULES_TABLE)?;
+                table.insert(key, value.as_slice())?;
+            }
+            write_txn.commit()?;
+            Ok(())
+        })
+        .await
     }
 
     async fn get_active_schedules(&self) -> Result<Vec<Schedule>> {
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(SCHEDULES_TABLE)?;
+        self.run_blocking("get_active_schedules", move |db| {
+            let read_txn = db.begin_read()?;
+            let table = read_txn.open_table(SCHEDULES_TABLE)?;
 
-        let mut schedules = Vec::new();
-        for entry in table.iter()? {
-            let (_, value) = entry?;
-            let schedule: Schedule = serde_json::from_slice(value.value())?;
-            if !schedule.paused {
-                schedules.push(schedule);
+            let mut schedules = Vec::new();
+            for entry in table.iter()? {
+                let (_, value) = entry?;
+                let schedule: Schedule = serde_json::from_slice(value.value())?;
+                if !schedule.paused {
+                    schedules.push(schedule);
+                }
             }
-        }
-        Ok(schedules)
+            Ok(schedules)
+        })
+        .await
     }
 
     async fn delete_schedule(&self, name: &str) -> Result<()> {
-        let key = name.as_bytes();
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut table = write_txn.open_table(SCHEDULES_TABLE)?;
-            table.remove(key)?;
-        }
-        write_txn.commit()?;
-        Ok(())
+        let name = name.to_string();
+        let durability = self.durability;
+        self.run_blocking("delete_schedule", move |db| {
+            let key = name.as_bytes();
+            let write_txn = Self::begin_write_txn(&db, durability)?;
+            {
+                let mut table = write_txn.open_table(SCHEDULES_TABLE)?;
+                table.remove(key)?;
+            }
+            write_txn.commit()?;
+            Ok(())
+        })
+        .await
     }
 
     async fn get_schedule(&self, name: &str) -> Result<Option<Schedule>> {
-        let key = name.as_bytes();
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(SCHEDULES_TABLE)?;
+        let name = name.to_string();
+        self.run_blocking("get_schedule", move |db| {
+            let key = name.as_bytes();
+            let read_txn = db.begin_read()?;
+            let table = read_txn.open_table(SCHEDULES_TABLE)?;
 
-        match table.get(key)? {
-            Some(value) => {
-                let schedule: Schedule = serde_json::from_slice(value.value())
-                    .context("failed to deserialize schedule")?;
-                Ok(Some(schedule))
+            match table.get(key)? {
+                Some(value) => {
+                    let schedule: Schedule = serde_json::from_slice(value.value())
+                        .context("failed to deserialize schedule")?;
+                    Ok(Some(schedule))
+                }
+                None => Ok(None),
             }
-            None => Ok(None),
-        }
+        })
+        .await
     }
 
     async fn list_all_schedules(&self) -> Result<Vec<Schedule>> {
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(SCHEDULES_TABLE)?;
+        self.run_blocking("list_all_schedules", move |db| {
+            let read_txn = db.begin_read()?;
+            let table = read_txn.open_table(SCHEDULES_TABLE)?;
 
-        let mut schedules = Vec::new();
-        for entry in table.iter()? {
-            let (_, value) = entry?;
-            let schedule: Schedule = serde_json::from_slice(value.value())?;
-            schedules.push(schedule);
-        }
-        Ok(schedules)
+            let mut schedules = Vec::new();
+            for entry in table.iter()? {
+                let (_, value) = entry?;
+                let schedule: Schedule = serde_json::from_slice(value.value())?;
+                schedules.push(schedule);
+            }
+            Ok(schedules)
+        })
+        .await
     }
 
     // ── Discovery ────────────────────────────────────────────────────────
 
     async fn list_queue_names(&self) -> Result<Vec<String>> {
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(JOBS_TABLE)?;
+        self.run_blocking("list_queue_names", move |db| {
+            let read_txn = db.begin_read()?;
+            let table = read_txn.open_table(JOBS_TABLE)?;
 
-        let mut names = std::collections::BTreeSet::new();
-        for entry in table.iter()? {
-            let (_, value) = entry?;
-            let job: Job = serde_json::from_slice(value.value())?;
-            names.insert(job.queue);
-        }
-        Ok(names.into_iter().collect())
+            let mut names = std::collections::BTreeSet::new();
+            for entry in table.iter()? {
+                let (_, value) = entry?;
+                let job: Job = serde_json::from_slice(value.value())?;
+                names.insert(job.queue);
+            }
+            Ok(names.into_iter().collect())
+        })
+        .await
     }
 
     async fn get_job_by_unique_key(&self, queue: &str, key: &str) -> Result<Option<Job>> {
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(JOBS_TABLE)?;
+        let queue = queue.to_string();
+        let key = key.to_string();
+        self.run_blocking("get_job_by_unique_key", move |db| {
+            let read_txn = db.begin_read()?;
+            let table = read_txn.open_table(JOBS_TABLE)?;
 
-        for entry in table.iter()? {
-            let (_, value) = entry?;
-            let job: Job = serde_json::from_slice(value.value())?;
-            if job.queue == queue
-                && job.unique_key.as_deref() == Some(key)
-                && !matches!(
-                    job.state,
-                    JobState::Completed | JobState::Dlq | JobState::Cancelled
-                )
-            {
-                return Ok(Some(job));
+            for entry in table.iter()? {
+                let (_, value) = entry?;
+                let job: Job = serde_json::from_slice(value.value())?;
+                if job.queue == queue
+                    && job.unique_key.as_deref() == Some(key.as_str())
+                    && !matches!(
+                        job.state,
+                        JobState::Completed | JobState::Dlq | JobState::Cancelled
+                    )
+                {
+                    return Ok(Some(job));
+                }
             }
-        }
-        Ok(None)
+            Ok(None)
+        })
+        .await
     }
 
     async fn get_active_jobs(&self) -> Result<Vec<Job>> {
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(JOBS_TABLE)?;
-        let mut active = Vec::new();
-        for entry in table.iter()? {
-            let (_, value) = entry?;
-            let job: Job = serde_json::from_slice(value.value())?;
-            if job.state == JobState::Active {
+        self.run_blocking("get_active_jobs", move |db| {
+            let read_txn = db.begin_read()?;
+            let jobs_table = read_txn.open_table(JOBS_TABLE)?;
+            let state_index = read_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
+            let mut active = Vec::new();
+
+            let active_prefix = state_prefix(JobState::Active);
+            let active_end = prefix_upper_bound(&active_prefix);
+            let range = if let Some(ref end) = active_end {
+                state_index.range(active_prefix.as_slice()..end.as_slice())?
+            } else {
+                state_index.range(active_prefix.as_slice()..)?
+            };
+
+            for entry in range {
+                let (_, value) = entry?;
+                let id = parse_index_job_id(value.value())?;
+                let stored = jobs_table.get(id.as_bytes().as_slice())?;
+                let Some(stored) = stored else {
+                    continue;
+                };
+                let job: Job = serde_json::from_slice(stored.value())
+                    .context("failed to deserialize active job from index")?;
+                if job.state != JobState::Active {
+                    continue;
+                }
                 active.push(job);
             }
-        }
-        Ok(active)
+            Ok(active)
+        })
+        .await
     }
 }
 
@@ -477,7 +1028,11 @@ mod tests {
         let id = storage.insert_job(&job).await.unwrap();
         assert_eq!(id, job.id);
 
-        let retrieved = storage.get_job(id).await.unwrap().expect("job should exist");
+        let retrieved = storage
+            .get_job(id)
+            .await
+            .unwrap()
+            .expect("job should exist");
         assert_eq!(retrieved.id, job.id);
         assert_eq!(retrieved.queue, "emails");
         assert_eq!(retrieved.name, "test-job");
@@ -611,7 +1166,13 @@ mod tests {
         let j_other = test_job("other");
 
         for job in [
-            &j_waiting, &j_active, &j_completed, &j_failed, &j_delayed, &j_dlq, &j_other,
+            &j_waiting,
+            &j_active,
+            &j_completed,
+            &j_failed,
+            &j_delayed,
+            &j_dlq,
+            &j_other,
         ] {
             storage.insert_job(job).await.unwrap();
         }
@@ -668,6 +1229,37 @@ mod tests {
         let ready = storage.get_ready_scheduled(Utc::now()).await.unwrap();
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].id, job.id);
+    }
+
+    #[tokio::test]
+    async fn test_complete_jobs_batch() {
+        let storage = temp_storage();
+
+        let job1 = test_job("batch-ack");
+        let job2 = test_job("batch-ack");
+        storage.insert_job(&job1).await.unwrap();
+        storage.insert_job(&job2).await.unwrap();
+
+        let activated = storage.dequeue("batch-ack", 2).await.unwrap();
+        assert_eq!(activated.len(), 2);
+
+        let outcomes = storage
+            .complete_jobs_batch(&[
+                (job1.id, Some(json!({"result": 1}))),
+                (job2.id, Some(json!({"result": 2}))),
+            ])
+            .await
+            .unwrap();
+        assert_eq!(outcomes.len(), 2);
+        assert!(matches!(outcomes[0], CompleteJobOutcome::Completed(_)));
+        assert!(matches!(outcomes[1], CompleteJobOutcome::Completed(_)));
+
+        let stored1 = storage.get_job(job1.id).await.unwrap().unwrap();
+        let stored2 = storage.get_job(job2.id).await.unwrap().unwrap();
+        assert_eq!(stored1.state, JobState::Completed);
+        assert_eq!(stored2.state, JobState::Completed);
+        assert_eq!(stored1.result, Some(json!({"result": 1})));
+        assert_eq!(stored2.result, Some(json!({"result": 2})));
     }
 
     #[tokio::test]
@@ -747,5 +1339,57 @@ mod tests {
         assert!(storage.get_job(recent_job.id).await.unwrap().is_some());
         // Waiting job untouched.
         assert!(storage.get_job(waiting_job.id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_indexes_on_open() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_owned();
+        drop(tmp);
+
+        {
+            let storage = RedbStorage::new(&path).unwrap();
+
+            let waiting = test_job("rebuild");
+            storage.insert_job(&waiting).await.unwrap();
+
+            let mut active = test_job("rebuild");
+            active.state = JobState::Active;
+            storage.insert_job(&active).await.unwrap();
+
+            let write_txn = storage.db.begin_write().unwrap();
+            {
+                let mut queue_index = write_txn
+                    .open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)
+                    .unwrap();
+                let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX).unwrap();
+                queue_index.retain(|_, _| false).unwrap();
+                state_index.retain(|_, _| false).unwrap();
+            }
+            write_txn.commit().unwrap();
+        }
+
+        let reopened = RedbStorage::new(&path).unwrap();
+        let counts = reopened.get_queue_counts("rebuild").await.unwrap();
+        assert_eq!(counts.waiting, 1);
+        assert_eq!(counts.active, 1);
+    }
+
+    #[tokio::test]
+    async fn test_none_durability_write_and_read() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_owned();
+        drop(tmp);
+
+        let storage = RedbStorage::new_with_durability(&path, RedbDurability::None).unwrap();
+        let job = test_job("none-durability");
+        let id = storage.insert_job(&job).await.unwrap();
+        let stored = storage
+            .get_job(id)
+            .await
+            .unwrap()
+            .expect("job should exist");
+        assert_eq!(stored.id, id);
+        assert_eq!(stored.queue, "none-durability");
     }
 }

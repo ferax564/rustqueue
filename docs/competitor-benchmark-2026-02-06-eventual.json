@@ -1,0 +1,43 @@
+{
+  "date": "2026-02-06",
+  "operations_per_test": 500,
+  "rustqueue_redb_durability": "eventual",
+  "results": [
+    {
+      "system": "rustqueue_http",
+      "produce_ops_s": 281.52779320975424,
+      "consume_ops_s": 110.31957225038057,
+      "end_to_end_ops_s": 82.66293520664459
+    },
+    {
+      "system": "rustqueue_tcp",
+      "produce_ops_s": 367.10320836486915,
+      "consume_ops_s": 116.43844036002369,
+      "end_to_end_ops_s": 82.56562666006431
+    },
+    {
+      "system": "redis_list",
+      "produce_ops_s": 6083.912387915004,
+      "consume_ops_s": 7535.681453178191,
+      "end_to_end_ops_s": 3915.7398251896316
+    },
+    {
+      "system": "rabbitmq",
+      "produce_ops_s": 44750.570154737085,
+      "consume_ops_s": 4608.726793753171,
+      "end_to_end_ops_s": 4169.740391224284
+    },
+    {
+      "system": "bullmq",
+      "produce_ops_s": 5114.819148127484,
+      "consume_ops_s": 4853.3460069081175,
+      "end_to_end_ops_s": 1706.313818077728
+    },
+    {
+      "system": "celery",
+      "produce_ops_s": 2703.7031894214715,
+      "consume_ops_s": 1356.4189803136373,
+      "end_to_end_ops_s": 884.3189893116382
+    }
+  ]
+}

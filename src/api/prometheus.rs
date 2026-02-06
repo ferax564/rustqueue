@@ -2,11 +2,11 @@
 
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
 
 use crate::api::AppState;
 
@@ -30,10 +30,6 @@ async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> Response {
             )
                 .into_response()
         }
-        None => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Metrics not available",
-        )
-            .into_response(),
+        None => (StatusCode::SERVICE_UNAVAILABLE, "Metrics not available").into_response(),
     }
 }

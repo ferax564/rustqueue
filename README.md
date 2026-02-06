@@ -111,6 +111,7 @@ tcp_port = 6789
 [storage]
 backend = "redb"       # Options: "redb", "in_memory", "sqlite", "postgres"
 path = "./data"
+redb_durability = "immediate"  # "none" (unsafe fastest), "eventual", or "immediate" (safest)
 
 [jobs]
 default_max_attempts = 3
@@ -199,6 +200,12 @@ Newline-delimited JSON on port 6789:
 → {"cmd":"ack","id":"01JKXYZ..."}
 ← {"ok":true}
 
+→ {"cmd":"push_batch","queue":"emails","jobs":[{"name":"send-a","data":{"to":"a@b.com"}},{"name":"send-b","data":{"to":"b@b.com"}}]}
+← {"ok":true,"ids":["01JK...","01JL..."]}
+
+→ {"cmd":"ack_batch","ids":["01JK...","01JL..."]}
+← {"ok":true,"acked":2,"failed":0,"results":[{"id":"01JK...","ok":true},{"id":"01JL...","ok":true}]}
+
 → {"cmd":"progress","id":"01JKXYZ...","progress":50,"message":"Processing..."}
 ← {"ok":true}
 
@@ -270,15 +277,24 @@ cargo build --no-default-features       # Server only, no CLI commands
 
 ## Performance
 
-| Metric | Target | Current (v0.4, redb) |
+| Metric | Target | Current (v0.9, redb) |
 |--------|--------|----------------------|
-| Throughput (push) | >= 50,000 jobs/sec | ~340/sec |
+| Throughput (push, single-job TCP) | >= 50,000 jobs/sec | ~334/sec |
+| Throughput (push+pull+ack, single-job TCP) | >= 30,000 jobs/sec | ~56/sec |
+| Throughput (push, batched TCP `batch_size=50`) | >= 50,000 jobs/sec | ~10,929/sec |
+| Throughput (push+pull+ack, batched TCP `batch_size=50`) | >= 30,000 jobs/sec | ~3,692/sec |
 | Latency (p50 push) | < 1 ms | ~2.9 ms |
+| Batch push (100 jobs) | < 100 ms | ~256 ms |
 | Memory (idle) | < 20 MB | ~15 MB |
 | Binary size | < 15 MB | 6.8 MB |
 | Startup time | < 500 ms | ~10 ms |
 
-> **Note:** The current redb backend prioritizes correctness and durability (fsync per write) over throughput. A performance optimization phase is planned to add batch transactions, secondary indexes, write coalescing, and a hybrid memory/disk mode. See `docs/performance-analysis.md` for the full analysis and roadmap.
+Latest high-throughput profile comes from `docs/competitor-benchmark-2026-02-06.md` (`--ops 500 --repeats 2 --redb-durability immediate --rustqueue-tcp-batch-size 50`).  
+Single-job control profile is in `docs/competitor-benchmark-2026-02-06-immediate-r2-latest.md` (`--rustqueue-tcp-batch-size 1`).
+
+> **Note:** v0.9 adds write coalescing primitives (`complete_jobs_batch`) and TCP batch commands (`push_batch`, `ack_batch`). Batched mode is significantly faster, while single-job command paths still remain well below long-term targets. See `docs/performance-analysis.md` for details.
+
+Next steps are tracked in `docs/competitor-gap-analysis-2026-02-06.md`: automatic timed coalescing for single-job commands, wider client/SDK batch adoption, and repeatable control-vs-batch competitor trend runs.
 
 ## Development
 

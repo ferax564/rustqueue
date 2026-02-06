@@ -6,11 +6,11 @@ use std::sync::Arc;
 
 use serde_json::json;
 
+use rustqueue::JobState;
 use rustqueue::config::RetentionConfig;
 use rustqueue::engine::queue::{JobOptions, QueueManager};
 use rustqueue::engine::scheduler::start_scheduler;
 use rustqueue::storage::MemoryStorage;
-use rustqueue::JobState;
 
 #[tokio::test]
 async fn test_scheduler_promotes_delayed_jobs() {
@@ -42,7 +42,11 @@ async fn test_scheduler_promotes_delayed_jobs() {
 
     // Now the job should be promoted to Waiting and pullable
     let pulled = manager.pull("work", 1).await.unwrap();
-    assert_eq!(pulled.len(), 1, "Scheduler should have promoted the delayed job");
+    assert_eq!(
+        pulled.len(),
+        1,
+        "Scheduler should have promoted the delayed job"
+    );
     assert_eq!(pulled[0].id, id);
     assert_eq!(pulled[0].state, JobState::Active);
 

@@ -1,0 +1,9 @@
+{
+  "name": "rustqueue-node-bench",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "bullmq": "^5.58.0",
+    "ioredis": "^5.4.1"
+  }
+}

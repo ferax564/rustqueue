@@ -100,6 +100,89 @@ async fn test_tcp_push_and_pull() {
 }
 
 #[tokio::test]
+async fn test_tcp_push_batch_and_ack_batch() {
+    let port = start_test_tcp_server().await;
+    let (mut reader, mut writer) = connect_tcp(port).await;
+
+    send_cmd(
+        &mut writer,
+        json!({
+            "cmd": "push_batch",
+            "queue": "q-batch",
+            "jobs": [
+                {"name": "j1", "data": {"i": 1}},
+                {"name": "j2", "data": {"i": 2}},
+                {"name": "j3", "data": {"i": 3}}
+            ]
+        }),
+    )
+    .await;
+    let resp = read_response(&mut reader).await;
+    assert!(resp["ok"].as_bool().unwrap(), "push_batch failed: {resp}");
+    let ids = resp["ids"].as_array().unwrap();
+    assert_eq!(ids.len(), 3);
+
+    send_cmd(
+        &mut writer,
+        json!({"cmd": "pull", "queue": "q-batch", "count": 3}),
+    )
+    .await;
+    let resp = read_response(&mut reader).await;
+    assert!(resp["ok"].as_bool().unwrap(), "pull failed: {resp}");
+    let jobs = resp["jobs"].as_array().unwrap();
+    assert_eq!(jobs.len(), 3);
+
+    let ack_items: Vec<serde_json::Value> = jobs
+        .iter()
+        .map(|job| json!({"id": job["id"].as_str().unwrap()}))
+        .collect();
+    send_cmd(&mut writer, json!({"cmd": "ack_batch", "items": ack_items})).await;
+    let resp = read_response(&mut reader).await;
+    assert!(resp["ok"].as_bool().unwrap(), "ack_batch failed: {resp}");
+    assert_eq!(resp["acked"].as_u64().unwrap(), 3);
+    assert_eq!(resp["failed"].as_u64().unwrap(), 0);
+    let results = resp["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    assert!(results.iter().all(|r| r["ok"].as_bool() == Some(true)));
+}
+
+#[tokio::test]
+async fn test_tcp_ack_batch_partial_failure() {
+    let port = start_test_tcp_server().await;
+    let (mut reader, mut writer) = connect_tcp(port).await;
+
+    send_cmd(
+        &mut writer,
+        json!({"cmd": "push", "queue": "q-ack", "name": "j", "data": {}}),
+    )
+    .await;
+    let pushed = read_response(&mut reader).await;
+    assert!(pushed["ok"].as_bool().unwrap());
+    let job_id = pushed["id"].as_str().unwrap().to_string();
+
+    send_cmd(&mut writer, json!({"cmd": "pull", "queue": "q-ack"})).await;
+    let pulled = read_response(&mut reader).await;
+    assert!(pulled["ok"].as_bool().unwrap());
+
+    let missing_id = uuid::Uuid::now_v7().to_string();
+    send_cmd(
+        &mut writer,
+        json!({
+            "cmd": "ack_batch",
+            "ids": [job_id, missing_id]
+        }),
+    )
+    .await;
+    let resp = read_response(&mut reader).await;
+    assert!(
+        !resp["ok"].as_bool().unwrap(),
+        "ack_batch should be partial failure"
+    );
+    assert_eq!(resp["acked"].as_u64().unwrap(), 1);
+    assert_eq!(resp["failed"].as_u64().unwrap(), 1);
+}
+
+#[tokio::test]
 async fn test_tcp_invalid_command() {
     let port = start_test_tcp_server().await;
     let (mut reader, mut writer) = connect_tcp(port).await;
@@ -143,18 +226,27 @@ async fn test_tcp_schedule_create_and_list() {
     )
     .await;
     let resp = read_response(&mut reader).await;
-    assert!(resp["ok"].as_bool().unwrap(), "schedule_create failed: {resp}");
+    assert!(
+        resp["ok"].as_bool().unwrap(),
+        "schedule_create failed: {resp}"
+    );
 
     // List schedules
     send_cmd(&mut writer, json!({"cmd": "schedule_list"})).await;
     let resp = read_response(&mut reader).await;
-    assert!(resp["ok"].as_bool().unwrap(), "schedule_list failed: {resp}");
+    assert!(
+        resp["ok"].as_bool().unwrap(),
+        "schedule_list failed: {resp}"
+    );
 
     let schedules = resp["schedules"].as_array().unwrap();
     assert_eq!(schedules.len(), 1);
     assert_eq!(schedules[0]["name"].as_str().unwrap(), "daily-report");
     assert_eq!(schedules[0]["queue"].as_str().unwrap(), "reports");
-    assert_eq!(schedules[0]["job_name"].as_str().unwrap(), "generate-report");
+    assert_eq!(
+        schedules[0]["job_name"].as_str().unwrap(),
+        "generate-report"
+    );
     assert_eq!(schedules[0]["every_ms"].as_u64().unwrap(), 86400000);
 }
 
@@ -176,7 +268,10 @@ async fn test_tcp_schedule_pause_resume() {
     )
     .await;
     let resp = read_response(&mut reader).await;
-    assert!(resp["ok"].as_bool().unwrap(), "schedule_create failed: {resp}");
+    assert!(
+        resp["ok"].as_bool().unwrap(),
+        "schedule_create failed: {resp}"
+    );
 
     // Pause the schedule
     send_cmd(
@@ -185,7 +280,10 @@ async fn test_tcp_schedule_pause_resume() {
     )
     .await;
     let resp = read_response(&mut reader).await;
-    assert!(resp["ok"].as_bool().unwrap(), "schedule_pause failed: {resp}");
+    assert!(
+        resp["ok"].as_bool().unwrap(),
+        "schedule_pause failed: {resp}"
+    );
 
     // Get and verify paused
     send_cmd(
@@ -195,7 +293,10 @@ async fn test_tcp_schedule_pause_resume() {
     .await;
     let resp = read_response(&mut reader).await;
     assert!(resp["ok"].as_bool().unwrap(), "schedule_get failed: {resp}");
-    assert!(resp["schedule"]["paused"].as_bool().unwrap(), "schedule should be paused");
+    assert!(
+        resp["schedule"]["paused"].as_bool().unwrap(),
+        "schedule should be paused"
+    );
 
     // Resume the schedule
     send_cmd(
@@ -204,7 +305,10 @@ async fn test_tcp_schedule_pause_resume() {
     )
     .await;
     let resp = read_response(&mut reader).await;
-    assert!(resp["ok"].as_bool().unwrap(), "schedule_resume failed: {resp}");
+    assert!(
+        resp["ok"].as_bool().unwrap(),
+        "schedule_resume failed: {resp}"
+    );
 
     // Get and verify resumed
     send_cmd(
@@ -214,5 +318,8 @@ async fn test_tcp_schedule_pause_resume() {
     .await;
     let resp = read_response(&mut reader).await;
     assert!(resp["ok"].as_bool().unwrap(), "schedule_get failed: {resp}");
-    assert!(!resp["schedule"]["paused"].as_bool().unwrap(), "schedule should not be paused");
+    assert!(
+        !resp["schedule"]["paused"].as_bool().unwrap(),
+        "schedule should not be paused"
+    );
 }
