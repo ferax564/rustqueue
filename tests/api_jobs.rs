@@ -36,6 +36,7 @@ async fn start_test_server() -> String {
         start_time: std::time::Instant::now(),
         metrics_handle: None,
         event_tx,
+        auth_config: rustqueue::config::AuthConfig::default(),
     });
     let app = api::router(state);
 
@@ -445,6 +446,7 @@ async fn start_test_server_with_metrics() -> String {
         start_time: std::time::Instant::now(),
         metrics_handle: Some(global_metrics_handle().clone()),
         event_tx,
+        auth_config: rustqueue::config::AuthConfig::default(),
     });
     let app = api::router(state);
 

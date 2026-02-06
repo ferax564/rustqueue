@@ -27,6 +27,7 @@ async fn start_full_server() -> (String, std::net::SocketAddr) {
         start_time: std::time::Instant::now(),
         metrics_handle: None,
         event_tx,
+        auth_config: rustqueue::config::AuthConfig::default(),
     });
     let app = api::router(state);
 
@@ -101,6 +102,7 @@ async fn test_server_with_memory_backend() {
         start_time: std::time::Instant::now(),
         metrics_handle: None,
         event_tx,
+        auth_config: rustqueue::config::AuthConfig::default(),
     });
     let app = api::router(state);
 

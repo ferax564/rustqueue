@@ -215,6 +215,7 @@ async fn main() -> anyhow::Result<()> {
                 start_time: std::time::Instant::now(),
                 metrics_handle: Some(metrics_handle),
                 event_tx: event_tx.clone(),
+                auth_config: config.auth.clone(),
             });
             let app = rustqueue::api::router(state);
 

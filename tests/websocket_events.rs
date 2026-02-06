@@ -23,6 +23,7 @@ async fn test_websocket_receives_push_event() {
         start_time: std::time::Instant::now(),
         metrics_handle: None,
         event_tx,
+        auth_config: rustqueue::config::AuthConfig::default(),
     });
     let app = api::router(state);
 
@@ -76,6 +77,7 @@ async fn test_websocket_receives_completed_event() {
         start_time: std::time::Instant::now(),
         metrics_handle: None,
         event_tx,
+        auth_config: rustqueue::config::AuthConfig::default(),
     });
     let app = api::router(state);
 
@@ -133,6 +135,7 @@ async fn test_websocket_receives_cancelled_event() {
         start_time: std::time::Instant::now(),
         metrics_handle: None,
         event_tx,
+        auth_config: rustqueue::config::AuthConfig::default(),
     });
     let app = api::router(state);
 
@@ -191,6 +194,7 @@ async fn test_websocket_receives_failed_event_on_dlq() {
         start_time: std::time::Instant::now(),
         metrics_handle: None,
         event_tx,
+        auth_config: rustqueue::config::AuthConfig::default(),
     });
     let app = api::router(state);
 
@@ -255,6 +259,7 @@ async fn test_websocket_no_event_on_retry() {
         start_time: std::time::Instant::now(),
         metrics_handle: None,
         event_tx,
+        auth_config: rustqueue::config::AuthConfig::default(),
     });
     let app = api::router(state);
 

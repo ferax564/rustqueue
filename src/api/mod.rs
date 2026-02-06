@@ -2,6 +2,7 @@
 //!
 //! Provides axum-based endpoints for job management, queue operations, and health checks.
 
+pub mod auth;
 pub mod health;
 pub mod jobs;
 pub mod prometheus;
@@ -29,17 +30,30 @@ pub struct AppState {
     pub metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
     /// Broadcast sender for real-time job events (WebSocket streaming).
     pub event_tx: tokio::sync::broadcast::Sender<JobEvent>,
+    /// Authentication configuration (bearer tokens).
+    pub auth_config: crate::config::AuthConfig,
 }
 
 /// Build the full API router with all endpoint groups merged.
+///
+/// Public routes (health, metrics) are always accessible without authentication.
+/// Protected routes (jobs, queues, websocket) require a valid bearer token when
+/// `auth_config.enabled` is `true`.
 pub fn router(state: Arc<AppState>) -> axum::Router {
-    axum::Router::new()
+    let public = axum::Router::new()
+        .merge(health::routes())
+        .merge(prometheus::routes());
+
+    let protected = axum::Router::new()
         .merge(jobs::routes())
         .merge(queues::routes())
-        .merge(health::routes())
-        .merge(prometheus::routes())
         .merge(websocket::routes())
-        .with_state(state)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::auth_middleware,
+        ));
+
+    public.merge(protected).with_state(state)
 }
 
 // ── Error response types ────────────────────────────────────────────────────
