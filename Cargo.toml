@@ -48,6 +48,12 @@ toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
+# OpenTelemetry (optional, behind `otel` feature)
+opentelemetry = { version = "0.27", optional = true }
+opentelemetry-otlp = { version = "0.27", optional = true }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
+tracing-opentelemetry = { version = "0.28", optional = true }
+
 # Metrics
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
@@ -89,6 +95,7 @@ futures-util = "0.3"
 default = ["cli"]
 cli = ["reqwest"]
 tls = ["rustls", "tokio-rustls"]
+otel = ["opentelemetry", "opentelemetry-otlp", "opentelemetry_sdk", "tracing-opentelemetry"]
 sqlite = ["rusqlite"]
 postgres = ["sqlx"]
 

@@ -95,18 +95,58 @@ async fn main() -> anyhow::Result<()> {
             };
 
             // 2. Initialize tracing based on config
-            let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| format!("rustqueue={}", config.logging.level).into());
+            #[cfg(feature = "otel")]
+            let otel_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+                .unwrap_or_else(|_| "http://localhost:4317".to_string());
 
-            if config.logging.format == "json" {
-                tracing_subscriber::fmt()
-                    .json()
-                    .with_env_filter(env_filter)
-                    .init();
-            } else {
-                tracing_subscriber::fmt()
-                    .with_env_filter(env_filter)
-                    .init();
+            #[cfg(feature = "otel")]
+            {
+                use tracing_subscriber::layer::SubscriberExt;
+                use tracing_subscriber::util::SubscriberInitExt;
+
+                let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| format!("rustqueue={}", config.logging.level).into());
+
+                if config.logging.format == "json" {
+                    let otel_layer = rustqueue::engine::telemetry::create_otel_layer(
+                        "rustqueue",
+                        &otel_endpoint,
+                    )?;
+                    tracing_subscriber::registry()
+                        .with(env_filter)
+                        .with(tracing_subscriber::fmt::layer().json())
+                        .with(otel_layer)
+                        .init();
+                } else {
+                    let otel_layer = rustqueue::engine::telemetry::create_otel_layer(
+                        "rustqueue",
+                        &otel_endpoint,
+                    )?;
+                    tracing_subscriber::registry()
+                        .with(env_filter)
+                        .with(tracing_subscriber::fmt::layer())
+                        .with(otel_layer)
+                        .init();
+                }
+
+                info!("OpenTelemetry enabled, exporting to {}", otel_endpoint);
+            }
+
+            #[cfg(not(feature = "otel"))]
+            {
+                let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| format!("rustqueue={}", config.logging.level).into());
+
+                if config.logging.format == "json" {
+                    tracing_subscriber::fmt()
+                        .json()
+                        .with_env_filter(env_filter)
+                        .init();
+                } else {
+                    tracing_subscriber::fmt()
+                        .with_env_filter(env_filter)
+                        .init();
+                }
             }
 
             info!(
@@ -209,6 +249,9 @@ async fn main() -> anyhow::Result<()> {
             // Abort server tasks for clean shutdown
             http_handle.abort();
             tcp_handle.abort();
+
+            #[cfg(feature = "otel")]
+            rustqueue::engine::telemetry::shutdown_otel();
 
             info!("RustQueue server stopped");
         }
