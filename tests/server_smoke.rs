@@ -24,6 +24,7 @@ async fn start_full_server() -> (String, std::net::SocketAddr) {
     let state = Arc::new(AppState {
         queue_manager: Arc::clone(&queue_manager),
         start_time: std::time::Instant::now(),
+        metrics_handle: None,
     });
     let app = api::router(state);
 

@@ -1,13 +1,24 @@
 //! Integration tests for the HTTP REST API.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use reqwest::Client;
 use serde_json::{json, Value};
 
 use rustqueue::api::{self, AppState};
 use rustqueue::engine::queue::QueueManager;
 use rustqueue::storage::RedbStorage;
+
+/// Install the Prometheus recorder exactly once across all tests in this binary.
+fn global_metrics_handle() -> &'static PrometheusHandle {
+    static HANDLE: OnceLock<PrometheusHandle> = OnceLock::new();
+    HANDLE.get_or_init(|| {
+        PrometheusBuilder::new()
+            .install_recorder()
+            .expect("failed to install Prometheus recorder")
+    })
+}
 
 /// Start a test server on a random port and return its base URL.
 /// The tempdir is leaked intentionally so it outlives the spawned server task.
@@ -22,6 +33,7 @@ async fn start_test_server() -> String {
     let state = Arc::new(AppState {
         queue_manager: qm,
         start_time: std::time::Instant::now(),
+        metrics_handle: None,
     });
     let app = api::router(state);
 
@@ -413,4 +425,52 @@ async fn test_error_response_format() {
     // Ensure there are no extra keys in error.
     let error_obj = body["error"].as_object().unwrap();
     assert_eq!(error_obj.len(), 3, "error should have exactly 3 keys: code, message, details");
+}
+
+// ── Test 12: Prometheus metrics endpoint ─────────────────────────────────────
+
+/// Start a test server with the Prometheus metrics handle wired in.
+async fn start_test_server_with_metrics() -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("test.redb");
+    let _keep = Box::leak(Box::new(dir));
+
+    let storage = Arc::new(RedbStorage::new(&db_path).unwrap());
+    let qm = Arc::new(QueueManager::new(storage));
+    let state = Arc::new(AppState {
+        queue_manager: qm,
+        start_time: std::time::Instant::now(),
+        metrics_handle: Some(global_metrics_handle().clone()),
+    });
+    let app = api::router(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn test_prometheus_metrics_endpoint() {
+    let base = start_test_server_with_metrics().await;
+    let client = Client::new();
+
+    // Push a job to generate some metrics.
+    client
+        .post(format!("{base}/api/v1/queues/emails/jobs"))
+        .json(&json!({"name": "j", "data": {}}))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(format!("{base}/api/v1/metrics/prometheus"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("rustqueue_jobs_pushed_total"));
 }

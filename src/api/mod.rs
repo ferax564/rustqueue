@@ -4,6 +4,7 @@
 
 pub mod health;
 pub mod jobs;
+pub mod prometheus;
 pub mod queues;
 
 use std::sync::Arc;
@@ -21,6 +22,9 @@ use crate::engine::queue::QueueManager;
 pub struct AppState {
     pub queue_manager: Arc<QueueManager>,
     pub start_time: std::time::Instant,
+    /// Handle used to render Prometheus metrics.  `None` when the global
+    /// recorder has not been installed (e.g. in tests that don't need metrics).
+    pub metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
 }
 
 /// Build the full API router with all endpoint groups merged.
@@ -29,6 +33,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .merge(jobs::routes())
         .merge(queues::routes())
         .merge(health::routes())
+        .merge(prometheus::routes())
         .with_state(state)
 }
 

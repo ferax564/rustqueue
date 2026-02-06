@@ -9,6 +9,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::error::RustQueueError;
+use crate::engine::metrics as metric_names;
 use crate::engine::models::{BackoffStrategy, Job, JobId, JobState, QueueCounts};
 use crate::storage::StorageBackend;
 
@@ -136,6 +137,9 @@ impl QueueManager {
             .insert_job(&job)
             .await
             .map_err(RustQueueError::Internal)?;
+
+        metrics::counter!(metric_names::JOBS_PUSHED_TOTAL).increment(1);
+
         Ok(id)
     }
 
@@ -145,10 +149,17 @@ impl QueueManager {
     ///
     /// Returned jobs are transitioned to [`JobState::Active`] atomically.
     pub async fn pull(&self, queue: &str, count: u32) -> Result<Vec<Job>, RustQueueError> {
-        self.storage
+        let jobs = self
+            .storage
             .dequeue(queue, count)
             .await
-            .map_err(RustQueueError::Internal)
+            .map_err(RustQueueError::Internal)?;
+
+        if !jobs.is_empty() {
+            metrics::counter!(metric_names::JOBS_PULLED_TOTAL).increment(jobs.len() as u64);
+        }
+
+        Ok(jobs)
     }
 
     // ── Ack ──────────────────────────────────────────────────────────────
@@ -188,6 +199,8 @@ impl QueueManager {
                 .map_err(RustQueueError::Internal)?;
         }
 
+        metrics::counter!(metric_names::JOBS_COMPLETED_TOTAL).increment(1);
+
         Ok(())
     }
 
@@ -211,6 +224,8 @@ impl QueueManager {
         job.attempt += 1;
         job.last_error = Some(error.to_string());
         job.updated_at = Utc::now();
+
+        metrics::counter!(metric_names::JOBS_FAILED_TOTAL).increment(1);
 
         if job.attempt < job.max_attempts {
             // Retry: compute backoff delay and move back to Waiting (or Delayed).
