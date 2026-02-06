@@ -33,6 +33,7 @@ pub struct JobOptions {
     pub lifo: Option<bool>,
     pub remove_on_complete: Option<bool>,
     pub remove_on_fail: Option<bool>,
+    pub custom_id: Option<String>,
 }
 
 /// Result returned by [`QueueManager::fail`] to indicate retry disposition.
@@ -114,6 +115,9 @@ impl QueueManager {
             }
             if let Some(rof) = opts.remove_on_fail {
                 job.remove_on_fail = rof;
+            }
+            if let Some(cid) = opts.custom_id {
+                job.custom_id = Some(cid);
             }
 
             // Delay handling — must come after unique_key is applied.
@@ -560,6 +564,21 @@ mod tests {
         // Delayed job should not be returned by pull (only Waiting jobs are dequeued).
         let pulled = mgr.pull("work", 10).await.unwrap();
         assert!(pulled.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_custom_job_id() {
+        let mgr = temp_manager();
+        let opts = JobOptions {
+            custom_id: Some("my-custom-id-123".to_string()),
+            ..Default::default()
+        };
+        let id = mgr
+            .push("work", "process", json!({}), Some(opts))
+            .await
+            .unwrap();
+        let job = mgr.get_job(id).await.unwrap().unwrap();
+        assert_eq!(job.custom_id, Some("my-custom-id-123".to_string()));
     }
 
     #[tokio::test]
