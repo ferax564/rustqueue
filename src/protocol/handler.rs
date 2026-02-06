@@ -72,6 +72,7 @@ async fn process_line(line: &str, manager: &QueueManager) -> Value {
         "fail" => handle_fail(&parsed, manager).await,
         "cancel" => handle_cancel(&parsed, manager).await,
         "progress" => handle_progress(&parsed, manager).await,
+        "heartbeat" => handle_heartbeat(&parsed, manager).await,
         "stats" => handle_stats(&parsed, manager).await,
         _ => error_response("UNKNOWN_COMMAND", &format!("Unknown command: {cmd}")),
     }
@@ -206,6 +207,22 @@ async fn handle_progress(cmd: &Value, manager: &QueueManager) -> Value {
         .map(|s| s.to_string());
 
     match manager.update_progress(id, progress, message).await {
+        Ok(()) => json!({"ok": true}),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn handle_heartbeat(cmd: &Value, manager: &QueueManager) -> Value {
+    let id_str = match cmd.get("id").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return error_response("VALIDATION_ERROR", "Missing 'id' field"),
+    };
+    let id = match uuid::Uuid::parse_str(id_str) {
+        Ok(id) => id,
+        Err(_) => return error_response("VALIDATION_ERROR", "Invalid job ID format"),
+    };
+
+    match manager.heartbeat(id).await {
         Ok(()) => json!({"ok": true}),
         Err(e) => engine_error_response(&e),
     }

@@ -11,11 +11,13 @@ use crate::engine::queue::QueueManager;
 ///
 /// This spawns a tokio task that runs on a configurable interval:
 /// - Check for timed-out jobs
+/// - Detect stalled jobs (no heartbeat within `stall_timeout_ms`)
 ///
 /// Returns a `JoinHandle` that can be used to abort the scheduler.
 pub fn start_scheduler(
     manager: Arc<QueueManager>,
     tick_interval_ms: u64,
+    stall_timeout_ms: u64,
 ) -> tokio::task::JoinHandle<()> {
     let interval = Duration::from_millis(tick_interval_ms);
 
@@ -24,7 +26,7 @@ pub fn start_scheduler(
         // Skip the first immediate tick
         ticker.tick().await;
 
-        info!(interval_ms = tick_interval_ms, "Background scheduler started");
+        info!(interval_ms = tick_interval_ms, stall_timeout_ms, "Background scheduler started");
 
         loop {
             ticker.tick().await;
@@ -32,6 +34,11 @@ pub fn start_scheduler(
             // Check for timed-out jobs
             if let Err(e) = manager.check_timeouts().await {
                 warn!(error = %e, "Timeout check failed");
+            }
+
+            // Detect stalled jobs (no heartbeat)
+            if let Err(e) = manager.detect_stalls(stall_timeout_ms).await {
+                warn!(error = %e, "Stall detection failed");
             }
         }
     })

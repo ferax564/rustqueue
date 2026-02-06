@@ -120,6 +120,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/v1/jobs/{id}/fail", post(fail_job))
         .route("/api/v1/jobs/{id}/cancel", post(cancel_job))
         .route("/api/v1/jobs/{id}/progress", post(update_progress))
+        .route("/api/v1/jobs/{id}/heartbeat", post(heartbeat_job))
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────
@@ -246,6 +247,15 @@ async fn cancel_job(
     Path(id): Path<Uuid>,
 ) -> Result<Json<OkResponse>, ApiError> {
     state.queue_manager.cancel(id).await?;
+    Ok(Json(OkResponse { ok: true }))
+}
+
+/// POST /api/v1/jobs/:id/heartbeat — Update heartbeat for an active job.
+async fn heartbeat_job(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<Json<OkResponse>, ApiError> {
+    state.queue_manager.heartbeat(id).await?;
     Ok(Json(OkResponse { ok: true }))
 }
 

@@ -386,6 +386,70 @@ impl QueueManager {
             .map_err(RustQueueError::Internal)
     }
 
+    // ── Heartbeat ─────────────────────────────────────────────────────────
+
+    /// Update the heartbeat timestamp for an active job.
+    ///
+    /// Workers should call this periodically to indicate they are still processing.
+    #[tracing::instrument(skip(self), fields(id = %id))]
+    pub async fn heartbeat(&self, id: JobId) -> Result<(), RustQueueError> {
+        let mut job = self.require_job(id).await?;
+        if job.state != JobState::Active {
+            return Err(RustQueueError::InvalidState {
+                current: format!("{:?}", job.state),
+                expected: "Active".to_string(),
+            });
+        }
+        job.last_heartbeat = Some(Utc::now());
+        job.updated_at = Utc::now();
+        self.storage
+            .update_job(&job)
+            .await
+            .map_err(RustQueueError::Internal)?;
+        Ok(())
+    }
+
+    // ── Stall detection ──────────────────────────────────────────────────
+
+    /// Detect and fail stalled jobs — jobs that haven't sent a heartbeat within the timeout.
+    ///
+    /// A job is considered stalled if:
+    /// `now - max(last_heartbeat, started_at) > stall_timeout`
+    ///
+    /// Returns the number of stalled jobs detected and failed.
+    #[tracing::instrument(skip(self))]
+    pub async fn detect_stalls(&self, stall_timeout_ms: u64) -> Result<u32, RustQueueError> {
+        let active_jobs = self
+            .storage
+            .get_active_jobs()
+            .await
+            .map_err(RustQueueError::Internal)?;
+
+        let now = Utc::now();
+        let mut stalled = 0u32;
+
+        for job in active_jobs {
+            let last_alive = job.last_heartbeat.or(job.started_at);
+            if let Some(last) = last_alive {
+                let elapsed = (now - last).num_milliseconds();
+                if elapsed > stall_timeout_ms as i64 {
+                    match self.fail(job.id, "job stalled (no heartbeat)").await {
+                        Ok(_) => stalled += 1,
+                        Err(e) => {
+                            tracing::warn!(job_id = %job.id, error = %e, "Failed to mark stalled job");
+                        }
+                    }
+                }
+            }
+        }
+
+        if stalled > 0 {
+            tracing::info!(count = stalled, "Stalled jobs detected");
+        }
+
+        Ok(stalled)
+    }
+
     // ── Timeout detection ─────────────────────────────────────────────────
 
     /// Check for active jobs that have exceeded their timeout and fail them.
@@ -764,5 +828,65 @@ mod tests {
 
         let job = mgr.get_job(id).await.unwrap().unwrap();
         assert_eq!(job.state, JobState::Active);
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat() {
+        let mgr = temp_manager();
+        let id = mgr
+            .push("work", "process", json!({}), None)
+            .await
+            .unwrap();
+        mgr.pull("work", 1).await.unwrap();
+
+        mgr.heartbeat(id).await.unwrap();
+
+        let job = mgr.get_job(id).await.unwrap().unwrap();
+        assert!(job.last_heartbeat.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_requires_active() {
+        let mgr = temp_manager();
+        let id = mgr
+            .push("work", "process", json!({}), None)
+            .await
+            .unwrap();
+        // Job is Waiting, not Active
+        let err = mgr.heartbeat(id).await.unwrap_err();
+        match err {
+            RustQueueError::InvalidState { current, expected } => {
+                assert_eq!(current, "Waiting");
+                assert_eq!(expected, "Active");
+            }
+            other => panic!("expected InvalidState, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_stalls() {
+        let mgr = temp_manager();
+        let id = mgr
+            .push("work", "process", json!({}), None)
+            .await
+            .unwrap();
+        mgr.pull("work", 1).await.unwrap();
+
+        // Wait a bit, then detect stalls with a very short timeout
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let stalled = mgr.detect_stalls(1).await.unwrap(); // 1ms timeout
+        assert_eq!(stalled, 1);
+
+        let job = mgr.get_job(id).await.unwrap().unwrap();
+        assert!(
+            matches!(job.state, JobState::Delayed | JobState::Waiting),
+            "expected Delayed or Waiting, got {:?}",
+            job.state
+        );
+        assert_eq!(
+            job.last_error,
+            Some("job stalled (no heartbeat)".to_string())
+        );
     }
 }
