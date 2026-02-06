@@ -79,6 +79,7 @@ fn default_tcp_port() -> u16 {
 pub enum StorageBackendType {
     #[default]
     Redb,
+    InMemory,
     Sqlite,
     Postgres,
 }
@@ -431,5 +432,9 @@ postgres_url = "postgres://localhost/rustqueue"
         let pg = StorageBackendType::Postgres;
         let json = serde_json::to_string(&pg).unwrap();
         assert_eq!(json, "\"postgres\"");
+
+        let inmemory = StorageBackendType::InMemory;
+        let json = serde_json::to_string(&inmemory).unwrap();
+        assert_eq!(json, "\"in_memory\"");
     }
 }

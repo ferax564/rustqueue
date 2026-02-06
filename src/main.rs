@@ -79,11 +79,36 @@ async fn main() -> anyhow::Result<()> {
                 config.server.tcp_port = port;
             }
 
-            // 3. Initialize RedbStorage at configured path
-            std::fs::create_dir_all(&config.storage.path)?;
-            let db_path = std::path::Path::new(&config.storage.path).join("rustqueue.redb");
-            let storage = Arc::new(rustqueue::storage::RedbStorage::new(&db_path)?);
-            info!(path = %db_path.display(), "Storage initialized");
+            // 3. Initialize storage backend based on config
+            let storage: Arc<dyn rustqueue::storage::StorageBackend> = match config.storage.backend {
+                rustqueue::config::StorageBackendType::Redb => {
+                    std::fs::create_dir_all(&config.storage.path)?;
+                    let db_path = std::path::Path::new(&config.storage.path).join("rustqueue.redb");
+                    let s = Arc::new(rustqueue::storage::RedbStorage::new(&db_path)?);
+                    info!(path = %db_path.display(), "RedbStorage initialized");
+                    s
+                }
+                rustqueue::config::StorageBackendType::InMemory => {
+                    let s = Arc::new(rustqueue::storage::MemoryStorage::new());
+                    info!("InMemory storage initialized");
+                    s
+                }
+                #[cfg(feature = "sqlite")]
+                rustqueue::config::StorageBackendType::Sqlite => {
+                    std::fs::create_dir_all(&config.storage.path)?;
+                    let db_path = std::path::Path::new(&config.storage.path).join("rustqueue.db");
+                    let s = Arc::new(rustqueue::storage::SqliteStorage::new(&db_path)?);
+                    info!(path = %db_path.display(), "SqliteStorage initialized");
+                    s
+                }
+                #[cfg(feature = "postgres")]
+                rustqueue::config::StorageBackendType::Postgres => {
+                    anyhow::bail!("PostgreSQL backend not yet implemented");
+                }
+                _ => {
+                    anyhow::bail!("Storage backend '{:?}' is not compiled in. Enable the corresponding feature flag.", config.storage.backend);
+                }
+            };
 
             // 4. Create QueueManager with storage
             let queue_manager = Arc::new(rustqueue::engine::queue::QueueManager::new(storage));

@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use rustqueue::api::{self, AppState};
 use rustqueue::engine::queue::QueueManager;
-use rustqueue::storage::RedbStorage;
+use rustqueue::storage::{MemoryStorage, RedbStorage};
 
 /// Start a full test server (HTTP + TCP) on random ports.
 /// Returns the HTTP base URL and TCP address.
@@ -76,4 +76,34 @@ async fn test_server_cli_help() {
     cmd.assert()
         .success()
         .stdout(predicates::str::contains("job scheduler"));
+}
+
+#[tokio::test]
+async fn test_server_with_memory_backend() {
+    let storage = Arc::new(MemoryStorage::new());
+    let queue_manager = Arc::new(QueueManager::new(storage));
+
+    let state = Arc::new(AppState {
+        queue_manager: Arc::clone(&queue_manager),
+        start_time: std::time::Instant::now(),
+        metrics_handle: None,
+    });
+    let app = api::router(state);
+
+    let http_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let http_addr = http_listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(http_listener, app).await.unwrap();
+    });
+
+    let client = Client::new();
+    let resp = client
+        .get(format!("http://{http_addr}/api/v1/health"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], true);
 }
