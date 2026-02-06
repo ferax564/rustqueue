@@ -421,6 +421,14 @@ impl QueueManager {
             .map_err(RustQueueError::Internal)
     }
 
+    /// Retrieve dead-letter-queue jobs for a specific queue, up to `limit`.
+    pub async fn get_dlq_jobs(&self, queue: &str, limit: u32) -> Result<Vec<Job>, RustQueueError> {
+        self.storage
+            .get_dlq_jobs(queue, limit)
+            .await
+            .map_err(RustQueueError::Internal)
+    }
+
     // ── Heartbeat ─────────────────────────────────────────────────────────
 
     /// Update the heartbeat timestamp for an active job.

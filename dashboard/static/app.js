@@ -24,6 +24,8 @@
         health: null,
         queues: [],
         error: null,
+        dlqSelectedQueue: null,
+        dlqJobs: [],
     };
 
     // ── DOM References ───────────────────────────────────────────────────────
@@ -46,6 +48,10 @@
 
         // Queues panel
         dom.queuesGrid = document.getElementById('queues-grid');
+
+        // DLQ panel
+        dom.dlqQueueSelector = document.getElementById('dlq-queue-selector');
+        dom.dlqContent = document.getElementById('dlq-content');
 
         // Events panel
         dom.eventsBody = document.getElementById('events-body');
@@ -126,6 +132,18 @@
             })
             .catch(function (err) {
                 state.error = 'Failed to fetch queues: ' + err.message;
+                throw err;
+            });
+    }
+
+    function fetchDlqJobs(queue) {
+        return apiFetch('/queues/' + encodeURIComponent(queue) + '/dlq?limit=50')
+            .then(function (data) {
+                state.dlqJobs = data.jobs || [];
+                return data;
+            })
+            .catch(function (err) {
+                state.dlqJobs = [];
                 throw err;
             });
     }
@@ -229,6 +247,85 @@
         badge.appendChild(createEl('span', 'badge-dot'));
         badge.appendChild(document.createTextNode(label + ' ' + (count || 0)));
         return badge;
+    }
+
+    // ── Rendering: DLQ ────────────────────────────────────────────────────────
+
+    function renderDlqQueueSelector() {
+        if (!dom.dlqQueueSelector) return;
+        dom.dlqQueueSelector.textContent = '';
+
+        var queues = state.queues;
+        if (queues.length === 0) {
+            dom.dlqQueueSelector.appendChild(
+                createEl('span', 'dlq-no-queues', 'No queues available')
+            );
+            return;
+        }
+
+        for (var i = 0; i < queues.length; i++) {
+            var btn = createEl('button', 'dlq-queue-btn', queues[i].name);
+            if (state.dlqSelectedQueue === queues[i].name) {
+                btn.classList.add('active');
+            }
+            btn.setAttribute('data-queue', queues[i].name);
+            btn.addEventListener('click', function () {
+                var queueName = this.getAttribute('data-queue');
+                state.dlqSelectedQueue = queueName;
+                renderDlqQueueSelector();
+                fetchDlqJobs(queueName).then(renderDlqJobs).catch(renderDlqJobs);
+            });
+            dom.dlqQueueSelector.appendChild(btn);
+        }
+    }
+
+    function renderDlqJobs() {
+        if (!dom.dlqContent) return;
+        dom.dlqContent.textContent = '';
+
+        if (!state.dlqSelectedQueue) {
+            var empty = createEl('div', 'empty-state');
+            empty.appendChild(createEl('div', 'empty-state-title', 'No queue selected'));
+            empty.appendChild(createEl('div', 'empty-state-text', 'Select a queue above to view dead-letter jobs.'));
+            dom.dlqContent.appendChild(empty);
+            return;
+        }
+
+        var jobs = state.dlqJobs;
+        if (jobs.length === 0) {
+            var emptyState = createEl('div', 'empty-state');
+            emptyState.appendChild(createEl('div', 'empty-state-title', 'No DLQ jobs'));
+            emptyState.appendChild(createEl('div', 'empty-state-text',
+                'No dead-letter jobs in queue "' + state.dlqSelectedQueue + '".'));
+            dom.dlqContent.appendChild(emptyState);
+            return;
+        }
+
+        // Build table
+        var table = createEl('div', 'dlq-table');
+
+        // Header
+        var header = createEl('div', 'dlq-table-header');
+        header.appendChild(createEl('div', null, 'Job ID'));
+        header.appendChild(createEl('div', null, 'Name'));
+        header.appendChild(createEl('div', null, 'Error'));
+        header.appendChild(createEl('div', null, 'Attempts'));
+        header.appendChild(createEl('div', null, 'Updated At'));
+        table.appendChild(header);
+
+        // Rows
+        for (var i = 0; i < jobs.length; i++) {
+            var job = jobs[i];
+            var row = createEl('div', 'dlq-table-row');
+            row.appendChild(createEl('div', 'dlq-job-id', (job.id || '').substring(0, 8) + '...'));
+            row.appendChild(createEl('div', null, job.name || '-'));
+            row.appendChild(createEl('div', 'dlq-error', job.last_error || '-'));
+            row.appendChild(createEl('div', null, String(job.attempt || 0) + '/' + String(job.max_attempts || 0)));
+            row.appendChild(createEl('div', null, job.updated_at ? formatEventTime(job.updated_at) : '-'));
+            table.appendChild(row);
+        }
+
+        dom.dlqContent.appendChild(table);
     }
 
     // ── Rendering: Live Events ───────────────────────────────────────────────
@@ -376,10 +473,17 @@
         var queuesPromise = fetchQueues().then(function () {
             renderOverview();
             renderQueues();
+            renderDlqQueueSelector();
         }).catch(function () {
             renderOverview();
             renderQueues();
+            renderDlqQueueSelector();
         });
+
+        // If DLQ panel is active and a queue is selected, refresh DLQ jobs too.
+        if (state.currentPanel === 'dlq' && state.dlqSelectedQueue) {
+            fetchDlqJobs(state.dlqSelectedQueue).then(renderDlqJobs).catch(renderDlqJobs);
+        }
 
         Promise.all([healthPromise, queuesPromise]).then(function () {
             renderError();

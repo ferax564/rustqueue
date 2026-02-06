@@ -60,6 +60,16 @@
                     </a>
                 </li>
                 <li class="sidebar-nav-item">
+                    <a class="sidebar-nav-link" data-panel="dlq" href="#">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                            <line x1="12" y1="9" x2="12" y2="13"/>
+                            <line x1="12" y1="17" x2="12.01" y2="17"/>
+                        </svg>
+                        Dead Letter Queue
+                    </a>
+                </li>
+                <li class="sidebar-nav-item">
                     <a class="sidebar-nav-link" data-panel="events" href="#">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
@@ -114,6 +124,34 @@
             </div>
             <div class="queues-grid" id="queues-grid">
                 <!-- Populated by app.js -->
+            </div>
+        </section>
+
+        <!-- ── DLQ Panel ──────────────────────────────────────────────────── -->
+        <section class="panel" id="panel-dlq">
+            <div class="panel-header">
+                <div>
+                    <h1 class="panel-title">Dead Letter Queue</h1>
+                    <p class="panel-subtitle">Jobs that exhausted all retry attempts</p>
+                </div>
+                <div class="panel-refresh-badge">
+                    <span class="spinner"></span>
+                    Auto-refreshes every 5s
+                </div>
+            </div>
+            <div class="dlq-queue-selector" id="dlq-queue-selector">
+                <!-- Populated by app.js — queue selection buttons -->
+            </div>
+            <div class="dlq-content" id="dlq-content">
+                <div class="empty-state">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                    <div class="empty-state-title">No DLQ jobs</div>
+                    <div class="empty-state-text">Select a queue above to view dead-letter jobs.</div>
+                </div>
             </div>
         </section>
 

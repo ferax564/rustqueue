@@ -102,6 +102,11 @@ pub struct ProgressRequest {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct DlqQueryParams {
+    pub limit: Option<u32>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct FailResponse {
     pub ok: bool,
@@ -115,6 +120,7 @@ pub struct FailResponse {
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/api/v1/queues/{queue}/jobs", post(push_jobs).get(pull_jobs))
+        .route("/api/v1/queues/{queue}/dlq", get(get_dlq_jobs))
         .route("/api/v1/jobs/{id}", get(get_job))
         .route("/api/v1/jobs/{id}/ack", post(ack_job))
         .route("/api/v1/jobs/{id}/fail", post(fail_job))
@@ -257,6 +263,20 @@ async fn heartbeat_job(
 ) -> Result<Json<OkResponse>, ApiError> {
     state.queue_manager.heartbeat(id).await?;
     Ok(Json(OkResponse { ok: true }))
+}
+
+/// GET /api/v1/queues/:queue/dlq — List dead-letter-queue jobs for a queue.
+async fn get_dlq_jobs(
+    State(state): State<Arc<AppState>>,
+    Path(queue): Path<String>,
+    Query(params): Query<DlqQueryParams>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let limit = params.limit.unwrap_or(50);
+    let jobs = state.queue_manager.get_dlq_jobs(&queue, limit).await?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "jobs": jobs,
+    })))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

@@ -581,6 +581,96 @@ body {
     white-space: nowrap;
 }
 
+/* ── DLQ Panel ───────────────────────────────────────────────────────────── */
+
+.dlq-queue-selector {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 20px;
+}
+
+.dlq-queue-btn {
+    padding: 6px 16px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.dlq-queue-btn:hover {
+    background: var(--bg-card-hover);
+    color: var(--text-primary);
+    border-color: var(--border-color-light);
+}
+
+.dlq-queue-btn.active {
+    background: rgba(155, 89, 182, 0.15);
+    border-color: var(--color-dlq);
+    color: var(--color-dlq);
+}
+
+.dlq-no-queues {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.dlq-table {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+}
+
+.dlq-table-header {
+    display: grid;
+    grid-template-columns: 120px 1fr 2fr 100px 180px;
+    padding: 10px 16px;
+    background: var(--bg-input);
+    border-bottom: 1px solid var(--border-color);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-weight: 600;
+}
+
+.dlq-table-row {
+    display: grid;
+    grid-template-columns: 120px 1fr 2fr 100px 180px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border-color);
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    transition: background 0.1s ease;
+}
+
+.dlq-table-row:hover {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.dlq-table-row:last-child {
+    border-bottom: none;
+}
+
+.dlq-job-id {
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dlq-error {
+    color: var(--color-failed);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* ── Empty state ──────────────────────────────────────────────────────────── */
 
 .empty-state {

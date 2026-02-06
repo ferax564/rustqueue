@@ -458,6 +458,136 @@ async fn start_test_server_with_metrics() -> String {
     format!("http://{addr}")
 }
 
+// ── Test 13: DLQ endpoint returns failed jobs ───────────────────────────────
+
+#[tokio::test]
+async fn test_dlq_endpoint_returns_jobs() {
+    let base = start_test_server().await;
+    let client = Client::new();
+
+    // Push a job with max_attempts=1 so a single failure sends it to DLQ.
+    let push_resp = client
+        .post(format!("{base}/api/v1/queues/work/jobs"))
+        .json(&json!({
+            "name": "doomed-task",
+            "data": {"x": 1},
+            "max_attempts": 1
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(push_resp.status(), 201);
+    let push_body: Value = push_resp.json().await.unwrap();
+    let id = push_body["id"].as_str().unwrap().to_string();
+
+    // Pull the job (moves to Active).
+    let pull_resp = client
+        .get(format!("{base}/api/v1/queues/work/jobs"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pull_resp.status(), 200);
+    let pull_body: Value = pull_resp.json().await.unwrap();
+    assert_eq!(pull_body["job"]["id"], id);
+
+    // Fail the job — exhausts retries, moves to DLQ.
+    let fail_resp = client
+        .post(format!("{base}/api/v1/jobs/{id}/fail"))
+        .json(&json!({"error": "fatal crash"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fail_resp.status(), 200);
+    let fail_body: Value = fail_resp.json().await.unwrap();
+    assert_eq!(fail_body["ok"], true);
+    assert_eq!(fail_body["retry"], false);
+
+    // Query the DLQ endpoint.
+    let dlq_resp = client
+        .get(format!("{base}/api/v1/queues/work/dlq"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dlq_resp.status(), 200);
+    let dlq_body: Value = dlq_resp.json().await.unwrap();
+    assert_eq!(dlq_body["ok"], true);
+
+    let dlq_jobs = dlq_body["jobs"].as_array().unwrap();
+    assert_eq!(dlq_jobs.len(), 1, "expected exactly 1 DLQ job");
+    assert_eq!(dlq_jobs[0]["id"], id);
+    assert_eq!(dlq_jobs[0]["name"], "doomed-task");
+    assert_eq!(dlq_jobs[0]["state"], "dlq");
+    assert_eq!(dlq_jobs[0]["last_error"], "fatal crash");
+}
+
+// ── Test 14: DLQ endpoint empty queue returns empty list ─────────────────────
+
+#[tokio::test]
+async fn test_dlq_endpoint_empty_queue() {
+    let base = start_test_server().await;
+    let client = Client::new();
+
+    // Query DLQ for a queue with no jobs — should return empty list.
+    let dlq_resp = client
+        .get(format!("{base}/api/v1/queues/nonexistent/dlq"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dlq_resp.status(), 200);
+    let dlq_body: Value = dlq_resp.json().await.unwrap();
+    assert_eq!(dlq_body["ok"], true);
+    let dlq_jobs = dlq_body["jobs"].as_array().unwrap();
+    assert!(dlq_jobs.is_empty());
+}
+
+// ── Test 15: DLQ endpoint respects limit parameter ───────────────────────────
+
+#[tokio::test]
+async fn test_dlq_endpoint_respects_limit() {
+    let base = start_test_server().await;
+    let client = Client::new();
+
+    // Push and fail 3 jobs with max_attempts=1.
+    for i in 0..3 {
+        let push_resp = client
+            .post(format!("{base}/api/v1/queues/dlqtest/jobs"))
+            .json(&json!({
+                "name": format!("task-{i}"),
+                "data": {},
+                "max_attempts": 1
+            }))
+            .send()
+            .await
+            .unwrap();
+        let push_body: Value = push_resp.json().await.unwrap();
+        let id = push_body["id"].as_str().unwrap().to_string();
+
+        // Pull and fail.
+        client
+            .get(format!("{base}/api/v1/queues/dlqtest/jobs"))
+            .send()
+            .await
+            .unwrap();
+        client
+            .post(format!("{base}/api/v1/jobs/{id}/fail"))
+            .json(&json!({"error": "boom"}))
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Request with limit=2.
+    let dlq_resp = client
+        .get(format!("{base}/api/v1/queues/dlqtest/dlq?limit=2"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dlq_resp.status(), 200);
+    let dlq_body: Value = dlq_resp.json().await.unwrap();
+    let dlq_jobs = dlq_body["jobs"].as_array().unwrap();
+    assert_eq!(dlq_jobs.len(), 2, "limit=2 should return at most 2 DLQ jobs");
+}
+
 #[tokio::test]
 async fn test_prometheus_metrics_endpoint() {
     let base = start_test_server_with_metrics().await;
