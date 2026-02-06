@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use tracing::info;
+use tracing::{info, warn};
 
 mod dashboard;
 
@@ -244,28 +244,62 @@ async fn main() -> anyhow::Result<()> {
                 "Background scheduler started"
             );
 
-            // 10. Spawn HTTP server
-            let http_handle = tokio::spawn(async move {
-                axum::serve(http_listener, app)
-                    .await
-                    .expect("HTTP server error");
+            // 10. Create shutdown signal
+            let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+            // 11. Spawn HTTP server with graceful shutdown
+            let http_handle = tokio::spawn({
+                let mut rx = shutdown_rx.clone();
+                async move {
+                    axum::serve(http_listener, app)
+                        .with_graceful_shutdown(async move {
+                            rx.changed().await.ok();
+                        })
+                        .await
+                        .expect("HTTP server error");
+                }
             });
 
-            // 11. Spawn TCP server (with auth config for connection-level authentication)
+            // 12. Spawn TCP server with graceful shutdown (auth config for connection-level authentication)
             let tcp_auth_config = config.auth.clone();
-            let tcp_handle = tokio::spawn(async move {
-                rustqueue::protocol::start_tcp_server(tcp_listener, queue_manager, tcp_auth_config)
+            let tcp_handle = tokio::spawn({
+                let rx = shutdown_rx.clone();
+                async move {
+                    rustqueue::protocol::start_tcp_server(
+                        tcp_listener,
+                        queue_manager,
+                        tcp_auth_config,
+                        rx,
+                    )
                     .await;
+                }
             });
 
-            // 12. Wait for shutdown signal (Ctrl+C)
+            // 13. Wait for shutdown signal (Ctrl+C)
             tokio::signal::ctrl_c().await?;
-            info!("Shutdown signal received, stopping servers...");
+            info!("Shutdown signal received, draining connections...");
+            shutdown_tx.send(true)?;
 
-            // Abort server tasks for clean shutdown
+            // 14. Wait for servers with timeout (30s drain period)
+            let http_abort = http_handle.abort_handle();
+            let tcp_abort = tcp_handle.abort_handle();
+            let drain_timeout = std::time::Duration::from_secs(30);
+            match tokio::time::timeout(drain_timeout, async {
+                let _ = http_handle.await;
+                let _ = tcp_handle.await;
+            })
+            .await
+            {
+                Ok(_) => info!("All servers stopped gracefully"),
+                Err(_) => {
+                    warn!("Drain timeout reached, forcing shutdown");
+                    http_abort.abort();
+                    tcp_abort.abort();
+                }
+            }
+
+            // Scheduler can be aborted immediately (safe, no in-flight state)
             scheduler_handle.abort();
-            http_handle.abort();
-            tcp_handle.abort();
 
             #[cfg(feature = "otel")]
             rustqueue::engine::telemetry::shutdown_otel();

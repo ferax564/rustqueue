@@ -27,8 +27,11 @@ async fn start_test_tcp_server_with_auth(auth_config: AuthConfig) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
 
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    // Leak the sender so it outlives the spawned server task (never sends shutdown).
+    let _keep_tx = Box::leak(Box::new(shutdown_tx));
     tokio::spawn(async move {
-        protocol::start_tcp_server(listener, qm, auth_config).await;
+        protocol::start_tcp_server(listener, qm, auth_config, shutdown_rx).await;
     });
 
     port
