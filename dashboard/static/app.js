@@ -328,6 +328,103 @@
         dom.dlqContent.appendChild(table);
     }
 
+    // ── Rendering: Schedules ────────────────────────────────────────────────
+
+    function addScheduleDetail(container, label, value) {
+        var row = createEl('div', 'schedule-detail-row');
+        row.appendChild(createEl('span', 'schedule-detail-label', label));
+        row.appendChild(createEl('span', 'schedule-detail-value', value));
+        container.appendChild(row);
+    }
+
+    function renderSchedules() {
+        var container = document.getElementById('schedules-grid');
+        if (!container) return;
+
+        apiFetch('/schedules').then(function (data) {
+            if (!data || !data.schedules) return;
+
+            container.textContent = '';
+
+            if (data.schedules.length === 0) {
+                var empty = createEl('div', 'empty-state');
+                empty.appendChild(createEl('div', 'empty-state-title', 'No schedules'));
+                empty.appendChild(createEl('div', 'empty-state-text',
+                    'Create a schedule via API or CLI to see it here.'));
+                container.appendChild(empty);
+                return;
+            }
+
+            for (var i = 0; i < data.schedules.length; i++) {
+                container.appendChild(buildScheduleCard(data.schedules[i]));
+            }
+        }).catch(function (e) {
+            // Silently ignore — schedules endpoint may not be available
+        });
+    }
+
+    function buildScheduleCard(schedule) {
+        var card = createEl('div', 'schedule-card');
+
+        // Header with name and status
+        var header = createEl('div', 'schedule-card-header');
+        header.appendChild(createEl('h3', null, schedule.name));
+
+        var badge = createEl('span',
+            'state-badge ' + (schedule.paused ? 'state-failed' : 'state-active'),
+            schedule.paused ? 'Paused' : 'Active');
+        header.appendChild(badge);
+
+        card.appendChild(header);
+
+        // Details
+        var details = createEl('div', 'schedule-card-details');
+
+        addScheduleDetail(details, 'Queue', schedule.queue || '\u2014');
+
+        var timing = schedule.cron_expr
+            ? 'cron: ' + schedule.cron_expr
+            : schedule.every_ms
+                ? 'every ' + schedule.every_ms + 'ms'
+                : '\u2014';
+        addScheduleDetail(details, 'Timing', timing);
+
+        addScheduleDetail(details, 'Executions', String(schedule.execution_count || 0));
+
+        addScheduleDetail(details, 'Last run',
+            schedule.last_run_at
+                ? new Date(schedule.last_run_at).toLocaleTimeString()
+                : 'Never');
+
+        addScheduleDetail(details, 'Next run',
+            schedule.next_run_at
+                ? new Date(schedule.next_run_at).toLocaleTimeString()
+                : '\u2014');
+
+        card.appendChild(details);
+
+        // Pause/Resume button
+        var btn = createEl('button', 'schedule-toggle-btn',
+            schedule.paused ? 'Resume' : 'Pause');
+        btn.setAttribute('data-schedule-name', schedule.name);
+        btn.setAttribute('data-schedule-paused', schedule.paused ? 'true' : 'false');
+        btn.addEventListener('click', function () {
+            var name = this.getAttribute('data-schedule-name');
+            var isPaused = this.getAttribute('data-schedule-paused') === 'true';
+            var action = isPaused ? 'resume' : 'pause';
+            fetch(API_BASE + '/schedules/' + encodeURIComponent(name) + '/' + action, {
+                method: 'POST'
+            }).then(function () {
+                renderSchedules();
+            }).catch(function (e) {
+                // Silently ignore
+            });
+        });
+        card.appendChild(btn);
+
+        return card;
+    }
+
     // ── Rendering: Live Events ───────────────────────────────────────────────
 
     function buildEventRow(event) {
@@ -474,10 +571,12 @@
             renderOverview();
             renderQueues();
             renderDlqQueueSelector();
+            renderSchedules();
         }).catch(function () {
             renderOverview();
             renderQueues();
             renderDlqQueueSelector();
+            renderSchedules();
         });
 
         // If DLQ panel is active and a queue is selected, refresh DLQ jobs too.

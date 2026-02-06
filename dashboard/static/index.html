@@ -70,6 +70,15 @@
                     </a>
                 </li>
                 <li class="sidebar-nav-item">
+                    <a class="sidebar-nav-link" data-panel="schedules" href="#">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="10"/>
+                            <polyline points="12 6 12 12 16 14"/>
+                        </svg>
+                        Schedules
+                    </a>
+                </li>
+                <li class="sidebar-nav-item">
                     <a class="sidebar-nav-link" data-panel="events" href="#">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
@@ -152,6 +161,23 @@
                     <div class="empty-state-title">No DLQ jobs</div>
                     <div class="empty-state-text">Select a queue above to view dead-letter jobs.</div>
                 </div>
+            </div>
+        </section>
+
+        <!-- ── Schedules Panel ────────────────────────────────────────────── -->
+        <section class="panel" id="panel-schedules">
+            <div class="panel-header">
+                <div>
+                    <h1 class="panel-title">Schedules</h1>
+                    <p class="panel-subtitle">Cron and interval job schedules</p>
+                </div>
+                <div class="panel-refresh-badge">
+                    <span class="spinner"></span>
+                    Auto-refreshes every 5s
+                </div>
+            </div>
+            <div class="schedules-grid" id="schedules-grid">
+                <!-- Populated by app.js -->
             </div>
         </section>
 
