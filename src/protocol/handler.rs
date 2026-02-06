@@ -8,6 +8,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, warn};
 
 use crate::config::AuthConfig;
+use crate::engine::models::Schedule;
 use crate::engine::queue::{JobOptions, QueueManager};
 
 /// Handle a single TCP connection, processing commands until the client disconnects.
@@ -134,6 +135,12 @@ async fn process_line(line: &str, manager: &QueueManager) -> Value {
         "progress" => handle_progress(&parsed, manager).await,
         "heartbeat" => handle_heartbeat(&parsed, manager).await,
         "stats" => handle_stats(&parsed, manager).await,
+        "schedule_create" => handle_schedule_create(&parsed, manager).await,
+        "schedule_list" => handle_schedule_list(manager).await,
+        "schedule_get" => handle_schedule_get(&parsed, manager).await,
+        "schedule_delete" => handle_schedule_delete(&parsed, manager).await,
+        "schedule_pause" => handle_schedule_pause(&parsed, manager).await,
+        "schedule_resume" => handle_schedule_resume(&parsed, manager).await,
         _ => error_response("UNKNOWN_COMMAND", &format!("Unknown command: {cmd}")),
     }
 }
@@ -296,6 +303,114 @@ async fn handle_stats(cmd: &Value, manager: &QueueManager) -> Value {
 
     match manager.get_queue_stats(queue).await {
         Ok(counts) => json!({"ok": true, "counts": counts}),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+// ── Schedule command handlers ────────────────────────────────────────────────
+
+async fn handle_schedule_create(cmd: &Value, manager: &QueueManager) -> Value {
+    let name = match cmd.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return error_response("VALIDATION_ERROR", "Missing 'name' field"),
+    };
+    let queue = match cmd.get("queue").and_then(|v| v.as_str()) {
+        Some(q) => q,
+        None => return error_response("VALIDATION_ERROR", "Missing 'queue' field"),
+    };
+    let job_name = match cmd.get("job_name").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return error_response("VALIDATION_ERROR", "Missing 'job_name' field"),
+    };
+    let job_data = cmd.get("job_data").cloned().unwrap_or(json!({}));
+    let cron_expr = cmd.get("cron_expr").and_then(|v| v.as_str()).map(String::from);
+    let every_ms = cmd.get("every_ms").and_then(|v| v.as_u64());
+    let timezone = cmd.get("timezone").and_then(|v| v.as_str()).map(String::from);
+    let max_executions = cmd.get("max_executions").and_then(|v| v.as_u64());
+    let job_options: Option<JobOptions> = cmd
+        .get("job_options")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+
+    let now = chrono::Utc::now();
+    let schedule = Schedule {
+        name: name.to_string(),
+        queue: queue.to_string(),
+        job_name: job_name.to_string(),
+        job_data,
+        job_options,
+        cron_expr,
+        every_ms,
+        timezone,
+        max_executions,
+        execution_count: 0,
+        paused: false,
+        last_run_at: None,
+        next_run_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+
+    match manager.create_schedule(&schedule).await {
+        Ok(()) => json!({"ok": true}),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn handle_schedule_list(manager: &QueueManager) -> Value {
+    match manager.list_schedules().await {
+        Ok(schedules) => {
+            let schedules_val: Vec<Value> = schedules.into_iter().map(|s| json!(s)).collect();
+            json!({"ok": true, "schedules": schedules_val})
+        }
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn handle_schedule_get(cmd: &Value, manager: &QueueManager) -> Value {
+    let name = match cmd.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return error_response("VALIDATION_ERROR", "Missing 'name' field"),
+    };
+
+    match manager.get_schedule(name).await {
+        Ok(Some(schedule)) => json!({"ok": true, "schedule": schedule}),
+        Ok(None) => error_response("NOT_FOUND", &format!("Schedule '{name}' not found")),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn handle_schedule_delete(cmd: &Value, manager: &QueueManager) -> Value {
+    let name = match cmd.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return error_response("VALIDATION_ERROR", "Missing 'name' field"),
+    };
+
+    match manager.delete_schedule(name).await {
+        Ok(()) => json!({"ok": true}),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn handle_schedule_pause(cmd: &Value, manager: &QueueManager) -> Value {
+    let name = match cmd.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return error_response("VALIDATION_ERROR", "Missing 'name' field"),
+    };
+
+    match manager.pause_schedule(name).await {
+        Ok(()) => json!({"ok": true}),
+        Err(e) => engine_error_response(&e),
+    }
+}
+
+async fn handle_schedule_resume(cmd: &Value, manager: &QueueManager) -> Value {
+    let name = match cmd.get("name").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return error_response("VALIDATION_ERROR", "Missing 'name' field"),
+    };
+
+    match manager.resume_schedule(name).await {
+        Ok(()) => json!({"ok": true}),
         Err(e) => engine_error_response(&e),
     }
 }

@@ -123,3 +123,96 @@ async fn test_tcp_malformed_json() {
     let resp = read_response(&mut reader).await;
     assert!(!resp["ok"].as_bool().unwrap());
 }
+
+#[tokio::test]
+async fn test_tcp_schedule_create_and_list() {
+    let port = start_test_tcp_server().await;
+    let (mut reader, mut writer) = connect_tcp(port).await;
+
+    // Create a schedule
+    send_cmd(
+        &mut writer,
+        json!({
+            "cmd": "schedule_create",
+            "name": "daily-report",
+            "queue": "reports",
+            "job_name": "generate-report",
+            "job_data": {"type": "daily"},
+            "every_ms": 86400000_u64,
+        }),
+    )
+    .await;
+    let resp = read_response(&mut reader).await;
+    assert!(resp["ok"].as_bool().unwrap(), "schedule_create failed: {resp}");
+
+    // List schedules
+    send_cmd(&mut writer, json!({"cmd": "schedule_list"})).await;
+    let resp = read_response(&mut reader).await;
+    assert!(resp["ok"].as_bool().unwrap(), "schedule_list failed: {resp}");
+
+    let schedules = resp["schedules"].as_array().unwrap();
+    assert_eq!(schedules.len(), 1);
+    assert_eq!(schedules[0]["name"].as_str().unwrap(), "daily-report");
+    assert_eq!(schedules[0]["queue"].as_str().unwrap(), "reports");
+    assert_eq!(schedules[0]["job_name"].as_str().unwrap(), "generate-report");
+    assert_eq!(schedules[0]["every_ms"].as_u64().unwrap(), 86400000);
+}
+
+#[tokio::test]
+async fn test_tcp_schedule_pause_resume() {
+    let port = start_test_tcp_server().await;
+    let (mut reader, mut writer) = connect_tcp(port).await;
+
+    // Create a schedule
+    send_cmd(
+        &mut writer,
+        json!({
+            "cmd": "schedule_create",
+            "name": "hourly-sync",
+            "queue": "sync",
+            "job_name": "sync-data",
+            "every_ms": 3600000_u64,
+        }),
+    )
+    .await;
+    let resp = read_response(&mut reader).await;
+    assert!(resp["ok"].as_bool().unwrap(), "schedule_create failed: {resp}");
+
+    // Pause the schedule
+    send_cmd(
+        &mut writer,
+        json!({"cmd": "schedule_pause", "name": "hourly-sync"}),
+    )
+    .await;
+    let resp = read_response(&mut reader).await;
+    assert!(resp["ok"].as_bool().unwrap(), "schedule_pause failed: {resp}");
+
+    // Get and verify paused
+    send_cmd(
+        &mut writer,
+        json!({"cmd": "schedule_get", "name": "hourly-sync"}),
+    )
+    .await;
+    let resp = read_response(&mut reader).await;
+    assert!(resp["ok"].as_bool().unwrap(), "schedule_get failed: {resp}");
+    assert!(resp["schedule"]["paused"].as_bool().unwrap(), "schedule should be paused");
+
+    // Resume the schedule
+    send_cmd(
+        &mut writer,
+        json!({"cmd": "schedule_resume", "name": "hourly-sync"}),
+    )
+    .await;
+    let resp = read_response(&mut reader).await;
+    assert!(resp["ok"].as_bool().unwrap(), "schedule_resume failed: {resp}");
+
+    // Get and verify resumed
+    send_cmd(
+        &mut writer,
+        json!({"cmd": "schedule_get", "name": "hourly-sync"}),
+    )
+    .await;
+    let resp = read_response(&mut reader).await;
+    assert!(resp["ok"].as_bool().unwrap(), "schedule_get failed: {resp}");
+    assert!(!resp["schedule"]["paused"].as_bool().unwrap(), "schedule should not be paused");
+}
