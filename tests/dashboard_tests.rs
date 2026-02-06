@@ -66,6 +66,39 @@ async fn test_dashboard_index_returns_html() {
 }
 
 #[tokio::test]
+async fn test_landing_page_root_returns_html() {
+    let base_url = start_test_server().await;
+    let client = Client::new();
+
+    let resp = client
+        .get(&base_url)
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+
+    let content_type = resp
+        .headers()
+        .get("content-type")
+        .expect("missing content-type header")
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        content_type.contains("text/html"),
+        "expected text/html content-type, got: {content_type}"
+    );
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("Queueing Infrastructure Without the")
+            && body.contains("Ops Tax"),
+        "expected landing page hero fragments, got: {body}"
+    );
+}
+
+#[tokio::test]
 async fn test_dashboard_missing_asset_returns_404() {
     let base_url = start_test_server().await;
     let client = Client::new();

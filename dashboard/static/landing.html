@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="RustQueue is a high-performance job scheduler that runs anywhere: single binary, zero external dependencies, built-in observability.">
+    <title>RustQueue | Queueing Without the Ops Tax</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Manrope:wght@400;500;700;800&family=Syne:wght@500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/dashboard/landing.css">
+</head>
+<body>
+<div class="scene" aria-hidden="true">
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+    <div class="orb orb-c"></div>
+</div>
+
+<header class="nav-shell reveal">
+    <nav class="container nav">
+        <a href="/" class="logo" aria-label="RustQueue home">
+            <span class="logo-mark"></span>
+            <span class="logo-text">RustQueue</span>
+        </a>
+        <div class="nav-links">
+            <a href="#features">Features</a>
+            <a href="#use-cases">Use Cases</a>
+            <a href="#launch">Launch</a>
+        </div>
+        <a class="btn btn-ghost" href="/dashboard">Open Dashboard</a>
+    </nav>
+</header>
+
+<main>
+    <section class="hero container">
+        <div class="hero-copy reveal">
+            <p class="eyebrow">Single binary. Zero external dependencies.</p>
+            <h1>Queueing Infrastructure Without the <span>Ops Tax</span></h1>
+            <p class="lead">
+                RustQueue is a fast, language-agnostic job scheduler with retries, DLQ,
+                progress tracking, and observability built in.
+            </p>
+            <div class="hero-cta">
+                <a class="btn btn-primary" href="#launch">Get Started</a>
+                <a class="btn btn-ghost" href="/dashboard">See Live Dashboard</a>
+            </div>
+            <div class="command-block" role="region" aria-label="Quick install command">
+                <span class="mono mono-label">Quick install</span>
+                <code class="mono">cargo install rustqueue</code>
+            </div>
+            <ul class="signal-list">
+                <li>REST + TCP protocol</li>
+                <li>WebSocket event stream</li>
+                <li>Prometheus metrics out of the box</li>
+            </ul>
+        </div>
+
+        <div class="hero-side">
+            <article class="panel panel-queue reveal">
+                <h2>Queue Snapshot</h2>
+                <div class="kpis">
+                    <div>
+                        <span class="mono">waiting</span>
+                        <strong>1,284</strong>
+                    </div>
+                    <div>
+                        <span class="mono">active</span>
+                        <strong>36</strong>
+                    </div>
+                    <div>
+                        <span class="mono">p99 push</span>
+                        <strong>4.7ms</strong>
+                    </div>
+                </div>
+            </article>
+            <article class="panel panel-events reveal">
+                <h2>Event Stream</h2>
+                <ul>
+                    <li><span class="dot ok"></span><code>job.pushed</code> <small>emails</small></li>
+                    <li><span class="dot ok"></span><code>job.completed</code> <small>billing</small></li>
+                    <li><span class="dot warn"></span><code>job.failed</code> <small>exports</small></li>
+                </ul>
+            </article>
+        </div>
+    </section>
+
+    <section id="features" class="features container">
+        <div class="section-head reveal">
+            <p class="eyebrow">Core capabilities</p>
+            <h2>Designed for Production, Not Demos</h2>
+        </div>
+        <div class="feature-grid">
+            <article class="card reveal">
+                <h3>Zero-Dependency Runtime</h3>
+                <p>Run the queue server with no required Redis, RabbitMQ, or external broker.</p>
+            </article>
+            <article class="card reveal">
+                <h3>Retries + Backoff + DLQ</h3>
+                <p>Handle failure with fixed, linear, or exponential retries and inspect dead-letter jobs.</p>
+            </article>
+            <article class="card reveal">
+                <h3>Progress + Heartbeats</h3>
+                <p>Track long-running work and detect stalls before they become incidents.</p>
+            </article>
+            <article class="card reveal">
+                <h3>Real-Time Telemetry</h3>
+                <p>Stream job lifecycle events via WebSocket and scrape metrics via Prometheus.</p>
+            </article>
+            <article class="card reveal">
+                <h3>Embeddable Rust Library</h3>
+                <p>Use RustQueue as infrastructure or embed it directly into Rust services.</p>
+            </article>
+            <article class="card reveal">
+                <h3>Single-Binary Deployment</h3>
+                <p>Ship one binary from local dev to edge devices to production clusters.</p>
+            </article>
+        </div>
+    </section>
+
+    <section id="use-cases" class="use-cases container">
+        <div class="section-head reveal">
+            <p class="eyebrow">Where it fits</p>
+            <h2>Built for Teams Shipping Asynchronous Workloads</h2>
+        </div>
+        <div class="lane">
+            <article class="lane-item reveal">
+                <h3>SaaS Background Jobs</h3>
+                <p>Emails, webhooks, report generation, billing retries, and media processing.</p>
+            </article>
+            <article class="lane-item reveal">
+                <h3>AI Task Pipelines</h3>
+                <p>Long-running inference and agent work with progress events and retries.</p>
+            </article>
+            <article class="lane-item reveal">
+                <h3>Edge and On-Prem</h3>
+                <p>Minimal dependencies for constrained environments and regulated workloads.</p>
+            </article>
+        </div>
+    </section>
+
+    <section id="launch" class="launch container reveal">
+        <div>
+            <p class="eyebrow">Launch in minutes</p>
+            <h2>From install to first job in under five minutes</h2>
+        </div>
+        <pre class="code"><code>cargo install rustqueue
+rustqueue serve
+curl -X POST http://localhost:6790/api/v1/queues/emails/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"name":"send-welcome","data":{"to":"user@example.com"}}'</code></pre>
+        <div class="launch-actions">
+            <a class="btn btn-primary" href="/dashboard">Open Dashboard</a>
+            <a class="btn btn-ghost" href="https://github.com/ferax564/rustqueue">View Source</a>
+        </div>
+    </section>
+</main>
+
+<footer class="footer container">
+    <p>RustQueue · High-performance distributed job scheduler</p>
+    <p class="mono">MIT OR Apache-2.0</p>
+</footer>
+</body>
+</html>

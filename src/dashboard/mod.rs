@@ -19,12 +19,18 @@ struct DashboardAssets;
 
 /// Build the dashboard router.
 ///
+/// - `GET /` serves the marketing landing page.
 /// - `GET /dashboard` serves `index.html`.
 /// - `GET /dashboard/{*path}` serves arbitrary static assets.
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/", axum::routing::get(landing))
         .route("/dashboard", axum::routing::get(index))
         .route("/dashboard/{*path}", axum::routing::get(serve_asset))
+}
+
+async fn landing() -> impl IntoResponse {
+    serve_embedded("landing.html")
 }
 
 async fn index() -> impl IntoResponse {

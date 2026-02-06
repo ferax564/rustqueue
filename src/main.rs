@@ -3,7 +3,6 @@ use std::sync::Arc;
 use clap::Parser;
 use tracing::{info, warn};
 
-mod dashboard;
 
 #[cfg(feature = "tls")]
 fn load_certs(path: &str) -> anyhow::Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
