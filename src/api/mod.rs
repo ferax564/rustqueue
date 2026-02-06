@@ -6,6 +6,7 @@ pub mod health;
 pub mod jobs;
 pub mod prometheus;
 pub mod queues;
+pub mod websocket;
 
 use std::sync::Arc;
 
@@ -15,6 +16,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
 
+use crate::api::websocket::JobEvent;
 use crate::engine::error::RustQueueError;
 use crate::engine::queue::QueueManager;
 
@@ -25,6 +27,8 @@ pub struct AppState {
     /// Handle used to render Prometheus metrics.  `None` when the global
     /// recorder has not been installed (e.g. in tests that don't need metrics).
     pub metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
+    /// Broadcast sender for real-time job events (WebSocket streaming).
+    pub event_tx: tokio::sync::broadcast::Sender<JobEvent>,
 }
 
 /// Build the full API router with all endpoint groups merged.
@@ -34,6 +38,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .merge(queues::routes())
         .merge(health::routes())
         .merge(prometheus::routes())
+        .merge(websocket::routes())
         .with_state(state)
 }
 

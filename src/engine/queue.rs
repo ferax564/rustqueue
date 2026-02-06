@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use tracing::info;
 
+use crate::api::websocket::JobEvent;
 use crate::engine::error::RustQueueError;
 use crate::engine::metrics as metric_names;
 use crate::engine::models::{BackoffStrategy, Job, JobId, JobState, QueueCounts};
@@ -55,12 +56,38 @@ pub struct QueueInfo {
 /// Core engine that mediates between callers and the storage backend.
 pub struct QueueManager {
     storage: Arc<dyn StorageBackend>,
+    event_tx: Option<tokio::sync::broadcast::Sender<JobEvent>>,
 }
 
 impl QueueManager {
     /// Create a new `QueueManager` backed by the given storage implementation.
     pub fn new(storage: Arc<dyn StorageBackend>) -> Self {
-        Self { storage }
+        Self {
+            storage,
+            event_tx: None,
+        }
+    }
+
+    /// Attach a broadcast sender for emitting real-time job events.
+    ///
+    /// Must be called **before** wrapping the manager in `Arc`.
+    pub fn with_event_sender(mut self, tx: tokio::sync::broadcast::Sender<JobEvent>) -> Self {
+        self.event_tx = Some(tx);
+        self
+    }
+
+    /// Emit a job event to all connected WebSocket clients.
+    ///
+    /// Silently ignores failures (no connected receivers is fine).
+    fn emit_event(&self, event: &str, job_id: JobId, queue: &str) {
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.send(JobEvent {
+                event: event.to_string(),
+                job_id,
+                queue: queue.to_string(),
+                timestamp: Utc::now(),
+            });
+        }
     }
 
     // ── Push ─────────────────────────────────────────────────────────────
@@ -147,6 +174,8 @@ impl QueueManager {
 
         metrics::counter!(metric_names::JOBS_PUSHED_TOTAL).increment(1);
 
+        self.emit_event("job.pushed", id, queue);
+
         info!(job_id = %id, "Job pushed");
 
         Ok(id)
@@ -212,6 +241,8 @@ impl QueueManager {
 
         metrics::counter!(metric_names::JOBS_COMPLETED_TOTAL).increment(1);
 
+        self.emit_event("job.completed", id, &job.queue);
+
         info!(job_id = %id, "Job acknowledged");
 
         Ok(())
@@ -271,6 +302,8 @@ impl QueueManager {
                 .await
                 .map_err(RustQueueError::Internal)?;
 
+            self.emit_event("job.failed", id, &job.queue);
+
             info!(job_id = %id, "Job moved to DLQ");
 
             Ok(FailResult {
@@ -303,6 +336,8 @@ impl QueueManager {
             .update_job(&job)
             .await
             .map_err(RustQueueError::Internal)?;
+
+        self.emit_event("job.cancelled", id, &job.queue);
 
         Ok(())
     }

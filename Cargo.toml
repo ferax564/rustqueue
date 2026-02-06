@@ -82,6 +82,8 @@ criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 tempfile = "3"
 assert_cmd = "2"
 predicates = "3"
+tokio-tungstenite = "0.28"
+futures-util = "0.3"
 
 [features]
 default = ["cli"]

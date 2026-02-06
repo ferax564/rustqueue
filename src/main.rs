@@ -154,23 +154,30 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
 
-            // 4. Create QueueManager with storage
-            let queue_manager = Arc::new(rustqueue::engine::queue::QueueManager::new(storage));
+            // 4. Create broadcast channel for real-time job events
+            let (event_tx, _) = tokio::sync::broadcast::channel(1024);
 
-            // 5. Install Prometheus metrics recorder
+            // 5. Create QueueManager with storage and event sender
+            let queue_manager = Arc::new(
+                rustqueue::engine::queue::QueueManager::new(storage)
+                    .with_event_sender(event_tx.clone()),
+            );
+
+            // 6. Install Prometheus metrics recorder
             let metrics_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
                 .install_recorder()
                 .expect("failed to install Prometheus recorder");
 
-            // 6. Build HTTP app state and router
+            // 7. Build HTTP app state and router
             let state = Arc::new(rustqueue::api::AppState {
                 queue_manager: Arc::clone(&queue_manager),
                 start_time: std::time::Instant::now(),
                 metrics_handle: Some(metrics_handle),
+                event_tx: event_tx.clone(),
             });
             let app = rustqueue::api::router(state);
 
-            // 7. Bind HTTP and TCP listeners
+            // 8. Bind HTTP and TCP listeners
             let http_addr = format!("{}:{}", config.server.host, config.server.http_port);
             let tcp_addr = format!("{}:{}", config.server.host, config.server.tcp_port);
 
@@ -183,19 +190,19 @@ async fn main() -> anyhow::Result<()> {
                 "RustQueue server starting"
             );
 
-            // 8. Spawn HTTP server
+            // 9. Spawn HTTP server
             let http_handle = tokio::spawn(async move {
                 axum::serve(http_listener, app)
                     .await
                     .expect("HTTP server error");
             });
 
-            // 9. Spawn TCP server
+            // 10. Spawn TCP server
             let tcp_handle = tokio::spawn(async move {
                 rustqueue::protocol::start_tcp_server(tcp_listener, queue_manager).await;
             });
 
-            // 10. Wait for shutdown signal (Ctrl+C)
+            // 11. Wait for shutdown signal (Ctrl+C)
             tokio::signal::ctrl_c().await?;
             info!("Shutdown signal received, stopping servers...");
 

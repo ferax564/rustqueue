@@ -18,12 +18,14 @@ async fn start_test_server() -> String {
     let db_path = dir.path().join("test.redb");
     let _keep = Box::leak(Box::new(dir));
 
+    let (event_tx, _) = tokio::sync::broadcast::channel(1024);
     let storage = Arc::new(RedbStorage::new(&db_path).unwrap());
     let qm = Arc::new(QueueManager::new(storage));
     let state = Arc::new(AppState {
         queue_manager: qm,
         start_time: std::time::Instant::now(),
         metrics_handle: None,
+        event_tx,
     });
     let app = api::router(state);
 

@@ -17,6 +17,7 @@ async fn start_full_server() -> (String, std::net::SocketAddr) {
     // Leak the tempdir so it outlives the spawned server tasks.
     let _keep = Box::leak(Box::new(dir));
 
+    let (event_tx, _) = tokio::sync::broadcast::channel(1024);
     let storage = Arc::new(RedbStorage::new(&db_path).unwrap());
     let queue_manager = Arc::new(QueueManager::new(storage));
 
@@ -25,6 +26,7 @@ async fn start_full_server() -> (String, std::net::SocketAddr) {
         queue_manager: Arc::clone(&queue_manager),
         start_time: std::time::Instant::now(),
         metrics_handle: None,
+        event_tx,
     });
     let app = api::router(state);
 
@@ -90,6 +92,7 @@ async fn test_cli_status_help() {
 
 #[tokio::test]
 async fn test_server_with_memory_backend() {
+    let (event_tx, _) = tokio::sync::broadcast::channel(1024);
     let storage = Arc::new(MemoryStorage::new());
     let queue_manager = Arc::new(QueueManager::new(storage));
 
@@ -97,6 +100,7 @@ async fn test_server_with_memory_backend() {
         queue_manager: Arc::clone(&queue_manager),
         start_time: std::time::Instant::now(),
         metrics_handle: None,
+        event_tx,
     });
     let app = api::router(state);
 
