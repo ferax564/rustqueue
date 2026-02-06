@@ -16,6 +16,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
+use tower_http::cors::{Any, CorsLayer};
+use tower_http::trace::TraceLayer;
 
 use crate::api::websocket::JobEvent;
 use crate::engine::error::RustQueueError;
@@ -40,6 +42,11 @@ pub struct AppState {
 /// Protected routes (jobs, queues, websocket) require a valid bearer token when
 /// `auth_config.enabled` is `true`.
 pub fn router(state: Arc<AppState>) -> axum::Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     let public = axum::Router::new()
         .merge(health::routes())
         .merge(prometheus::routes());
@@ -53,7 +60,11 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
             auth::auth_middleware,
         ));
 
-    public.merge(protected).with_state(state)
+    public
+        .merge(protected)
+        .layer(cors)
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
 }
 
 // ── Error response types ────────────────────────────────────────────────────
