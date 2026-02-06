@@ -18,6 +18,10 @@ use rustqueue::storage::{MemoryStorage, RedbStorage, StorageBackend};
 #[cfg(feature = "sqlite")]
 use rustqueue::storage::SqliteStorage;
 
+#[cfg(feature = "postgres")]
+use rustqueue::storage::PostgresStorage;
+
+
 /// Helper: create a job in the given queue with sensible defaults.
 fn test_job(queue: &str) -> Job {
     Job::new(queue, "test-job", json!({"key": "value"}))
@@ -416,4 +420,25 @@ backend_tests!(sqlite_backend, {
     // Leak the tempdir so it outlives the test (the Connection holds the file open).
     std::mem::forget(dir);
     SqliteStorage::new(&path).unwrap()
+});
+
+// -- Instantiate for PostgresStorage ------------------------------------------
+//
+// Requires the `postgres` feature AND the `TEST_POSTGRES_URL` environment
+// variable to be set (e.g. `postgres://user:pass@localhost:5432/rustqueue_test`).
+// Without the env var the tests will panic at `.expect()`, which is acceptable
+// because these tests are opt-in.
+
+#[cfg(feature = "postgres")]
+backend_tests!(postgres_backend, {
+    let url = std::env::var("TEST_POSTGRES_URL")
+        .expect("TEST_POSTGRES_URL must be set for postgres tests");
+    let storage = PostgresStorage::new_blocking(&url).unwrap();
+    // Clean tables before each test for isolation.
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            storage.clear_all().await.unwrap();
+        });
+    });
+    storage
 });

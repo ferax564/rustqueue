@@ -4,6 +4,9 @@ pub mod redb;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 
+#[cfg(feature = "postgres")]
+pub mod postgres;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
@@ -14,6 +17,9 @@ pub use self::redb::RedbStorage;
 
 #[cfg(feature = "sqlite")]
 pub use self::sqlite::SqliteStorage;
+
+#[cfg(feature = "postgres")]
+pub use self::postgres::PostgresStorage;
 
 /// Trait abstracting the storage layer, allowing multiple backend implementations.
 #[async_trait]
