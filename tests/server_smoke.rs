@@ -79,6 +79,16 @@ async fn test_server_cli_help() {
 }
 
 #[tokio::test]
+async fn test_cli_status_help() {
+    #[allow(deprecated)]
+    let mut cmd = assert_cmd::Command::cargo_bin("rustqueue").unwrap();
+    cmd.arg("status").arg("--help");
+    cmd.assert()
+        .success()
+        .stdout(predicates::str::contains("queue status"));
+}
+
+#[tokio::test]
 async fn test_server_with_memory_backend() {
     let storage = Arc::new(MemoryStorage::new());
     let queue_manager = Arc::new(QueueManager::new(storage));

@@ -28,6 +28,50 @@ enum Commands {
         #[arg(long, env = "RUSTQUEUE_TCP_PORT")]
         tcp_port: Option<u16>,
     },
+
+    /// Show queue status (connects to running server)
+    #[cfg(feature = "cli")]
+    Status {
+        /// Server host
+        #[arg(long, default_value = "127.0.0.1", env = "RUSTQUEUE_HOST")]
+        host: String,
+        /// Server HTTP port
+        #[arg(long, default_value_t = 6790, env = "RUSTQUEUE_HTTP_PORT")]
+        http_port: u16,
+    },
+
+    /// Push a job to a queue (connects to running server)
+    #[cfg(feature = "cli")]
+    Push {
+        /// Queue name
+        #[arg(long)]
+        queue: String,
+        /// Job name
+        #[arg(long)]
+        name: String,
+        /// Job data as JSON string
+        #[arg(long, default_value = "{}")]
+        data: String,
+        /// Server host
+        #[arg(long, default_value = "127.0.0.1", env = "RUSTQUEUE_HOST")]
+        host: String,
+        /// Server HTTP port
+        #[arg(long, default_value_t = 6790, env = "RUSTQUEUE_HTTP_PORT")]
+        http_port: u16,
+    },
+
+    /// Inspect a job by ID (connects to running server)
+    #[cfg(feature = "cli")]
+    Inspect {
+        /// Job ID (UUID)
+        id: String,
+        /// Server host
+        #[arg(long, default_value = "127.0.0.1", env = "RUSTQUEUE_HOST")]
+        host: String,
+        /// Server HTTP port
+        #[arg(long, default_value_t = 6790, env = "RUSTQUEUE_HTTP_PORT")]
+        http_port: u16,
+    },
 }
 
 #[tokio::main]
@@ -160,6 +204,89 @@ async fn main() -> anyhow::Result<()> {
             tcp_handle.abort();
 
             info!("RustQueue server stopped");
+        }
+
+        #[cfg(feature = "cli")]
+        Commands::Status { host, http_port } => {
+            let url = format!("http://{}:{}/api/v1/queues", host, http_port);
+            let client = reqwest::Client::new();
+            let resp = client.get(&url).send().await?;
+            let body: serde_json::Value = resp.json().await?;
+
+            if body["ok"].as_bool() == Some(true) {
+                if let Some(queues) = body["queues"].as_array() {
+                    if queues.is_empty() {
+                        println!("No queues found.");
+                    } else {
+                        println!(
+                            "{:<20} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+                            "Queue", "Waiting", "Active", "Delayed", "Done", "Failed", "DLQ"
+                        );
+                        println!("{}", "-".repeat(78));
+                        for q in queues {
+                            let name = q["name"].as_str().unwrap_or("?");
+                            let c = &q["counts"];
+                            println!(
+                                "{:<20} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+                                name,
+                                c["waiting"].as_u64().unwrap_or(0),
+                                c["active"].as_u64().unwrap_or(0),
+                                c["delayed"].as_u64().unwrap_or(0),
+                                c["completed"].as_u64().unwrap_or(0),
+                                c["failed"].as_u64().unwrap_or(0),
+                                c["dlq"].as_u64().unwrap_or(0),
+                            );
+                        }
+                    }
+                }
+            } else {
+                eprintln!("Error: {}", body);
+            }
+        }
+
+        #[cfg(feature = "cli")]
+        Commands::Push {
+            queue,
+            name,
+            data,
+            host,
+            http_port,
+        } => {
+            let url = format!(
+                "http://{}:{}/api/v1/queues/{}/jobs",
+                host, http_port, queue
+            );
+            let payload: serde_json::Value =
+                serde_json::from_str(&data).unwrap_or_else(|_| serde_json::json!({}));
+            let body = serde_json::json!({
+                "name": name,
+                "data": payload,
+            });
+            let client = reqwest::Client::new();
+            let resp = client.post(&url).json(&body).send().await?;
+            let result: serde_json::Value = resp.json().await?;
+            if result["ok"].as_bool() == Some(true) {
+                println!("Job pushed: {}", result["id"].as_str().unwrap_or("?"));
+            } else {
+                eprintln!("Error: {}", result);
+            }
+        }
+
+        #[cfg(feature = "cli")]
+        Commands::Inspect {
+            id,
+            host,
+            http_port,
+        } => {
+            let url = format!("http://{}:{}/api/v1/jobs/{}", host, http_port, id);
+            let client = reqwest::Client::new();
+            let resp = client.get(&url).send().await?;
+            let body: serde_json::Value = resp.json().await?;
+            if body["ok"].as_bool() == Some(true) {
+                println!("{}", serde_json::to_string_pretty(&body["job"])?);
+            } else {
+                eprintln!("Error: {}", body);
+            }
         }
     }
 
