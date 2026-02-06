@@ -203,7 +203,13 @@ async fn main() -> anyhow::Result<()> {
                 }
                 #[cfg(feature = "postgres")]
                 rustqueue::config::StorageBackendType::Postgres => {
-                    anyhow::bail!("PostgreSQL backend not yet implemented");
+                    let url = config.storage.postgres_url.as_ref()
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "PostgreSQL backend requires storage.postgres_url in config"
+                        ))?;
+                    let s = Arc::new(rustqueue::storage::PostgresStorage::new(url).await?);
+                    info!("PostgresStorage initialized");
+                    s
                 }
                 #[allow(unreachable_patterns)]
                 other => {
