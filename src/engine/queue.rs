@@ -8,6 +8,8 @@ use std::sync::Arc;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
+use tracing::info;
+
 use crate::engine::error::RustQueueError;
 use crate::engine::metrics as metric_names;
 use crate::engine::models::{BackoffStrategy, Job, JobId, JobState, QueueCounts};
@@ -65,6 +67,7 @@ impl QueueManager {
     /// Enqueue a new job, applying the supplied [`JobOptions`].
     ///
     /// Returns the generated [`JobId`].
+    #[tracing::instrument(skip(self, data, opts), fields(queue, name))]
     pub async fn push(
         &self,
         queue: &str,
@@ -140,6 +143,8 @@ impl QueueManager {
 
         metrics::counter!(metric_names::JOBS_PUSHED_TOTAL).increment(1);
 
+        info!(job_id = %id, "Job pushed");
+
         Ok(id)
     }
 
@@ -148,6 +153,7 @@ impl QueueManager {
     /// Dequeue up to `count` jobs from the given queue.
     ///
     /// Returned jobs are transitioned to [`JobState::Active`] atomically.
+    #[tracing::instrument(skip(self), fields(queue, count))]
     pub async fn pull(&self, queue: &str, count: u32) -> Result<Vec<Job>, RustQueueError> {
         let jobs = self
             .storage
@@ -167,6 +173,7 @@ impl QueueManager {
     /// Acknowledge successful completion of a job.
     ///
     /// The job must be in [`JobState::Active`]; otherwise an error is returned.
+    #[tracing::instrument(skip(self, result), fields(id = %id))]
     pub async fn ack(
         &self,
         id: JobId,
@@ -201,12 +208,15 @@ impl QueueManager {
 
         metrics::counter!(metric_names::JOBS_COMPLETED_TOTAL).increment(1);
 
+        info!(job_id = %id, "Job acknowledged");
+
         Ok(())
     }
 
     // ── Fail ─────────────────────────────────────────────────────────────
 
     /// Report a job failure. The engine decides whether to retry or move to DLQ.
+    #[tracing::instrument(skip(self), fields(id = %id, error))]
     pub async fn fail(
         &self,
         id: JobId,
@@ -244,6 +254,8 @@ impl QueueManager {
                 .await
                 .map_err(RustQueueError::Internal)?;
 
+            info!(job_id = %id, attempt = job.attempt, "Job failed, will retry");
+
             Ok(FailResult {
                 will_retry: true,
                 next_attempt_at: if delay_ms > 0 { Some(next) } else { None },
@@ -254,6 +266,8 @@ impl QueueManager {
                 .move_to_dlq(&job, error)
                 .await
                 .map_err(RustQueueError::Internal)?;
+
+            info!(job_id = %id, "Job moved to DLQ");
 
             Ok(FailResult {
                 will_retry: false,
@@ -267,6 +281,7 @@ impl QueueManager {
     /// Cancel a job that is still waiting or delayed.
     ///
     /// Active, Completed, Failed, Dlq, and Cancelled jobs cannot be cancelled.
+    #[tracing::instrument(skip(self), fields(id = %id))]
     pub async fn cancel(&self, id: JobId) -> Result<(), RustQueueError> {
         let mut job = self.require_job(id).await?;
 

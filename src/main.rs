@@ -32,14 +32,6 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "rustqueue=info".into()),
-        )
-        .init();
-
     let cli = Cli::parse();
 
     match cli.command {
@@ -51,17 +43,33 @@ async fn main() -> anyhow::Result<()> {
             // 1. Load config from TOML file, fall back to defaults
             let mut config = match std::fs::read_to_string(&config_path) {
                 Ok(contents) => {
-                    info!(path = %config_path, "Loaded configuration file");
                     toml::from_str::<rustqueue::config::RustQueueConfig>(&contents)?
                 }
                 Err(_) => {
-                    info!(
-                        path = %config_path,
-                        "Config file not found, using defaults"
-                    );
                     rustqueue::config::RustQueueConfig::default()
                 }
             };
+
+            // 2. Initialize tracing based on config
+            let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| format!("rustqueue={}", config.logging.level).into());
+
+            if config.logging.format == "json" {
+                tracing_subscriber::fmt()
+                    .json()
+                    .with_env_filter(env_filter)
+                    .init();
+            } else {
+                tracing_subscriber::fmt()
+                    .with_env_filter(env_filter)
+                    .init();
+            }
+
+            info!(
+                path = %config_path,
+                format = %config.logging.format,
+                "Tracing initialized"
+            );
 
             // 2. Apply CLI overrides for ports
             if let Some(port) = http_port {
