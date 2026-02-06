@@ -189,8 +189,9 @@ async fn main() -> anyhow::Result<()> {
                 rustqueue::config::StorageBackendType::Postgres => {
                     anyhow::bail!("PostgreSQL backend not yet implemented");
                 }
-                _ => {
-                    anyhow::bail!("Storage backend '{:?}' is not compiled in. Enable the corresponding feature flag.", config.storage.backend);
+                #[allow(unreachable_patterns)]
+                other => {
+                    anyhow::bail!("Storage backend '{other:?}' is not compiled in. Enable the corresponding feature flag.");
                 }
             };
 
