@@ -48,20 +48,27 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let public = axum::Router::new()
+    let mut public = axum::Router::new()
         .merge(health::routes())
-        .merge(prometheus::routes())
-        .merge(crate::dashboard::routes());
+        .merge(prometheus::routes());
 
-    let protected = axum::Router::new()
+    let mut protected = axum::Router::new()
         .merge(jobs::routes())
         .merge(queues::routes())
         .merge(schedules::routes())
-        .merge(websocket::routes())
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            auth::auth_middleware,
-        ));
+        .merge(websocket::routes());
+
+    // Dashboard is public when auth is disabled, protected when enabled.
+    if state.auth_config.enabled {
+        protected = protected.merge(crate::dashboard::routes());
+    } else {
+        public = public.merge(crate::dashboard::routes());
+    }
+
+    let protected = protected.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        auth::auth_middleware,
+    ));
 
     public
         .merge(protected)

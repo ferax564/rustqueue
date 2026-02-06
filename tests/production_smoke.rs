@@ -130,9 +130,11 @@ async fn test_production_scenario() {
     assert_eq!(ack_body["ok"], true);
 
     // ── Step 6: Verify dashboard is accessible at GET /dashboard ─────────
+    // Dashboard is protected when auth is enabled, so we must pass the token.
 
     let dashboard_resp = client
         .get(format!("{base}/dashboard"))
+        .header("Authorization", "Bearer test-token")
         .send()
         .await
         .unwrap();
@@ -140,7 +142,7 @@ async fn test_production_scenario() {
     assert_eq!(
         dashboard_resp.status(),
         200,
-        "dashboard should be publicly accessible"
+        "dashboard should be accessible with valid auth token"
     );
     let content_type = dashboard_resp
         .headers()

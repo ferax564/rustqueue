@@ -173,3 +173,51 @@ async fn test_health_always_public() {
     assert_eq!(body["ok"], true);
     assert_eq!(body["status"], "healthy");
 }
+
+// ── Test 6: Dashboard returns 401 when auth is enabled and no token ──────────
+
+#[tokio::test]
+async fn test_dashboard_returns_401_when_auth_enabled() {
+    let base = start_test_server_with_auth(AuthConfig {
+        enabled: true,
+        tokens: vec!["dashboard-token".to_string()],
+    })
+    .await;
+
+    let client = Client::new();
+
+    // Dashboard should be protected when auth is enabled — request without token gets 401.
+    let resp = client
+        .get(format!("{base}/dashboard"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 401);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+}
+
+// ── Test 7: Dashboard accessible with valid token when auth is enabled ───────
+
+#[tokio::test]
+async fn test_dashboard_accessible_with_token_when_auth_enabled() {
+    let base = start_test_server_with_auth(AuthConfig {
+        enabled: true,
+        tokens: vec!["dashboard-token".to_string()],
+    })
+    .await;
+
+    let client = Client::new();
+
+    // Dashboard should be accessible when a valid bearer token is provided.
+    let resp = client
+        .get(format!("{base}/dashboard"))
+        .header("Authorization", "Bearer dashboard-token")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+}
