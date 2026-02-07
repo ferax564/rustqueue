@@ -275,6 +275,41 @@ async fn main() -> anyhow::Result<()> {
                         redb
                     }
                 }
+                rustqueue::config::StorageBackendType::Hybrid => {
+                    std::fs::create_dir_all(&config.storage.path)?;
+                    let db_path = std::path::Path::new(&config.storage.path).join("rustqueue.redb");
+                    // Hybrid storage already accepts data loss up to snapshot_interval,
+                    // so use Eventual durability for the inner redb to avoid fsync
+                    // bottleneck. If user explicitly set None, respect that.
+                    let durability = match config.storage.redb_durability {
+                        rustqueue::config::RedbDurabilityConfig::None => {
+                            rustqueue::storage::RedbDurability::None
+                        }
+                        rustqueue::config::RedbDurabilityConfig::Immediate
+                        | rustqueue::config::RedbDurabilityConfig::Eventual => {
+                            rustqueue::storage::RedbDurability::Eventual
+                        }
+                    };
+                    let redb: Arc<dyn rustqueue::storage::StorageBackend> =
+                        Arc::new(rustqueue::storage::RedbStorage::new_with_durability(
+                            &db_path, durability,
+                        )?);
+                    let hybrid_config = rustqueue::storage::HybridConfig {
+                        snapshot_interval_ms: config.storage.hybrid_snapshot_interval_ms,
+                        max_dirty_before_flush: config.storage.hybrid_max_dirty,
+                    };
+                    let s: Arc<dyn rustqueue::storage::StorageBackend> = Arc::new(
+                        rustqueue::storage::HybridStorage::new(redb, hybrid_config),
+                    );
+                    info!(
+                        path = %db_path.display(),
+                        snapshot_interval_ms = config.storage.hybrid_snapshot_interval_ms,
+                        max_dirty = config.storage.hybrid_max_dirty,
+                        inner_durability = ?durability,
+                        "HybridStorage initialized (memory + redb snapshot)"
+                    );
+                    s
+                }
                 rustqueue::config::StorageBackendType::InMemory => {
                     let s = Arc::new(rustqueue::storage::MemoryStorage::new());
                     info!("InMemory storage initialized");
@@ -328,6 +363,7 @@ async fn main() -> anyhow::Result<()> {
                 metrics_handle: Some(metrics_handle),
                 event_tx: event_tx.clone(),
                 auth_config: config.auth.clone(),
+                auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
             });
             let app = rustqueue::api::router(state);
 

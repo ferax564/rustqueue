@@ -23,6 +23,7 @@ async fn start_test_server_with_auth(auth_config: AuthConfig) -> String {
         metrics_handle: None,
         event_tx,
         auth_config,
+        auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
     });
     let app = api::router(state);
 

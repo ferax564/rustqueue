@@ -77,8 +77,15 @@ rustls = { version = "0.23", optional = true }
 tokio-rustls = { version = "0.26", optional = true }
 rustls-pemfile = { version = "2", optional = true }
 
+# Concurrent data structures
+dashmap = "6"
+
 # Dashboard embedding
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+
+# OpenAPI spec generation
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-scalar = { version = "0.3", features = ["axum"] }
 
 [dev-dependencies]
 # Testing
@@ -91,6 +98,7 @@ assert_cmd = "2"
 predicates = "3"
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
+sysinfo = "0.30"
 
 [features]
 default = ["cli"]

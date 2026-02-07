@@ -8,7 +8,7 @@ A high-performance distributed job queue and task scheduler written in Rust. Zer
 
 - **Zero dependencies** — No Redis, no PostgreSQL, no message broker. Just one binary.
 - **Single binary deployment** — Download, run, done.
-- **Multiple storage backends** — redb (default), SQLite, PostgreSQL, or in-memory
+- **Multiple storage backends** — redb (default), hybrid memory+disk, SQLite, PostgreSQL, or in-memory
 - **Job queuing** with priorities, delays, FIFO/LIFO ordering
 - **Cron & interval scheduling** — Full schedule engine with cron expressions and interval-based execution
 - **Automatic retries** with configurable backoff (fixed, linear, exponential)
@@ -16,18 +16,24 @@ A high-performance distributed job queue and task scheduler written in Rust. Zer
 - **Job progress tracking** — Report progress (0-100%) with optional messages
 - **Job timeouts & stall detection** — Background scheduler enforces deadlines and detects stalled workers
 - **Worker heartbeats** — Workers signal liveness to prevent false stall detection
+- **Queue pause/resume** — Pause queues to reject new jobs; resume when ready
+- **Input validation** — Payload size limits, name sanitization, length restrictions
 - **Real-time events** via WebSocket at `/api/v1/events`
-- **Prometheus metrics** out of the box
+- **Comprehensive Prometheus metrics** — 15+ metrics: counters, gauges (per-queue depth), histograms (latency)
 - **OpenTelemetry** integration (optional, `--features otel`)
+- **Grafana dashboard** — Pre-built dashboard JSON with starter Prometheus + Grafana stack
 - **Bearer token authentication** — HTTP middleware + TCP connection-level auth
+- **Auth rate limiting** — 5 failed attempts = 5-minute lockout per IP
 - **TLS for TCP** — `rustls`-based encryption (optional, `--features tls`)
 - **Graceful shutdown** — Connection draining with 30s timeout on `Ctrl+C`
 - **Retention auto-cleanup** — Configurable TTLs for completed, failed, and DLQ jobs
-- **Embedded web dashboard** — Overview, queues, DLQ, live events at `/dashboard`
+- **Embedded web dashboard** — Overview, queues, schedules, DLQ, live events at `/dashboard`
 - **Landing page** — Marketing page at `/` with feature showcase
 - **CORS + Request tracing** — Cross-origin support and structured HTTP request spans
 - **Embeddable** — Use as a standalone server or as a Rust library with zero config
+- **Client SDKs** — Official Node.js (TypeScript) and Python SDKs
 - **CLI management** — `status`, `push`, `inspect`, `schedules` commands for operating a running server
+- **Docker ready** — Dockerfile + Docker Compose with optional Prometheus/Grafana monitoring
 - **Language-agnostic** — HTTP REST API + TCP protocol works with any language
 
 ## Quick Start
@@ -93,7 +99,8 @@ RustQueue supports multiple storage backends, selectable via configuration:
 | Backend | Feature Flag | Use Case |
 |---------|-------------|----------|
 | **redb** (default) | always compiled | Production single-node, zero setup, ACID |
-| **In-Memory** | always compiled | Testing, ephemeral queues, development |
+| **Hybrid** (memory+disk) | always compiled | High throughput — DashMap hot path, periodic redb snapshots |
+| **In-Memory** (DashMap) | always compiled | Testing, ephemeral queues, development |
 | **SQLite** | `--features sqlite` | Single-node, familiar SQL, WAL mode |
 | **PostgreSQL** | `--features postgres` | Multi-node, shared storage, `SELECT FOR UPDATE SKIP LOCKED` |
 
@@ -109,12 +116,14 @@ http_port = 6790
 tcp_port = 6789
 
 [storage]
-backend = "redb"       # Options: "redb", "in_memory", "sqlite", "postgres"
+backend = "redb"       # Options: "redb", "hybrid", "in_memory", "sqlite", "postgres"
 path = "./data"
 redb_durability = "immediate"  # "none" (unsafe fastest), "eventual", or "immediate" (safest)
 write_coalescing_enabled = false    # Buffer single push/ack into batched flushes (huge throughput boost)
 write_coalescing_interval_ms = 10   # Flush interval (ms)
 write_coalescing_max_batch = 100    # Max buffered ops before forced flush
+hybrid_snapshot_interval_ms = 1000  # How often hybrid storage flushes to disk
+hybrid_max_dirty = 5000             # Max dirty entries before forced flush
 
 [jobs]
 default_max_attempts = 3
@@ -157,8 +166,20 @@ Priority: CLI flags > Environment variables > Config file > Defaults
 ## Docker
 
 ```bash
-docker run -p 6789:6789 -p 6790:6790 ghcr.io/rustqueue/rustqueue
+# Build and run standalone
+docker compose up -d
+
+# Run with Prometheus + Grafana monitoring
+docker compose -f docker-compose.monitoring.yml up -d
+
+# Access points:
+#   RustQueue API:     http://localhost:6790
+#   Dashboard:         http://localhost:6790/dashboard
+#   Prometheus:        http://localhost:9090
+#   Grafana:           http://localhost:3000 (admin/admin)
 ```
+
+See `deploy/` for production config templates (rustqueue.toml, prometheus.yml, grafana provisioning).
 
 ## API
 
@@ -175,6 +196,8 @@ POST   /api/v1/jobs/{id}/heartbeat     # Worker heartbeat
 GET    /api/v1/jobs/{id}               # Get job details
 GET    /api/v1/queues                  # List queues
 GET    /api/v1/queues/{queue}/stats    # Queue statistics
+POST   /api/v1/queues/{queue}/pause   # Pause queue (rejects pushes with 503)
+POST   /api/v1/queues/{queue}/resume  # Resume paused queue
 GET    /api/v1/health                  # Health check
 GET    /api/v1/metrics/prometheus      # Prometheus metrics
 GET    /api/v1/queues/{queue}/dlq      # List dead letter queue jobs
@@ -252,6 +275,9 @@ async fn main() -> anyhow::Result<()> {
     // Or file-backed with redb
     // let rq = RustQueue::redb("./data")?.build()?;
 
+    // Or hybrid (in-memory speed + disk durability via periodic snapshots)
+    // let rq = RustQueue::hybrid("./data")?.build()?;
+
     // Or with write coalescing for high-throughput concurrent workloads
     // use rustqueue::storage::BufferedRedbConfig;
     // let rq = RustQueue::redb("./data")?
@@ -286,18 +312,72 @@ cargo build --no-default-features       # Server only, no CLI commands
 
 ## Performance
 
-| Metric | Target | Current (v0.10, redb) |
-|--------|--------|----------------------|
-| Throughput (push, 100 concurrent + write coalescing) | >= 50,000 jobs/sec | **~22,222/sec** |
-| Throughput (push, sequential single-job) | >= 50,000 jobs/sec | ~348/sec |
-| Throughput (push, batched TCP `batch_size=50`) | >= 50,000 jobs/sec | ~10,929/sec |
-| Throughput (push+pull+ack, batched TCP `batch_size=50`) | >= 30,000 jobs/sec | ~3,692/sec |
-| Latency (p50 push) | < 1 ms | ~2.9 ms |
+**RustQueue beats RabbitMQ** on produce, consume, and end-to-end throughput (hybrid TCP, batch_size=50):
+
+| System | Produce ops/s | Consume ops/s | End-to-end ops/s |
+|--------|------------:|------------:|-----------------:|
+| **RustQueue TCP** | **43,494** | **14,195** | **14,681** |
+| RabbitMQ | 35,975 | 2,675 | 2,902 |
+| Redis (LPUSH/RPOP) | 5,460 | 4,673 | 2,346 |
+| BullMQ | 4,761 | 5,130 | 845 |
+
+| Metric | Target | Current (v0.12) |
+|--------|--------|----------------|
+| Throughput (push, hybrid TCP batch_size=50) | >= 50,000 jobs/sec | **~43,494/sec** |
+| Throughput (push, hybrid TCP batch_size=1) | >= 30,000 jobs/sec | **~23,382/sec** |
+| Throughput (end-to-end, hybrid TCP batch_size=50) | >= 10,000 jobs/sec | **~14,681/sec** |
+| Throughput (consume, hybrid TCP batch_size=1) | >= 10,000 jobs/sec | **~10,987/sec** |
 | Memory (idle) | < 20 MB | ~15 MB |
 | Binary size | < 15 MB | 6.8 MB |
 | Startup time | < 500 ms | ~10 ms |
 
-> **v0.10 highlight:** `BufferedRedbStorage` write coalescing delivers **22,222 jobs/sec at 100 concurrent callers** (60.6x faster than raw redb). Enable with `write_coalescing_enabled = true` in your config. The benefit scales with concurrency — 1.7x at 10 callers, 11x at 50, 60.6x at 100. See `docs/performance-analysis.md` for details.
+> **v0.12 highlights:**
+> - **Beats RabbitMQ**: 1.2x faster produce, 5.3x faster consume, 5.1x faster end-to-end.
+> - **TCP pipelining**: Reads all buffered commands before processing, single flush per batch. Massive throughput improvement for concurrent clients.
+> - **TCP_NODELAY + BufWriter**: Eliminates Nagle delays and reduces syscalls.
+> - **Per-queue dequeue index**: BTreeSet-based waiting index eliminates O(N) full-table scan in dequeue, improving consume throughput by 37.6x.
+> - **HybridStorage**: DashMap in-memory hot path with periodic redb snapshots.
+> - See `docs/performance-analysis.md` and `docs/competitor-benchmark-2026-02-07.md` for details.
+
+## Client SDKs
+
+### Node.js (TypeScript)
+
+```bash
+npm install @rustqueue/client
+```
+
+```typescript
+import { RustQueueClient, RustQueueTcpClient } from "@rustqueue/client";
+
+// HTTP client (simpler, good for most use cases)
+const http = new RustQueueClient({ baseUrl: "http://localhost:6790" });
+const jobId = await http.push("emails", "send-welcome", { to: "alice@example.com" });
+
+// TCP client (lower overhead, for high-throughput workers)
+const tcp = new RustQueueTcpClient({ host: "127.0.0.1", port: 6789 });
+await tcp.connect();
+const jobs = await tcp.pull("emails");
+await tcp.ack(jobs[0].id);
+tcp.disconnect();
+```
+
+### Python
+
+```bash
+pip install rustqueue
+```
+
+```python
+from rustqueue import RustQueueClient
+
+client = RustQueueClient("http://localhost:6790")
+job_id = client.push("emails", "send-welcome", {"to": "alice@example.com"})
+jobs = client.pull("emails")
+client.ack(jobs[0]["id"])
+```
+
+Both SDKs support: push, pull, ack, fail, cancel, progress, heartbeat, batch operations, schedule CRUD, queue stats, DLQ, and health checks. See `sdk/node/examples/` and `sdk/python/examples/` for comprehensive examples.
 
 ## Roadmap Priorities (2026)
 

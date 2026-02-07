@@ -185,7 +185,7 @@ def wait_for_rustqueue() -> None:
     raise RuntimeError("rustqueue did not become ready")
 
 
-def start_rustqueue_server(redb_durability: str, write_coalescing: bool = False) -> tuple[subprocess.Popen, Path]:
+def start_rustqueue_server(redb_durability: str, write_coalescing: bool = False, hybrid: bool = False) -> tuple[subprocess.Popen, Path]:
     if not RUSTQUEUE_BIN.exists():
         run(["cargo", "build", "--release"], capture=False)
 
@@ -194,12 +194,22 @@ def start_rustqueue_server(redb_durability: str, write_coalescing: bool = False)
     data_dir.mkdir(parents=True, exist_ok=True)
     cfg_path = tmpdir / "rustqueue.toml"
 
-    storage_lines = [
-        "[storage]",
-        'backend = "redb"',
-        f'path = "{data_dir.as_posix()}"',
-        f'redb_durability = "{redb_durability}"',
-    ]
+    if hybrid:
+        storage_lines = [
+            "[storage]",
+            'backend = "hybrid"',
+            f'path = "{data_dir.as_posix()}"',
+            f'redb_durability = "{redb_durability}"',
+            "hybrid_snapshot_interval_ms = 1000",
+            "hybrid_max_dirty = 5000",
+        ]
+    else:
+        storage_lines = [
+            "[storage]",
+            'backend = "redb"',
+            f'path = "{data_dir.as_posix()}"',
+            f'redb_durability = "{redb_durability}"',
+        ]
     if write_coalescing:
         storage_lines.extend([
             "write_coalescing_enabled = true",
@@ -697,6 +707,7 @@ def write_report(
     rustqueue_tcp_batch_size: int,
     repeats: int,
     write_coalescing: bool = False,
+    hybrid: bool = False,
 ) -> tuple[Path, Path]:
     today = dt.date.today().isoformat()
     md_path = REPO_ROOT / "docs" / f"competitor-benchmark-{today}.md"
@@ -710,6 +721,7 @@ def write_report(
         "rustqueue_remove_on_complete": remove_on_complete,
         "rustqueue_tcp_batch_size": rustqueue_tcp_batch_size,
         "rustqueue_write_coalescing": write_coalescing,
+        "rustqueue_hybrid": hybrid,
         "raw_runs": [[r.__dict__ for r in run] for run in raw_runs],
         "results": [r.__dict__ for r in results],
     }
@@ -733,6 +745,7 @@ def write_report(
         f"RustQueue remove_on_complete: **{remove_on_complete}**.",
         f"RustQueue TCP batch size: **{rustqueue_tcp_batch_size}**.",
         f"RustQueue write coalescing: **{write_coalescing}**.",
+        f"RustQueue hybrid storage: **{hybrid}**.",
         "",
         "Metrics:",
         "- `produce_ops_s`: enqueue throughput",
@@ -774,6 +787,7 @@ def write_report(
         f"- RustQueue jobs are enqueued with `remove_on_complete={str(remove_on_complete).lower()}` in this run.",
         f"- RustQueue TCP benchmark used `batch_size={rustqueue_tcp_batch_size}` (`push_batch`/`ack_batch` when >1).",
         f"- RustQueue write coalescing was **{'enabled' if write_coalescing else 'disabled'}** (buffers single push/ack into batched flushes when enabled).",
+        f"- RustQueue hybrid storage was **{'enabled' if hybrid else 'disabled'}** (in-memory DashMap + periodic redb snapshots when enabled).",
         "- Celery and BullMQ include worker/runtime overhead in consume and end-to-end measurements.",
         "- For stricter apples-to-apples durability, run an additional profile with explicit fsync/persistence settings on each system.",
         ]
@@ -814,6 +828,11 @@ def main() -> int:
         action="store_true",
         help="Enable RustQueue write coalescing (buffers single push/ack into batched flushes)",
     )
+    parser.add_argument(
+        "--hybrid",
+        action="store_true",
+        help="Use hybrid memory+disk storage (in-memory DashMap + periodic redb snapshots)",
+    )
     args = parser.parse_args()
 
     n = args.ops
@@ -822,13 +841,14 @@ def main() -> int:
     repeats = args.repeats
     rustqueue_tcp_batch_size = args.rustqueue_tcp_batch_size
     write_coalescing = args.write_coalescing
+    hybrid = args.hybrid
     rustqueue_proc = None
     tmpdir = None
 
     try:
         start_redis()
         start_rabbitmq()
-        rustqueue_proc, tmpdir = start_rustqueue_server(redb_durability, write_coalescing)
+        rustqueue_proc, tmpdir = start_rustqueue_server(redb_durability, write_coalescing, hybrid)
 
         run_results: list[list[BenchResult]] = []
         for _ in range(repeats):
@@ -854,6 +874,7 @@ def main() -> int:
             rustqueue_tcp_batch_size,
             repeats,
             write_coalescing,
+            hybrid,
         )
 
         print("Benchmark complete")

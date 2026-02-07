@@ -35,11 +35,11 @@
 <main>
     <section class="hero container">
         <div class="hero-copy reveal">
-            <p class="eyebrow">Single binary. Zero external dependencies.</p>
+            <p class="eyebrow">Single binary. Zero dependencies. Faster than RabbitMQ.</p>
             <h1>Queueing Infrastructure Without the <span>Ops Tax</span></h1>
             <p class="lead">
-                RustQueue is a fast, language-agnostic job scheduler with retries, DLQ,
-                progress tracking, and observability built in.
+                RustQueue is a fast, language-agnostic job scheduler that beats RabbitMQ
+                on produce, consume, and end-to-end throughput. Retries, DLQ, SDKs, and observability built in.
             </p>
             <div class="hero-cta">
                 <a class="btn btn-primary" href="#launch">Get Started</a>
@@ -50,9 +50,10 @@
                 <code class="mono">cargo install rustqueue</code>
             </div>
             <ul class="signal-list">
-                <li>REST + TCP protocol</li>
-                <li>WebSocket event stream</li>
-                <li>Prometheus metrics out of the box</li>
+                <li>REST + TCP dual protocol</li>
+                <li>Node.js and Python SDKs</li>
+                <li>15+ Prometheus metrics + Grafana dashboard</li>
+                <li>Docker one-command deployment</li>
             </ul>
         </div>
 
@@ -61,16 +62,16 @@
                 <h2>Queue Snapshot</h2>
                 <div class="kpis">
                     <div>
-                        <span class="mono">waiting</span>
-                        <strong>1,284</strong>
+                        <span class="mono">throughput</span>
+                        <strong>43,494/s</strong>
                     </div>
                     <div>
                         <span class="mono">active</span>
                         <strong>36</strong>
                     </div>
                     <div>
-                        <span class="mono">p99 push</span>
-                        <strong>4.7ms</strong>
+                        <span class="mono">backends</span>
+                        <strong>5</strong>
                     </div>
                 </div>
             </article>
@@ -93,27 +94,39 @@
         <div class="feature-grid">
             <article class="card reveal">
                 <h3>Zero-Dependency Runtime</h3>
-                <p>Run the queue server with no required Redis, RabbitMQ, or external broker.</p>
+                <p>No Redis, RabbitMQ, or external broker required. Embedded ACID storage included.</p>
             </article>
             <article class="card reveal">
                 <h3>Retries + Backoff + DLQ</h3>
                 <p>Handle failure with fixed, linear, or exponential retries and inspect dead-letter jobs.</p>
             </article>
             <article class="card reveal">
-                <h3>Progress + Heartbeats</h3>
-                <p>Track long-running work and detect stalls before they become incidents.</p>
+                <h3>43,000+ Jobs/sec</h3>
+                <p>Beats RabbitMQ on produce, consume, and end-to-end. TCP pipelining + hybrid storage for maximum throughput.</p>
             </article>
             <article class="card reveal">
-                <h3>Real-Time Telemetry</h3>
-                <p>Stream job lifecycle events via WebSocket and scrape metrics via Prometheus.</p>
+                <h3>Client SDKs</h3>
+                <p>Node.js (TypeScript) and Python SDKs with zero runtime dependencies. Also embeddable as a Rust library.</p>
             </article>
             <article class="card reveal">
-                <h3>Embeddable Rust Library</h3>
-                <p>Use RustQueue as infrastructure or embed it directly into Rust services.</p>
+                <h3>Full Observability</h3>
+                <p>15+ Prometheus metrics, latency histograms, per-queue gauges, pre-built Grafana dashboard, and WebSocket events.</p>
             </article>
             <article class="card reveal">
-                <h3>Single-Binary Deployment</h3>
-                <p>Ship one binary from local dev to edge devices to production clusters.</p>
+                <h3>5 Storage Backends</h3>
+                <p>redb, SQLite, PostgreSQL, hybrid memory+disk, or in-memory. Swap via config.</p>
+            </article>
+            <article class="card reveal">
+                <h3>Security Built In</h3>
+                <p>Bearer token auth, rate-limited lockouts, TLS encryption, and input validation.</p>
+            </article>
+            <article class="card reveal">
+                <h3>Cron + Interval Scheduling</h3>
+                <p>Built-in schedule engine with cron expressions and interval jobs. Full CRUD with pause/resume.</p>
+            </article>
+            <article class="card reveal">
+                <h3>Docker Deployment</h3>
+                <p>One-command with docker-compose. Includes Prometheus + Grafana monitoring stack.</p>
             </article>
         </div>
     </section>
@@ -136,6 +149,10 @@
                 <h3>Edge and On-Prem</h3>
                 <p>Minimal dependencies for constrained environments and regulated workloads.</p>
             </article>
+            <article class="lane-item reveal">
+                <h3>Monitoring-First Operations</h3>
+                <p>Grafana dashboards, Prometheus metrics, and real-time WebSocket events for operational visibility.</p>
+            </article>
         </div>
     </section>
 
@@ -144,8 +161,13 @@
             <p class="eyebrow">Launch in minutes</p>
             <h2>From install to first job in under five minutes</h2>
         </div>
-        <pre class="code"><code>cargo install rustqueue
-rustqueue serve
+        <pre class="code"><code># Option 1: Binary
+cargo install rustqueue && rustqueue serve
+
+# Option 2: Docker with monitoring
+docker compose -f docker-compose.monitoring.yml up -d
+
+# Push your first job
 curl -X POST http://localhost:6790/api/v1/queues/emails/jobs \
   -H "Content-Type: application/json" \
   -d '{"name":"send-welcome","data":{"to":"user@example.com"}}'</code></pre>

@@ -495,10 +495,14 @@ body::before {
 .feature-grid .card:nth-child(4) { animation-delay: 340ms; }
 .feature-grid .card:nth-child(5) { animation-delay: 420ms; }
 .feature-grid .card:nth-child(6) { animation-delay: 500ms; }
+.feature-grid .card:nth-child(7) { animation-delay: 580ms; }
+.feature-grid .card:nth-child(8) { animation-delay: 660ms; }
+.feature-grid .card:nth-child(9) { animation-delay: 740ms; }
 
 .lane .lane-item:nth-child(1) { animation-delay: 120ms; }
 .lane .lane-item:nth-child(2) { animation-delay: 220ms; }
 .lane .lane-item:nth-child(3) { animation-delay: 320ms; }
+.lane .lane-item:nth-child(4) { animation-delay: 420ms; }
 
 @keyframes reveal {
     to {

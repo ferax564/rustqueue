@@ -20,7 +20,7 @@ use std::sync::Arc;
 use crate::engine::error::RustQueueError;
 use crate::engine::models::{Job, JobId, QueueCounts};
 use crate::engine::queue::{FailResult, JobOptions, QueueInfo, QueueManager};
-use crate::storage::{BufferedRedbConfig, BufferedRedbStorage, MemoryStorage, RedbStorage, StorageBackend};
+use crate::storage::{BufferedRedbConfig, BufferedRedbStorage, HybridConfig, HybridStorage, MemoryStorage, RedbStorage, StorageBackend};
 
 /// High-level client for RustQueue, usable as an embedded library.
 ///
@@ -39,6 +39,7 @@ pub struct RustQueue {
 pub struct RustQueueBuilder {
     storage: Arc<dyn StorageBackend>,
     buffered_config: Option<BufferedRedbConfig>,
+    hybrid_config: Option<HybridConfig>,
 }
 
 impl RustQueue {
@@ -50,6 +51,7 @@ impl RustQueue {
         RustQueueBuilder {
             storage: Arc::new(MemoryStorage::new()),
             buffered_config: None,
+            hybrid_config: None,
         }
     }
 
@@ -62,6 +64,21 @@ impl RustQueue {
         Ok(RustQueueBuilder {
             storage,
             buffered_config: None,
+            hybrid_config: None,
+        })
+    }
+
+    /// Create a builder backed by hybrid memory+disk storage.
+    ///
+    /// All reads/writes serve from in-memory DashMap. A background task
+    /// snapshots dirty entries to a redb file periodically.
+    /// Up to `snapshot_interval` of data may be lost on crash.
+    pub fn hybrid(path: impl AsRef<Path>) -> anyhow::Result<RustQueueBuilder> {
+        let storage = Arc::new(RedbStorage::new(path)?);
+        Ok(RustQueueBuilder {
+            storage,
+            buffered_config: None,
+            hybrid_config: Some(HybridConfig::default()),
         })
     }
 }
@@ -76,9 +93,19 @@ impl RustQueueBuilder {
         self
     }
 
+    /// Configure the hybrid storage snapshot settings.
+    ///
+    /// Only effective when using [`RustQueue::hybrid()`].
+    pub fn with_hybrid_config(mut self, config: HybridConfig) -> Self {
+        self.hybrid_config = Some(config);
+        self
+    }
+
     /// Build the [`RustQueue`] instance.
     pub fn build(self) -> anyhow::Result<RustQueue> {
-        let storage: Arc<dyn StorageBackend> = if let Some(config) = self.buffered_config {
+        let storage: Arc<dyn StorageBackend> = if let Some(config) = self.hybrid_config {
+            Arc::new(HybridStorage::new(self.storage, config))
+        } else if let Some(config) = self.buffered_config {
             Arc::new(BufferedRedbStorage::new(self.storage, config))
         } else {
             self.storage

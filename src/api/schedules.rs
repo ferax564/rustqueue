@@ -8,6 +8,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::api::{ApiError, AppState};
 use crate::engine::models::Schedule;
@@ -16,7 +17,7 @@ use crate::engine::queue::JobOptions;
 // ── Request / Response types ────────────────────────────────────────────────
 
 /// Body for creating a schedule.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateScheduleRequest {
     pub name: String,
     pub queue: String,
@@ -31,19 +32,19 @@ pub struct CreateScheduleRequest {
     pub max_executions: Option<u64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ScheduleResponse {
     pub ok: bool,
     pub schedule: Schedule,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ScheduleListResponse {
     pub ok: bool,
     pub schedules: Vec<Schedule>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct OkResponse {
     pub ok: bool,
 }
@@ -67,6 +68,17 @@ pub fn routes() -> Router<Arc<AppState>> {
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 /// POST /api/v1/schedules — Create a new schedule.
+#[utoipa::path(
+    post,
+    path = "/api/v1/schedules",
+    tag = "Schedules",
+    request_body = CreateScheduleRequest,
+    responses(
+        (status = 201, description = "Schedule created", body = ScheduleResponse),
+        (status = 400, description = "Validation error"),
+        (status = 401, description = "Unauthorized"),
+    )
+)]
 async fn create_schedule(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateScheduleRequest>,
@@ -97,6 +109,15 @@ async fn create_schedule(
 }
 
 /// GET /api/v1/schedules — List all schedules.
+#[utoipa::path(
+    get,
+    path = "/api/v1/schedules",
+    tag = "Schedules",
+    responses(
+        (status = 200, description = "List of all schedules", body = ScheduleListResponse),
+        (status = 401, description = "Unauthorized"),
+    )
+)]
 async fn list_schedules(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<ScheduleListResponse>, ApiError> {
@@ -108,6 +129,17 @@ async fn list_schedules(
 }
 
 /// GET /api/v1/schedules/:name — Get a single schedule by name.
+#[utoipa::path(
+    get,
+    path = "/api/v1/schedules/{name}",
+    tag = "Schedules",
+    params(("name" = String, Path, description = "Schedule name")),
+    responses(
+        (status = 200, description = "Schedule found", body = ScheduleResponse),
+        (status = 404, description = "Schedule not found"),
+        (status = 401, description = "Unauthorized"),
+    )
+)]
 async fn get_schedule(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
@@ -125,6 +157,17 @@ async fn get_schedule(
 }
 
 /// DELETE /api/v1/schedules/:name — Delete a schedule.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/schedules/{name}",
+    tag = "Schedules",
+    params(("name" = String, Path, description = "Schedule name")),
+    responses(
+        (status = 200, description = "Schedule deleted", body = OkResponse),
+        (status = 404, description = "Schedule not found"),
+        (status = 401, description = "Unauthorized"),
+    )
+)]
 async fn delete_schedule(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
@@ -134,6 +177,17 @@ async fn delete_schedule(
 }
 
 /// POST /api/v1/schedules/:name/pause — Pause a schedule.
+#[utoipa::path(
+    post,
+    path = "/api/v1/schedules/{name}/pause",
+    tag = "Schedules",
+    params(("name" = String, Path, description = "Schedule name")),
+    responses(
+        (status = 200, description = "Schedule paused", body = OkResponse),
+        (status = 404, description = "Schedule not found"),
+        (status = 401, description = "Unauthorized"),
+    )
+)]
 async fn pause_schedule(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
@@ -143,6 +197,17 @@ async fn pause_schedule(
 }
 
 /// POST /api/v1/schedules/:name/resume — Resume a paused schedule.
+#[utoipa::path(
+    post,
+    path = "/api/v1/schedules/{name}/resume",
+    tag = "Schedules",
+    params(("name" = String, Path, description = "Schedule name")),
+    responses(
+        (status = 200, description = "Schedule resumed", body = OkResponse),
+        (status = 404, description = "Schedule not found"),
+        (status = 401, description = "Unauthorized"),
+    )
+)]
 async fn resume_schedule(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,

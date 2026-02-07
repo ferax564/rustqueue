@@ -13,7 +13,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use rustqueue::engine::models::{Job, JobState, Schedule};
-use rustqueue::storage::{BufferedRedbConfig, BufferedRedbStorage, MemoryStorage, RedbStorage, StorageBackend};
+use rustqueue::storage::{BufferedRedbConfig, BufferedRedbStorage, HybridConfig, HybridStorage, MemoryStorage, RedbStorage, StorageBackend};
 
 #[cfg(feature = "sqlite")]
 use rustqueue::storage::SqliteStorage;
@@ -567,6 +567,22 @@ backend_tests!(sqlite_backend, {
     // Leak the tempdir so it outlives the test (the Connection holds the file open).
     std::mem::forget(dir);
     SqliteStorage::new(&path).unwrap()
+});
+
+// -- Instantiate for HybridStorage (memory + redb snapshot) -------------------
+
+backend_tests!(hybrid_backend, {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let path = tmp.path().to_path_buf();
+    drop(tmp);
+    let inner = std::sync::Arc::new(RedbStorage::new(&path).unwrap());
+    HybridStorage::new(
+        inner,
+        HybridConfig {
+            snapshot_interval_ms: 50,
+            max_dirty_before_flush: 10,
+        },
+    )
 });
 
 // -- Instantiate for PostgresStorage ------------------------------------------

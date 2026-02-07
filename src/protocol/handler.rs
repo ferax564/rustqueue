@@ -1,5 +1,9 @@
 //! TCP connection handler — reads newline-delimited JSON commands, dispatches
 //! to [`QueueManager`], and writes JSON responses.
+//!
+//! Supports pipelining: if the client sends multiple commands before waiting
+//! for responses, the handler reads all available lines from the buffer,
+//! processes them, and writes all responses in a single batch with one flush.
 
 use std::sync::Arc;
 
@@ -20,6 +24,13 @@ use crate::engine::queue::{BatchAckItem, BatchPushItem, JobOptions, QueueManager
 /// be `{"cmd":"auth","token":"<bearer-token>"}`. All subsequent commands are allowed
 /// only after successful authentication. When auth is disabled, all commands are
 /// allowed without an auth handshake.
+///
+/// ## Pipelining
+///
+/// After reading the first available line, the handler checks if more data is
+/// already buffered (from a client that sent multiple commands without waiting).
+/// All buffered lines are read and processed before writing responses, reducing
+/// the number of flush syscalls from N to 1 per batch.
 pub async fn handle_connection<S>(stream: S, manager: Arc<QueueManager>, auth_config: &AuthConfig)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
@@ -30,37 +41,64 @@ where
     // If auth is disabled, the connection starts as authenticated.
     let mut authenticated = !auth_config.enabled;
 
-    let (reader, mut writer) = tokio::io::split(stream);
+    let (reader, writer) = tokio::io::split(stream);
     let mut reader = BufReader::new(reader);
+    let mut writer = tokio::io::BufWriter::new(writer);
     let mut line = String::new();
 
     loop {
+        // 1. Read the first line (blocking wait for data)
         line.clear();
         match reader.read_line(&mut line).await {
             Ok(0) => {
                 debug!(peer = %peer, "Client disconnected");
                 break;
             }
-            Ok(_) => {
-                let response = if authenticated {
-                    process_line(&line, &manager).await
-                } else {
-                    process_auth_line(&line, auth_config, &mut authenticated)
-                };
-                let mut resp_bytes = serde_json::to_string(&response).unwrap_or_else(|e| {
-                    json!({"ok": false, "error": {"code": "INTERNAL_ERROR", "message": e.to_string()}})
-                        .to_string()
-                });
-                resp_bytes.push('\n');
-                if writer.write_all(resp_bytes.as_bytes()).await.is_err() {
-                    debug!(peer = %peer, "Write failed, closing connection");
-                    break;
-                }
-            }
+            Ok(_) => {}
             Err(e) => {
                 warn!(peer = %peer, error = %e, "Read error, closing connection");
                 break;
             }
+        }
+
+        // 2. Collect first line + any additional buffered lines (pipelining)
+        let mut lines: Vec<String> = Vec::new();
+        lines.push(std::mem::take(&mut line));
+
+        // Drain any already-buffered lines without blocking
+        while !reader.buffer().is_empty() {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) => break, // EOF mid-pipeline
+                Ok(_) => lines.push(std::mem::take(&mut line)),
+                Err(_) => break,
+            }
+        }
+
+        // 3. Process all commands and build a single response buffer
+        let mut responses = String::new();
+        for cmd_line in &lines {
+            let response = if authenticated {
+                process_line(cmd_line, &manager).await
+            } else {
+                process_auth_line(cmd_line, auth_config, &mut authenticated)
+            };
+            let resp_str = serde_json::to_string(&response).unwrap_or_else(|e| {
+                json!({"ok": false, "error": {"code": "INTERNAL_ERROR", "message": e.to_string()}})
+                    .to_string()
+            });
+            responses.push_str(&resp_str);
+            responses.push('\n');
+        }
+
+        // 4. Write all responses in one batch, then flush once
+        if writer.write_all(responses.as_bytes()).await.is_err() {
+            debug!(peer = %peer, "Write failed, closing connection");
+            break;
+        }
+        if writer.flush().await.is_err() {
+            debug!(peer = %peer, "Flush failed, closing connection");
+            break;
         }
     }
 }
@@ -140,6 +178,8 @@ async fn process_line(line: &str, manager: &QueueManager) -> Value {
         "schedule_delete" => handle_schedule_delete(&parsed, manager).await,
         "schedule_pause" => handle_schedule_pause(&parsed, manager).await,
         "schedule_resume" => handle_schedule_resume(&parsed, manager).await,
+        "queue_pause" => handle_queue_pause(&parsed, manager),
+        "queue_resume" => handle_queue_resume(&parsed, manager),
         _ => error_response("UNKNOWN_COMMAND", &format!("Unknown command: {cmd}")),
     }
 }
@@ -157,12 +197,26 @@ async fn handle_push(cmd: &Value, manager: &QueueManager) -> Value {
     };
     let data = cmd.get("data").cloned().unwrap_or(json!({}));
 
-    // Accept options either nested under "options" key or flattened at top level
-    // (matching the HTTP API's #[serde(flatten)] behavior).
+    // Accept options either nested under "options" key or flattened at top level.
+    // Try nested first; only attempt expensive top-level parse if common option keys present.
     let options: Option<JobOptions> = cmd
         .get("options")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .or_else(|| serde_json::from_value(cmd.clone()).ok());
+        .or_else(|| {
+            if cmd.get("priority").is_some()
+                || cmd.get("max_attempts").is_some()
+                || cmd.get("delay_ms").is_some()
+                || cmd.get("unique_key").is_some()
+                || cmd.get("timeout_ms").is_some()
+                || cmd.get("ttl_ms").is_some()
+                || cmd.get("backoff").is_some()
+                || cmd.get("tags").is_some()
+            {
+                serde_json::from_value(cmd.clone()).ok()
+            } else {
+                None
+            }
+        });
 
     match manager.push(queue, name, data, options).await {
         Ok(id) => json!({"ok": true, "id": id.to_string()}),
@@ -203,10 +257,21 @@ async fn handle_push_batch(cmd: &Value, manager: &QueueManager) -> Value {
         };
         let data = obj.get("data").cloned().unwrap_or(json!({}));
 
+        // Try nested "options" first; only fallback to top-level if option keys present
         let options: Option<JobOptions> = obj
             .get("options")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .or_else(|| serde_json::from_value(entry.clone()).ok());
+            .or_else(|| {
+                if obj.get("priority").is_some()
+                    || obj.get("max_attempts").is_some()
+                    || obj.get("delay_ms").is_some()
+                    || obj.get("unique_key").is_some()
+                {
+                    serde_json::from_value(entry.clone()).ok()
+                } else {
+                    None
+                }
+            });
 
         items.push(BatchPushItem {
             name,
@@ -579,6 +644,26 @@ async fn handle_schedule_resume(cmd: &Value, manager: &QueueManager) -> Value {
         Ok(()) => json!({"ok": true}),
         Err(e) => engine_error_response(&e),
     }
+}
+
+// ── Queue pause/resume handlers ──────────────────────────────────────────────
+
+fn handle_queue_pause(cmd: &Value, manager: &QueueManager) -> Value {
+    let queue = match cmd.get("queue").and_then(|v| v.as_str()) {
+        Some(q) => q,
+        None => return error_response("VALIDATION_ERROR", "Missing 'queue' field"),
+    };
+    manager.pause_queue(queue);
+    json!({"ok": true})
+}
+
+fn handle_queue_resume(cmd: &Value, manager: &QueueManager) -> Value {
+    let queue = match cmd.get("queue").and_then(|v| v.as_str()) {
+        Some(q) => q,
+        None => return error_response("VALIDATION_ERROR", "Missing 'queue' field"),
+    };
+    manager.resume_queue(queue);
+    json!({"ok": true})
 }
 
 // ── Response helpers ─────────────────────────────────────────────────────────

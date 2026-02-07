@@ -1,12 +1,13 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 /// Time-sortable unique job identifier (UUID v7).
 pub type JobId = Uuid;
 
 /// Current state of a job in its lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
     Created,
@@ -21,7 +22,7 @@ pub enum JobState {
 }
 
 /// Strategy for increasing delay between retry attempts.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BackoffStrategy {
     /// Same delay every retry.
@@ -34,7 +35,7 @@ pub enum BackoffStrategy {
 }
 
 /// Ordering strategy for a queue.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QueueOrdering {
     #[default]
@@ -45,16 +46,17 @@ pub enum QueueOrdering {
 }
 
 /// A single log entry appended by a worker during job processing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct LogEntry {
     pub timestamp: DateTime<Utc>,
     pub message: String,
 }
 
 /// A unit of work submitted to a queue for processing by a worker.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Job {
     // Identity
+    #[schema(value_type = String, format = "uuid")]
     pub id: JobId,
     pub custom_id: Option<String>,
     pub name: String,
@@ -94,6 +96,7 @@ pub struct Job {
     pub group_id: Option<String>,
 
     // Dependencies
+    #[schema(value_type = Vec<String>)]
     pub depends_on: Vec<JobId>,
     pub flow_id: Option<String>,
 
@@ -149,7 +152,7 @@ impl Job {
 }
 
 /// Summary counts for a queue, broken down by job state.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 pub struct QueueCounts {
     pub waiting: u64,
     pub active: u64,
@@ -160,7 +163,7 @@ pub struct QueueCounts {
 }
 
 /// A recurring or one-time schedule that creates jobs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Schedule {
     pub name: String,
     pub queue: String,

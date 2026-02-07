@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: rustqueue
+    static_configs:
+      - targets: ['rustqueue:6790']
+    metrics_path: /api/v1/metrics/prometheus

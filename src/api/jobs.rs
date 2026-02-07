@@ -7,6 +7,7 @@ use axum::extract::{Json, Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::api::{ApiError, AppState};
@@ -16,11 +17,12 @@ use crate::engine::queue::{BatchPushItem, JobOptions};
 // ── Request / Response types ────────────────────────────────────────────────
 
 /// Body for pushing a single job.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct PushJobRequest {
     pub name: String,
     pub data: serde_json::Value,
     #[serde(flatten)]
+    #[schema(inline)]
     pub options: JobOptions,
 }
 
@@ -32,13 +34,37 @@ pub enum PushJobBody {
     Batch(Vec<PushJobRequest>),
 }
 
-#[derive(Debug, Serialize)]
+impl utoipa::PartialSchema for PushJobBody {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{ArrayBuilder, OneOfBuilder, Schema};
+        use utoipa::openapi::Ref;
+        Schema::OneOf(
+            OneOfBuilder::new()
+                .item(Ref::from_schema_name("PushJobRequest"))
+                .item(
+                    ArrayBuilder::new()
+                        .items(Ref::from_schema_name("PushJobRequest"))
+                        .build(),
+                )
+                .build(),
+        )
+        .into()
+    }
+}
+
+impl utoipa::ToSchema for PushJobBody {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("PushJobBody")
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PushSingleResponse {
     pub ok: bool,
     pub id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PushBatchResponse {
     pub ok: bool,
     pub ids: Vec<String>,
@@ -51,18 +77,38 @@ pub enum PushResponse {
     Batch(PushBatchResponse),
 }
 
-#[derive(Debug, Deserialize)]
+impl utoipa::PartialSchema for PushResponse {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{OneOfBuilder, Schema};
+        use utoipa::openapi::Ref;
+        Schema::OneOf(
+            OneOfBuilder::new()
+                .item(Ref::from_schema_name("PushSingleResponse"))
+                .item(Ref::from_schema_name("PushBatchResponse"))
+                .build(),
+        )
+        .into()
+    }
+}
+
+impl utoipa::ToSchema for PushResponse {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("PushResponse")
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct PullQuery {
     pub count: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PullSingleResponse {
     pub ok: bool,
     pub job: Option<Job>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct PullMultiResponse {
     pub ok: bool,
     pub jobs: Vec<Job>,
@@ -75,44 +121,70 @@ pub enum PullResponse {
     Multi(PullMultiResponse),
 }
 
-#[derive(Debug, Serialize)]
+impl utoipa::PartialSchema for PullResponse {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        use utoipa::openapi::schema::{OneOfBuilder, Schema};
+        use utoipa::openapi::Ref;
+        Schema::OneOf(
+            OneOfBuilder::new()
+                .item(Ref::from_schema_name("PullSingleResponse"))
+                .item(Ref::from_schema_name("PullMultiResponse"))
+                .build(),
+        )
+        .into()
+    }
+}
+
+impl utoipa::ToSchema for PullResponse {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("PullResponse")
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 pub struct GetJobResponse {
     pub ok: bool,
     pub job: Job,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct AckRequest {
     pub result: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct OkResponse {
     pub ok: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct FailRequest {
     pub error: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct ProgressRequest {
     pub progress: u8,
     pub message: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct DlqQueryParams {
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct FailResponse {
     pub ok: bool,
     pub retry: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_attempt_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DlqResponse {
+    pub ok: bool,
+    pub jobs: Vec<Job>,
 }
 
 // ── Routes ──────────────────────────────────────────────────────────────────
@@ -135,6 +207,19 @@ pub fn routes() -> Router<Arc<AppState>> {
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 /// POST /api/v1/queues/:queue/jobs — Push one or more jobs.
+#[utoipa::path(
+    post,
+    path = "/api/v1/queues/{queue}/jobs",
+    tag = "Jobs",
+    params(("queue" = String, Path, description = "Queue name")),
+    request_body = PushJobBody,
+    responses(
+        (status = 201, description = "Job(s) created", body = PushResponse),
+        (status = 400, description = "Validation error"),
+        (status = 401, description = "Unauthorized"),
+        (status = 503, description = "Queue paused"),
+    )
+)]
 async fn push_jobs(
     State(state): State<Arc<AppState>>,
     Path(queue): Path<String>,
@@ -175,6 +260,19 @@ async fn push_jobs(
 }
 
 /// GET /api/v1/queues/:queue/jobs — Pull next job(s).
+#[utoipa::path(
+    get,
+    path = "/api/v1/queues/{queue}/jobs",
+    tag = "Jobs",
+    params(
+        ("queue" = String, Path, description = "Queue name"),
+        ("count" = Option<u32>, Query, description = "Number of jobs to pull (default: 1)"),
+    ),
+    responses(
+        (status = 200, description = "Job(s) pulled", body = PullResponse),
+        (status = 401, description = "Unauthorized"),
+    )
+)]
 async fn pull_jobs(
     State(state): State<Arc<AppState>>,
     Path(queue): Path<String>,
@@ -202,6 +300,17 @@ async fn pull_jobs(
 }
 
 /// GET /api/v1/jobs/:id — Get job by ID.
+#[utoipa::path(
+    get,
+    path = "/api/v1/jobs/{id}",
+    tag = "Jobs",
+    params(("id" = String, Path, description = "Job UUID")),
+    responses(
+        (status = 200, description = "Job found", body = GetJobResponse),
+        (status = 404, description = "Job not found"),
+        (status = 401, description = "Unauthorized"),
+    )
+)]
 async fn get_job(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
@@ -215,6 +324,18 @@ async fn get_job(
 }
 
 /// POST /api/v1/jobs/:id/ack — Acknowledge completion.
+#[utoipa::path(
+    post,
+    path = "/api/v1/jobs/{id}/ack",
+    tag = "Jobs",
+    params(("id" = String, Path, description = "Job UUID")),
+    request_body(content = Option<AckRequest>, description = "Optional result data"),
+    responses(
+        (status = 200, description = "Job acknowledged", body = OkResponse),
+        (status = 404, description = "Job not found"),
+        (status = 409, description = "Invalid job state"),
+    )
+)]
 async fn ack_job(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
@@ -226,6 +347,18 @@ async fn ack_job(
 }
 
 /// POST /api/v1/jobs/:id/fail — Report failure.
+#[utoipa::path(
+    post,
+    path = "/api/v1/jobs/{id}/fail",
+    tag = "Jobs",
+    params(("id" = String, Path, description = "Job UUID")),
+    request_body = FailRequest,
+    responses(
+        (status = 200, description = "Failure recorded", body = FailResponse),
+        (status = 404, description = "Job not found"),
+        (status = 409, description = "Invalid job state"),
+    )
+)]
 async fn fail_job(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
@@ -240,6 +373,17 @@ async fn fail_job(
 }
 
 /// POST /api/v1/jobs/:id/progress — Update job progress.
+#[utoipa::path(
+    post,
+    path = "/api/v1/jobs/{id}/progress",
+    tag = "Jobs",
+    params(("id" = String, Path, description = "Job UUID")),
+    request_body = ProgressRequest,
+    responses(
+        (status = 200, description = "Progress updated", body = OkResponse),
+        (status = 404, description = "Job not found"),
+    )
+)]
 async fn update_progress(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
@@ -253,6 +397,17 @@ async fn update_progress(
 }
 
 /// POST /api/v1/jobs/:id/cancel — Cancel a job.
+#[utoipa::path(
+    post,
+    path = "/api/v1/jobs/{id}/cancel",
+    tag = "Jobs",
+    params(("id" = String, Path, description = "Job UUID")),
+    responses(
+        (status = 200, description = "Job cancelled", body = OkResponse),
+        (status = 404, description = "Job not found"),
+        (status = 409, description = "Invalid job state"),
+    )
+)]
 async fn cancel_job(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
@@ -262,6 +417,16 @@ async fn cancel_job(
 }
 
 /// POST /api/v1/jobs/:id/heartbeat — Update heartbeat for an active job.
+#[utoipa::path(
+    post,
+    path = "/api/v1/jobs/{id}/heartbeat",
+    tag = "Jobs",
+    params(("id" = String, Path, description = "Job UUID")),
+    responses(
+        (status = 200, description = "Heartbeat recorded", body = OkResponse),
+        (status = 404, description = "Job not found"),
+    )
+)]
 async fn heartbeat_job(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
@@ -271,17 +436,27 @@ async fn heartbeat_job(
 }
 
 /// GET /api/v1/queues/:queue/dlq — List dead-letter-queue jobs for a queue.
+#[utoipa::path(
+    get,
+    path = "/api/v1/queues/{queue}/dlq",
+    tag = "Jobs",
+    params(
+        ("queue" = String, Path, description = "Queue name"),
+        ("limit" = Option<u32>, Query, description = "Maximum DLQ jobs to return (default: 50)"),
+    ),
+    responses(
+        (status = 200, description = "DLQ jobs listed", body = DlqResponse),
+        (status = 401, description = "Unauthorized"),
+    )
+)]
 async fn get_dlq_jobs(
     State(state): State<Arc<AppState>>,
     Path(queue): Path<String>,
     Query(params): Query<DlqQueryParams>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<DlqResponse>, ApiError> {
     let limit = params.limit.unwrap_or(50);
     let jobs = state.queue_manager.get_dlq_jobs(&queue, limit).await?;
-    Ok(Json(serde_json::json!({
-        "ok": true,
-        "jobs": jobs,
-    })))
+    Ok(Json(DlqResponse { ok: true, jobs }))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

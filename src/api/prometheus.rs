@@ -19,6 +19,15 @@ pub fn routes() -> Router<Arc<AppState>> {
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 /// GET /api/v1/metrics/prometheus — render Prometheus text-format metrics.
+#[utoipa::path(
+    get,
+    path = "/api/v1/metrics/prometheus",
+    tag = "Metrics",
+    responses(
+        (status = 200, description = "Prometheus metrics in text format", content_type = "text/plain"),
+        (status = 503, description = "Metrics not available"),
+    )
+)]
 async fn prometheus_metrics(State(state): State<Arc<AppState>>) -> Response {
     match &state.metrics_handle {
         Some(handle) => {

@@ -1,4 +1,5 @@
 pub mod buffered_redb;
+pub mod hybrid;
 pub mod memory;
 pub mod redb;
 
@@ -14,6 +15,7 @@ use chrono::{DateTime, Utc};
 use crate::engine::models::{Job, JobId, JobState, QueueCounts, Schedule};
 
 pub use self::buffered_redb::{BufferedRedbConfig, BufferedRedbStorage};
+pub use self::hybrid::{HybridConfig, HybridStorage};
 pub use self::memory::MemoryStorage;
 pub use self::redb::{RedbDurability, RedbStorage};
 

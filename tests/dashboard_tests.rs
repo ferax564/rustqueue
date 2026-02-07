@@ -10,16 +10,31 @@ use rustqueue::storage::MemoryStorage;
 
 /// Spin up a test HTTP server and return the base URL.
 async fn start_test_server() -> String {
+    start_test_server_with_auth(false).await
+}
+
+/// Spin up a test HTTP server with optional auth enabled and return the base URL.
+async fn start_test_server_with_auth(auth_enabled: bool) -> String {
     let (event_tx, _) = tokio::sync::broadcast::channel(1024);
     let storage = Arc::new(MemoryStorage::new());
     let queue_manager = Arc::new(QueueManager::new(storage));
+
+    let auth_config = if auth_enabled {
+        rustqueue::config::AuthConfig {
+            enabled: true,
+            tokens: vec!["test-secret-token".to_string()],
+        }
+    } else {
+        rustqueue::config::AuthConfig::default()
+    };
 
     let state = Arc::new(AppState {
         queue_manager,
         start_time: std::time::Instant::now(),
         metrics_handle: None,
         event_tx,
-        auth_config: rustqueue::config::AuthConfig::default(),
+        auth_config,
+        auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
     });
     let app = api::router(state);
 
@@ -105,4 +120,44 @@ async fn test_dashboard_missing_asset_returns_404() {
         .unwrap();
 
     assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn test_landing_page_accessible_when_auth_enabled() {
+    let base_url = start_test_server_with_auth(true).await;
+    let client = Client::new();
+
+    // Landing page at `/` should be accessible WITHOUT a token even when auth is enabled.
+    let resp = client.get(&base_url).send().await.unwrap();
+
+    assert_eq!(
+        resp.status(),
+        200,
+        "Landing page should be public even with auth enabled"
+    );
+
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("Queueing Infrastructure Without the") && body.contains("Ops Tax"),
+        "expected landing page content"
+    );
+}
+
+#[tokio::test]
+async fn test_dashboard_requires_auth_when_enabled() {
+    let base_url = start_test_server_with_auth(true).await;
+    let client = Client::new();
+
+    // Dashboard at `/dashboard` should require authentication when auth is enabled.
+    let resp = client
+        .get(format!("{base_url}/dashboard"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        401,
+        "Dashboard should require auth when enabled"
+    );
 }

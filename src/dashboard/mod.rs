@@ -17,14 +17,30 @@ use crate::api::AppState;
 #[folder = "dashboard/static"]
 struct DashboardAssets;
 
-/// Build the dashboard router.
+/// Build the full dashboard router (landing + SPA + static assets).
 ///
 /// - `GET /` serves the marketing landing page.
 /// - `GET /dashboard` serves `index.html`.
 /// - `GET /dashboard/{*path}` serves arbitrary static assets.
 pub fn routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/", axum::routing::get(landing))
+        .merge(landing_routes())
+        .merge(dashboard_routes())
+}
+
+/// Routes that should always be publicly accessible (no auth required).
+///
+/// Currently only the marketing landing page at `GET /`.
+pub fn landing_routes() -> Router<Arc<AppState>> {
+    Router::new().route("/", axum::routing::get(landing))
+}
+
+/// Routes for the authenticated dashboard SPA and its static assets.
+///
+/// - `GET /dashboard` serves `index.html`.
+/// - `GET /dashboard/{*path}` serves arbitrary static assets.
+pub fn dashboard_routes() -> Router<Arc<AppState>> {
+    Router::new()
         .route("/dashboard", axum::routing::get(index))
         .route("/dashboard/{*path}", axum::routing::get(serve_asset))
 }

@@ -33,6 +33,7 @@ src/
 │   ├── schedules.rs  # Schedule CRUD + pause/resume endpoints
 │   ├── queues.rs     # Queue listing and stats
 │   ├── health.rs     # Health check
+│   ├── openapi.rs    # OpenAPI 3.1 spec generation (utoipa) + Scalar UI
 │   ├── prometheus.rs # Prometheus metrics endpoint
 │   └── websocket.rs  # WebSocket event streaming (/api/v1/events)
 ├── engine/           # Core business logic
@@ -43,10 +44,11 @@ src/
 │   ├── error.rs      # RustQueueError (thiserror)
 │   └── telemetry.rs  # OpenTelemetry OTLP integration (behind `otel` feature)
 ├── storage/          # Storage abstraction and backends
-│   ├── mod.rs        # StorageBackend trait (20 async methods)
+│   ├── mod.rs        # StorageBackend trait (23 async methods)
 │   ├── redb.rs       # redb embedded backend (default, always compiled)
 │   ├── buffered_redb.rs # Write-coalescing wrapper around RedbStorage
-│   ├── memory.rs     # In-memory backend (always compiled, great for tests)
+│   ├── hybrid.rs     # Hybrid memory+disk backend (DashMap hot path + redb snapshots)
+│   ├── memory.rs     # In-memory backend (DashMap-based, always compiled, great for tests)
 │   ├── sqlite.rs     # SQLite backend (behind `sqlite` feature)
 │   └── postgres.rs   # PostgreSQL backend (behind `postgres` feature)
 ├── protocol/         # TCP protocol: newline-delimited JSON
@@ -56,54 +58,58 @@ src/
 
 ## Key Design Decisions
 
-- **Storage trait**: All backends implement `StorageBackend` (20 async methods, see `src/storage/mod.rs`). Swap redb/sqlite/postgres/memory via config without changing engine code.
+- **Storage trait**: All backends implement `StorageBackend` (23 async methods, see `src/storage/mod.rs`). Swap redb/sqlite/postgres/memory/hybrid via config without changing engine code.
 - **Dual protocol**: HTTP (port 6790) for general use + TCP (port 6789) for high-throughput workers. Both support identical operations.
 - **Crash-only design**: All state is persisted before acknowledging writes. Safe to `kill -9` at any time.
 - **UUID v7 for job IDs**: Time-sortable, globally unique, no coordination needed.
 - **Feature flags**: Optional backends and integrations behind Cargo features (`sqlite`, `postgres`, `otel`, `cli`, `tls`). Only `cli` is default.
-- **Embeddable library**: `RustQueue::memory().build()` or `RustQueue::redb(path).build()` for zero-config use without a server.
+- **Embeddable library**: `RustQueue::memory().build()`, `RustQueue::redb(path).build()`, or `RustQueue::hybrid(path).build()` for zero-config use without a server.
+- **Input validation**: Max lengths enforced on queue names (256), job names (1024), data payload (1MB), unique keys (1024), error messages (10KB).
+- **Queue pause/resume**: Paused queues reject new pushes with 503. HTTP + TCP endpoints.
+- **Auth rate limiting**: 5 failed auth attempts = 5-minute lockout per IP via in-memory DashMap tracker.
+- **Comprehensive metrics**: 15+ Prometheus metrics — counters, gauges (per-queue depth), histograms (push/pull/ack latency), HTTP request tracking.
+- **Hybrid storage**: DashMap in-memory hot path with periodic background snapshot to redb. Configurable flush interval and dirty threshold.
+- **Client SDKs**: Node.js (`sdk/node/`, TypeScript, HTTP + TCP, zero deps) and Python (`sdk/python/`, stdlib-only HTTP).
+- **Docker deployment**: Multi-stage Dockerfile, docker-compose.yml (standalone), docker-compose.monitoring.yml (with Prometheus + Grafana).
 - **Background scheduler**: Tick loop (configurable interval) handles delayed job promotion, schedule execution (cron + interval), timeout detection, stall detection, and retention cleanup.
 - **WebSocket events**: Real-time job lifecycle events via `tokio::sync::broadcast` channel (capacity 1024).
 - **Authentication**: Bearer token auth for HTTP (public/protected route split) and TCP (connection-level handshake). Configurable via `[auth]` TOML section.
 - **Graceful shutdown**: `Ctrl+C` triggers coordinated drain with 30s timeout for HTTP, TCP, and scheduler.
 - **Embedded dashboard**: SPA served via `rust-embed` at `/dashboard` (overview, queues, DLQ, live events). Landing page at `/`.
 
-## Known Performance Limitations
+## Performance
 
-The default redb backend has ~348 push/sec sequential throughput. With `BufferedRedbStorage` write coalescing enabled (v0.10), concurrent push throughput reaches **~22,222 jobs/sec at 100 concurrent callers** (60.6x improvement, within 2.3x of 50K target). Batched TCP mode reaches ~10.9K push/sec, ~3.7K push+pull+ack cycles/sec.
+**RustQueue beats RabbitMQ** on produce (1.2x), consume (5.3x), and end-to-end (5.1x) throughput with hybrid TCP backend (batch_size=50). Key numbers (February 7, 2026):
 
-v0.10 improvements:
+| Metric | ops/s |
+|--------|------:|
+| Hybrid TCP produce (batch_size=50) | **43,494** |
+| Hybrid TCP consume (batch_size=50) | **14,195** |
+| Hybrid TCP end-to-end (batch_size=50) | **14,681** |
+| Hybrid TCP produce (batch_size=1) | **23,382** |
+| Hybrid TCP consume (batch_size=1) | **10,987** |
 
-1. **BufferedRedbStorage**: Automatic write coalescing for single-job `push`/`ack` flows. Enable via `write_coalescing_enabled = true` in `[storage]`.
-2. **Unique key index**: O(1) lookup for `get_job_by_unique_key()` via `JOBS_UNIQUE_KEY_INDEX`.
-3. **Index-based cleanup**: `remove_*_before()` methods use `JOBS_STATE_UPDATED_INDEX` prefix scan instead of full table scan.
-4. **Queue names from index**: `list_queue_names()` extracts from index keys without JSON deserialization.
+The default redb backend has ~348 push/sec sequential throughput (fsync-dominated). Multiple performance tiers:
 
-Remaining bottlenecks:
+- **HybridStorage** (in-memory + disk snapshots): DashMap hot path + periodic redb flush. Per-queue BTreeSet waiting index for O(log N) dequeue. Trade-off: up to `snapshot_interval` of data loss on crash.
+- **BufferedRedbStorage** (write coalescing): **~22,222 jobs/sec at 100 concurrent callers** (60.6x improvement). Enable with `write_coalescing_enabled = true`.
 
-1. **Per-transition durability cost**: lifecycle operations still commit write transactions frequently (mitigated by write coalescing)
-2. **Write amplification on state changes**: v0.6 indexes mean transitions update main row + 3 index rows in one transaction
-3. **Protocol overhead**: single-job TCP path is strict request/response JSON per command (batch commands now exist but are opt-in)
-4. **Durability trade-off is configurable**: `storage.redb_durability` supports `none`, `eventual`, and `immediate`
+v0.12 TCP optimizations:
+
+1. **TCP_NODELAY**: Disables Nagle's algorithm on accepted connections.
+2. **BufWriter + flush**: Application-level write buffering with explicit flush for fewer syscalls.
+3. **TCP pipelining**: Reads all buffered commands before processing, single flush per batch.
+4. **Clone reduction**: Avoids unnecessary `cmd.clone()` in push handlers.
+5. **estimate_json_size()**: Walks Value tree without allocation for fast payload validation.
+6. **Stack-allocated index key**: `state_updated_key()` returns `[u8; 25]` instead of `Vec<u8>`.
+7. **Eventual durability for hybrid**: Inner redb forced to `Eventual` mode (safe since hybrid accepts data loss).
+8. **Per-queue BTreeSet waiting index**: HybridStorage dequeue uses BTreeSet index — O(log N) per job instead of O(total_jobs) scan. 37.6x consume throughput improvement.
 
 References:
 
 - `docs/performance-analysis.md`
+- `docs/competitor-benchmark-2026-02-07.md`
 - `docs/competitor-benchmark-2026-02-06.md`
-- `docs/competitor-benchmark-2026-02-06-immediate-r2-latest.md`
-- `docs/competitor-gap-analysis-2026-02-06.md`
-
-Immediate next steps:
-
-1. Deliver Phase 6 distributed mode alpha (Raft election/replication/failover baseline).
-2. Add ForgePipe workflow metadata primitives (workflow/step/artifact fields and transitions).
-3. Stabilize orchestration APIs consumed by cross-engine workers.
-4. Continue Phase 5b throughput track (hybrid memory+disk and sharding path).
-5. Keep competitor tracking with write-coalescing and batch-first client defaults.
-
-Planning guardrail: RustQueue is the organization scheduler and orchestration spine.
-
-Roadmap reference: `ROADMAP.md`.
 
 ## Conventions
 
@@ -127,10 +133,10 @@ Roadmap reference: `ROADMAP.md`.
 
 - **Unit tests**: Each module has `#[cfg(test)] mod tests` testing individual functions.
 - **Integration tests**: `tests/` directory tests full server behavior (HTTP + TCP + WebSocket).
-- **Generic backend harness**: `tests/storage_backend_tests.rs` — `backend_tests!` macro generates 18 canonical tests per storage backend.
+- **Generic backend harness**: `tests/storage_backend_tests.rs` — `backend_tests!` macro generates 18 canonical tests per storage backend (memory, redb, buffered_redb, hybrid; + sqlite with feature).
 - **Property tests**: State machine transitions, serialization roundtrips.
 - **Benchmarks**: `benches/throughput.rs` measures jobs/sec for push, pull, ack operations.
-- **Current counts**: ~183 tests (default features), ~199 tests (with `sqlite`).
+- **Current counts**: ~212 tests (default features), ~228 tests (with `sqlite`).
 
 ## Configuration Priority
 
@@ -159,6 +165,8 @@ POST   /api/v1/jobs/{id}/heartbeat     # Send worker heartbeat
 GET    /api/v1/jobs/{id}               # Get job details
 GET    /api/v1/queues                  # List queues
 GET    /api/v1/queues/{queue}/stats    # Queue statistics
+POST   /api/v1/queues/{queue}/pause   # Pause queue (rejects pushes)
+POST   /api/v1/queues/{queue}/resume  # Resume queue
 GET    /api/v1/health                  # Health check
 GET    /api/v1/metrics/prometheus      # Prometheus metrics
 GET    /api/v1/queues/{queue}/dlq      # List DLQ jobs
@@ -169,8 +177,10 @@ DELETE /api/v1/schedules/{name}       # Delete schedule
 POST   /api/v1/schedules/{name}/pause  # Pause schedule
 POST   /api/v1/schedules/{name}/resume # Resume schedule
 GET    /api/v1/events                  # WebSocket event stream
+GET    /api/v1/openapi.json            # OpenAPI 3.1 spec (JSON)
+GET    /api/v1/docs                    # Scalar API reference UI
 GET    /dashboard                      # Embedded web dashboard
-GET    /                               # Landing page
+GET    /                               # Landing page (always public)
 ```
 
 ### TCP Commands
@@ -203,5 +213,27 @@ rustqueue schedules resume NAME
 | `croner` | Cron expression parsing |
 | `opentelemetry` family | OTLP trace export (optional, `otel` feature) |
 | `metrics` + `metrics-exporter-prometheus` | Prometheus metrics |
+| `dashmap` | Lock-free concurrent HashMap (MemoryStorage, HybridStorage, auth rate limiter) |
 | `rust-embed` | Compile dashboard assets into binary |
 | `reqwest` | CLI HTTP client (optional, `cli` feature) |
+
+## Client SDKs
+
+| SDK | Path | Transport | Dependencies |
+|-----|------|-----------|-------------|
+| **Node.js** (TypeScript) | `sdk/node/` | HTTP (`fetch`) + TCP (`net.Socket`) | Zero runtime deps, Node.js >= 18 |
+| **Python** | `sdk/python/` | HTTP (`urllib.request`) | Zero deps, Python >= 3.8 |
+| **Go** | `sdk/go/` | HTTP (`net/http`) + TCP (`net.Conn`) | Zero deps, Go >= 1.21 |
+
+Both SDKs cover: push, pull, ack, fail, cancel, progress, heartbeat, get_job, list_queues, queue_stats, DLQ, schedule CRUD, health.
+
+## Docker Deployment
+
+| File | Purpose |
+|------|---------|
+| `Dockerfile` | Multi-stage build (rust:1.85-slim builder, debian:bookworm-slim runtime) |
+| `docker-compose.yml` | Standalone RustQueue with persistent volume |
+| `docker-compose.monitoring.yml` | RustQueue + Prometheus + Grafana (auto-provisioned dashboard) |
+| `deploy/rustqueue.toml` | Production config template |
+| `deploy/prometheus.yml` | Prometheus scrape config |
+| `deploy/grafana-*.yml` | Grafana datasource + dashboard provisioning |

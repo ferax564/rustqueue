@@ -84,6 +84,8 @@ pub enum StorageBackendType {
     InMemory,
     Sqlite,
     Postgres,
+    /// Hybrid memory+disk: in-memory DashMap hot path with periodic snapshot to redb.
+    Hybrid,
 }
 
 /// Durability level for redb write commits.
@@ -126,6 +128,12 @@ pub struct StorageConfig {
     /// Maximum buffered writes before triggering a flush.
     #[serde(default = "default_write_coalescing_max_batch")]
     pub write_coalescing_max_batch: usize,
+    /// Snapshot interval for hybrid storage in milliseconds.
+    #[serde(default = "default_hybrid_snapshot_interval_ms")]
+    pub hybrid_snapshot_interval_ms: u64,
+    /// Maximum dirty entries before early flush in hybrid storage.
+    #[serde(default = "default_hybrid_max_dirty")]
+    pub hybrid_max_dirty: usize,
 }
 
 impl Default for StorageConfig {
@@ -138,6 +146,8 @@ impl Default for StorageConfig {
             write_coalescing_enabled: false,
             write_coalescing_interval_ms: default_write_coalescing_interval_ms(),
             write_coalescing_max_batch: default_write_coalescing_max_batch(),
+            hybrid_snapshot_interval_ms: default_hybrid_snapshot_interval_ms(),
+            hybrid_max_dirty: default_hybrid_max_dirty(),
         }
     }
 }
@@ -152,6 +162,14 @@ fn default_write_coalescing_interval_ms() -> u64 {
 
 fn default_write_coalescing_max_batch() -> usize {
     100
+}
+
+fn default_hybrid_snapshot_interval_ms() -> u64 {
+    1000
+}
+
+fn default_hybrid_max_dirty() -> usize {
+    5000
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +541,10 @@ key_path = "/etc/certs/server.key"
         let inmemory = StorageBackendType::InMemory;
         let json = serde_json::to_string(&inmemory).unwrap();
         assert_eq!(json, "\"in_memory\"");
+
+        let hybrid = StorageBackendType::Hybrid;
+        let json = serde_json::to_string(&hybrid).unwrap();
+        assert_eq!(json, "\"hybrid\"");
     }
 
     #[test]

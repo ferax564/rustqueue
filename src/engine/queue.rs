@@ -7,6 +7,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
+use dashmap::DashSet;
 use serde::{Deserialize, Serialize};
 
 use tracing::info;
@@ -17,10 +18,117 @@ use crate::engine::metrics as metric_names;
 use crate::engine::models::{BackoffStrategy, Job, JobId, JobState, QueueCounts, Schedule};
 use crate::storage::{CompleteJobOutcome, StorageBackend};
 
+// ── Validation constants ─────────────────────────────────────────────────────
+
+/// Maximum length of a queue name in bytes.
+pub const MAX_QUEUE_NAME_LEN: usize = 256;
+/// Maximum length of a job name in bytes.
+pub const MAX_JOB_NAME_LEN: usize = 1024;
+/// Maximum size of job data payload in bytes (1 MB).
+pub const MAX_JOB_DATA_SIZE: usize = 1_048_576;
+/// Maximum length of a unique key in bytes.
+pub const MAX_UNIQUE_KEY_LEN: usize = 1024;
+/// Maximum length of an error message in bytes (10 KB).
+pub const MAX_ERROR_MESSAGE_LEN: usize = 10_240;
+
+/// Estimate the JSON-serialized byte size of a `serde_json::Value` without allocating.
+///
+/// The estimate slightly overcounts (counts a separator after every element, including
+/// the last), making it a safe upper bound for rejecting oversized payloads. This avoids
+/// the cost of `serde_json::to_string` (allocation + serialization) on every push.
+fn estimate_json_size(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::Null => 4,
+        serde_json::Value::Bool(true) => 4,
+        serde_json::Value::Bool(false) => 5,
+        serde_json::Value::Number(n) => n.to_string().len(),
+        serde_json::Value::String(s) => s.len() + 2, // quotes
+        serde_json::Value::Array(arr) => {
+            // [] + elements with commas
+            2 + arr.iter().map(|v| estimate_json_size(v) + 1).sum::<usize>()
+        }
+        serde_json::Value::Object(map) => {
+            // {} + "key":value, for each entry
+            2 + map
+                .iter()
+                .map(|(k, v)| k.len() + 3 + estimate_json_size(v) + 1)
+                .sum::<usize>()
+        }
+    }
+}
+
+/// Validate that a name contains only safe characters: alphanumeric, dash, underscore, dot.
+fn is_valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+}
+
+/// Validate input for a push operation. Returns a `ValidationError` on failure.
+fn validate_push_input(
+    queue: &str,
+    name: &str,
+    data: &serde_json::Value,
+    opts: &Option<JobOptions>,
+) -> Result<(), RustQueueError> {
+    // Queue name
+    if queue.len() > MAX_QUEUE_NAME_LEN {
+        return Err(RustQueueError::ValidationError(format!(
+            "Queue name exceeds maximum length of {MAX_QUEUE_NAME_LEN} bytes"
+        )));
+    }
+    if !is_valid_name(queue) {
+        return Err(RustQueueError::ValidationError(
+            "Queue name must be non-empty and contain only alphanumeric characters, dashes, underscores, or dots".into()
+        ));
+    }
+
+    // Job name
+    if name.len() > MAX_JOB_NAME_LEN {
+        return Err(RustQueueError::ValidationError(format!(
+            "Job name exceeds maximum length of {MAX_JOB_NAME_LEN} bytes"
+        )));
+    }
+    if !is_valid_name(name) {
+        return Err(RustQueueError::ValidationError(
+            "Job name must be non-empty and contain only alphanumeric characters, dashes, underscores, or dots".into()
+        ));
+    }
+
+    // Data payload size — use fast estimate to avoid serializing the entire payload.
+    // The estimate overcounts slightly, so only do the exact check if it exceeds the limit.
+    let estimated_size = estimate_json_size(data);
+    if estimated_size > MAX_JOB_DATA_SIZE {
+        // Near the limit — do the exact check
+        let data_size = serde_json::to_string(data)
+            .map(|s| s.len())
+            .unwrap_or(0);
+        if data_size > MAX_JOB_DATA_SIZE {
+            return Err(RustQueueError::ValidationError(format!(
+                "Job data payload ({data_size} bytes) exceeds maximum of {MAX_JOB_DATA_SIZE} bytes"
+            )));
+        }
+    }
+
+    // Unique key
+    if let Some(opts) = opts {
+        if let Some(uk) = &opts.unique_key {
+            if uk.len() > MAX_UNIQUE_KEY_LEN {
+                return Err(RustQueueError::ValidationError(format!(
+                    "Unique key exceeds maximum length of {MAX_UNIQUE_KEY_LEN} bytes"
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ── Public types ─────────────────────────────────────────────────────────────
 
 /// Options that can be supplied when pushing a new job.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct JobOptions {
     pub priority: Option<i32>,
     pub delay_ms: Option<u64>,
@@ -46,7 +154,7 @@ pub struct FailResult {
 }
 
 /// High-level information about a single queue.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct QueueInfo {
     pub name: String,
     pub counts: QueueCounts,
@@ -68,8 +176,9 @@ pub struct BatchAckItem {
 }
 
 /// Result for one item in a batch acknowledgement operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct BatchAckResult {
+    #[schema(value_type = String, format = "uuid")]
     pub id: JobId,
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,6 +193,8 @@ pub struct BatchAckResult {
 pub struct QueueManager {
     storage: Arc<dyn StorageBackend>,
     event_tx: Option<tokio::sync::broadcast::Sender<JobEvent>>,
+    /// Set of paused queue names. Pushes to paused queues are rejected.
+    paused_queues: DashSet<String>,
 }
 
 impl QueueManager {
@@ -92,6 +203,7 @@ impl QueueManager {
         Self {
             storage,
             event_tx: None,
+            paused_queues: DashSet::new(),
         }
     }
 
@@ -181,6 +293,16 @@ impl QueueManager {
         data: serde_json::Value,
         opts: Option<JobOptions>,
     ) -> Result<JobId, RustQueueError> {
+        let start = std::time::Instant::now();
+
+        // Input validation
+        validate_push_input(queue, name, &data, &opts)?;
+
+        // Check if queue is paused
+        if self.paused_queues.contains(queue) {
+            return Err(RustQueueError::QueuePaused(queue.to_string()));
+        }
+
         let mut job = Job::new(queue, name, data);
         Self::apply_job_options(&mut job, opts);
 
@@ -203,6 +325,7 @@ impl QueueManager {
             .map_err(RustQueueError::Internal)?;
 
         metrics::counter!(metric_names::JOBS_PUSHED_TOTAL).increment(1);
+        metrics::histogram!(metric_names::PUSH_DURATION_SECONDS).record(start.elapsed().as_secs_f64());
 
         self.emit_event("job.pushed", id, queue);
 
@@ -225,10 +348,18 @@ impl QueueManager {
             return Ok(Vec::new());
         }
 
+        // Check if queue is paused
+        if self.paused_queues.contains(queue) {
+            return Err(RustQueueError::QueuePaused(queue.to_string()));
+        }
+
         let mut jobs = Vec::with_capacity(items.len());
         let mut unique_keys_in_batch = HashSet::new();
 
         for item in items {
+            // Validate each item in the batch
+            validate_push_input(queue, &item.name, &item.data, &item.options)?;
+
             let mut job = Job::new(queue, &item.name, item.data);
             Self::apply_job_options(&mut job, item.options);
 
@@ -274,6 +405,8 @@ impl QueueManager {
     /// Returned jobs are transitioned to [`JobState::Active`] atomically.
     #[tracing::instrument(skip(self), fields(queue, count))]
     pub async fn pull(&self, queue: &str, count: u32) -> Result<Vec<Job>, RustQueueError> {
+        let start = std::time::Instant::now();
+
         let jobs = self
             .storage
             .dequeue(queue, count)
@@ -283,6 +416,8 @@ impl QueueManager {
         if !jobs.is_empty() {
             metrics::counter!(metric_names::JOBS_PULLED_TOTAL).increment(jobs.len() as u64);
         }
+
+        metrics::histogram!(metric_names::PULL_DURATION_SECONDS).record(start.elapsed().as_secs_f64());
 
         Ok(jobs)
     }
@@ -298,6 +433,8 @@ impl QueueManager {
         id: JobId,
         result: Option<serde_json::Value>,
     ) -> Result<(), RustQueueError> {
+        let start = std::time::Instant::now();
+
         let job = match self
             .storage
             .complete_job(id, result)
@@ -317,6 +454,7 @@ impl QueueManager {
         };
 
         metrics::counter!(metric_names::JOBS_COMPLETED_TOTAL).increment(1);
+        metrics::histogram!(metric_names::ACK_DURATION_SECONDS).record(start.elapsed().as_secs_f64());
 
         self.emit_event("job.completed", id, &job.queue);
 
@@ -403,6 +541,12 @@ impl QueueManager {
     /// Report a job failure. The engine decides whether to retry or move to DLQ.
     #[tracing::instrument(skip(self), fields(id = %id, error))]
     pub async fn fail(&self, id: JobId, error: &str) -> Result<FailResult, RustQueueError> {
+        if error.len() > MAX_ERROR_MESSAGE_LEN {
+            return Err(RustQueueError::ValidationError(format!(
+                "Error message ({} bytes) exceeds maximum of {MAX_ERROR_MESSAGE_LEN} bytes",
+                error.len()
+            )));
+        }
         let mut job = self.require_job(id).await?;
 
         if job.state != JobState::Active {
@@ -844,6 +988,25 @@ impl QueueManager {
             .map_err(RustQueueError::Internal)
     }
 
+    // ── Queue pause/resume ────────────────────────────────────────────────
+
+    /// Pause a queue, preventing new jobs from being pushed to it.
+    pub fn pause_queue(&self, queue: &str) {
+        self.paused_queues.insert(queue.to_string());
+        info!(queue, "Queue paused");
+    }
+
+    /// Resume a paused queue, allowing new jobs to be pushed.
+    pub fn resume_queue(&self, queue: &str) {
+        self.paused_queues.remove(queue);
+        info!(queue, "Queue resumed");
+    }
+
+    /// Check whether a queue is currently paused.
+    pub fn is_queue_paused(&self, queue: &str) -> bool {
+        self.paused_queues.contains(queue)
+    }
+
     // ── Schedule execution ────────────────────────────────────────────────
 
     /// Evaluate all active schedules and create jobs for those that are due.
@@ -907,6 +1070,7 @@ impl QueueManager {
         }
 
         if fired > 0 {
+            metrics::counter!(metric_names::SCHEDULES_FIRED_TOTAL).increment(fired as u64);
             tracing::info!(count = fired, "Schedules fired");
         }
         Ok(fired)
@@ -1706,5 +1870,180 @@ mod tests {
         let now = Utc::now();
         let next = super::compute_next_run(&schedule, now);
         assert!(next.is_none());
+    }
+
+    // ── Input validation tests ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_push_validates_queue_name_chars() {
+        let mgr = temp_manager();
+        let err = mgr
+            .push("my queue!", "job", json!({}), None)
+            .await
+            .unwrap_err();
+        match err {
+            RustQueueError::ValidationError(msg) => {
+                assert!(msg.contains("alphanumeric"), "got: {msg}");
+            }
+            other => panic!("expected ValidationError, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_push_validates_queue_name_empty() {
+        let mgr = temp_manager();
+        let err = mgr.push("", "job", json!({}), None).await.unwrap_err();
+        match err {
+            RustQueueError::ValidationError(msg) => {
+                assert!(msg.contains("non-empty"), "got: {msg}");
+            }
+            other => panic!("expected ValidationError, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_push_validates_job_name_length() {
+        let mgr = temp_manager();
+        let long_name = "a".repeat(super::MAX_JOB_NAME_LEN + 1);
+        let err = mgr
+            .push("queue", &long_name, json!({}), None)
+            .await
+            .unwrap_err();
+        match err {
+            RustQueueError::ValidationError(msg) => {
+                assert!(msg.contains("exceeds maximum"), "got: {msg}");
+            }
+            other => panic!("expected ValidationError, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_push_validates_data_size() {
+        let mgr = temp_manager();
+        // Create a JSON value larger than 1MB
+        let big_str = "x".repeat(super::MAX_JOB_DATA_SIZE + 1);
+        let data = json!({"huge": big_str});
+        let err = mgr
+            .push("queue", "job", data, None)
+            .await
+            .unwrap_err();
+        match err {
+            RustQueueError::ValidationError(msg) => {
+                assert!(msg.contains("payload"), "got: {msg}");
+            }
+            other => panic!("expected ValidationError, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_push_validates_unique_key_length() {
+        let mgr = temp_manager();
+        let long_key = "k".repeat(super::MAX_UNIQUE_KEY_LEN + 1);
+        let opts = JobOptions {
+            unique_key: Some(long_key),
+            ..Default::default()
+        };
+        let err = mgr
+            .push("queue", "job", json!({}), Some(opts))
+            .await
+            .unwrap_err();
+        match err {
+            RustQueueError::ValidationError(msg) => {
+                assert!(msg.contains("Unique key"), "got: {msg}");
+            }
+            other => panic!("expected ValidationError, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fail_validates_error_message_length() {
+        let mgr = temp_manager();
+        let id = mgr
+            .push("work", "process", json!({}), None)
+            .await
+            .unwrap();
+        mgr.pull("work", 1).await.unwrap();
+
+        let long_error = "e".repeat(super::MAX_ERROR_MESSAGE_LEN + 1);
+        let err = mgr.fail(id, &long_error).await.unwrap_err();
+        match err {
+            RustQueueError::ValidationError(msg) => {
+                assert!(msg.contains("Error message"), "got: {msg}");
+            }
+            other => panic!("expected ValidationError, got: {:?}", other),
+        }
+    }
+
+    // ── Queue pause/resume tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_pause_queue_rejects_push() {
+        let mgr = memory_manager();
+        mgr.pause_queue("emails");
+
+        let err = mgr
+            .push("emails", "send", json!({}), None)
+            .await
+            .unwrap_err();
+        match err {
+            RustQueueError::QueuePaused(q) => assert_eq!(q, "emails"),
+            other => panic!("expected QueuePaused, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resume_queue_allows_push() {
+        let mgr = memory_manager();
+        mgr.pause_queue("emails");
+        mgr.resume_queue("emails");
+
+        let id = mgr
+            .push("emails", "send", json!({}), None)
+            .await
+            .unwrap();
+        let job = mgr.get_job(id).await.unwrap().expect("job should exist");
+        assert_eq!(job.queue, "emails");
+    }
+
+    #[tokio::test]
+    async fn test_pause_queue_rejects_batch() {
+        let mgr = memory_manager();
+        mgr.pause_queue("work");
+
+        let items = vec![BatchPushItem {
+            name: "job".to_string(),
+            data: json!({}),
+            options: None,
+        }];
+        let err = mgr.push_batch("work", items).await.unwrap_err();
+        match err {
+            RustQueueError::QueuePaused(q) => assert_eq!(q, "work"),
+            other => panic!("expected QueuePaused, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_is_queue_paused() {
+        let mgr = memory_manager();
+        assert!(!mgr.is_queue_paused("emails"));
+        mgr.pause_queue("emails");
+        assert!(mgr.is_queue_paused("emails"));
+        mgr.resume_queue("emails");
+        assert!(!mgr.is_queue_paused("emails"));
+    }
+
+    #[tokio::test]
+    async fn test_valid_names_accepted() {
+        let mgr = temp_manager();
+        // These should all pass validation
+        mgr.push("emails", "send-welcome", json!({}), None)
+            .await
+            .unwrap();
+        mgr.push("my_queue", "job.v2", json!({}), None)
+            .await
+            .unwrap();
+        mgr.push("queue123", "my_job_name", json!({}), None)
+            .await
+            .unwrap();
     }
 }

@@ -1,0 +1,43 @@
+services:
+  rustqueue:
+    build: .
+    ports:
+      - "6790:6790"
+      - "6789:6789"
+    volumes:
+      - rustqueue-data:/data
+      - ./deploy/rustqueue.toml:/etc/rustqueue/rustqueue.toml:ro
+    environment:
+      - RUST_LOG=info
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - rustqueue
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./docs/grafana/rustqueue-dashboard.json:/var/lib/grafana/dashboards/rustqueue.json:ro
+      - ./deploy/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./deploy/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  rustqueue-data:
+  prometheus-data:
+  grafana-data:

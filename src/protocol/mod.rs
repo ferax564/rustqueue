@@ -40,6 +40,8 @@ pub async fn start_tls_tcp_server(
             result = listener.accept() => {
                 match result {
                     Ok((stream, _)) => {
+                        // Disable Nagle — send responses immediately
+                        stream.set_nodelay(true).ok();
                         let mgr = Arc::clone(&manager);
                         let auth = Arc::clone(&auth);
                         let acceptor = acceptor.clone();
@@ -95,6 +97,8 @@ pub async fn start_tcp_server(
             result = listener.accept() => {
                 match result {
                     Ok((stream, _addr)) => {
+                        // Disable Nagle — send responses immediately
+                        stream.set_nodelay(true).ok();
                         let mgr = Arc::clone(&manager);
                         let auth = Arc::clone(&auth_config);
                         tokio::spawn(async move {

@@ -7,12 +7,13 @@ use axum::Router;
 use axum::extract::State;
 use axum::routing::get;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::api::AppState;
 
 // ── Response types ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct HealthResponse {
     pub ok: bool,
     pub status: &'static str,
@@ -29,6 +30,14 @@ pub fn routes() -> Router<Arc<AppState>> {
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 /// GET /api/v1/health — Health check.
+#[utoipa::path(
+    get,
+    path = "/api/v1/health",
+    tag = "Health",
+    responses(
+        (status = 200, description = "Server is healthy", body = HealthResponse),
+    )
+)]
 async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     let uptime = state.start_time.elapsed().as_secs();
     Json(HealthResponse {

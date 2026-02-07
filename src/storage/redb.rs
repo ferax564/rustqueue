@@ -100,11 +100,11 @@ fn queue_state_priority_key(job: &Job) -> Vec<u8> {
     key
 }
 
-fn state_updated_key(job: &Job) -> Vec<u8> {
-    let mut key = Vec::with_capacity(1 + 8 + 16);
-    key.push(state_code(job.state));
-    key.extend_from_slice(&encode_i64_lex(job.updated_at.timestamp_micros()));
-    key.extend_from_slice(job.id.as_bytes());
+fn state_updated_key(job: &Job) -> [u8; 25] {
+    let mut key = [0u8; 25];
+    key[0] = state_code(job.state);
+    key[1..9].copy_from_slice(&encode_i64_lex(job.updated_at.timestamp_micros()));
+    key[9..25].copy_from_slice(job.id.as_bytes());
     key
 }
 

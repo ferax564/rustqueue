@@ -1,7 +1,8 @@
 //! In-memory storage backend for tests and ephemeral queues.
 //!
-//! Uses `std::sync::RwLock` (not tokio) since all operations are CPU-bound
-//! in-memory HashMap lookups/inserts. Data is cloned in and out.
+//! Uses `dashmap::DashMap` for lock-free concurrent access. Data is cloned
+//! in and out. This backend is significantly faster than the RwLock-based
+//! implementation under concurrent load.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -9,16 +10,18 @@ use std::sync::RwLock;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 
 use crate::engine::models::{Job, JobId, JobState, QueueCounts, Schedule};
 use crate::storage::StorageBackend;
 
 /// In-memory storage backend — useful for tests and short-lived processes.
 ///
-/// All data lives in `HashMap`s behind `std::sync::RwLock`. Data is lost when
-/// the `MemoryStorage` is dropped.
+/// Jobs live in a `DashMap` for concurrent lock-free access. Schedules use
+/// a simpler `RwLock<HashMap>` since schedule operations are infrequent.
+/// All data is lost when the `MemoryStorage` is dropped.
 pub struct MemoryStorage {
-    jobs: RwLock<HashMap<JobId, Job>>,
+    jobs: DashMap<JobId, Job>,
     schedules: RwLock<HashMap<String, Schedule>>,
 }
 
@@ -26,7 +29,7 @@ impl MemoryStorage {
     /// Create a new, empty in-memory storage.
     pub fn new() -> Self {
         Self {
-            jobs: RwLock::new(HashMap::new()),
+            jobs: DashMap::new(),
             schedules: RwLock::new(HashMap::new()),
         }
     }
@@ -44,71 +47,63 @@ impl StorageBackend for MemoryStorage {
 
     async fn insert_job(&self, job: &Job) -> Result<JobId> {
         let id = job.id;
-        let mut jobs = self.jobs.write().unwrap();
-        jobs.insert(id, job.clone());
+        self.jobs.insert(id, job.clone());
         Ok(id)
     }
 
     async fn get_job(&self, id: JobId) -> Result<Option<Job>> {
-        let jobs = self.jobs.read().unwrap();
-        Ok(jobs.get(&id).cloned())
+        Ok(self.jobs.get(&id).map(|r| r.value().clone()))
     }
 
     async fn update_job(&self, job: &Job) -> Result<()> {
-        let mut jobs = self.jobs.write().unwrap();
-        jobs.insert(job.id, job.clone());
+        self.jobs.insert(job.id, job.clone());
         Ok(())
     }
 
     async fn delete_job(&self, id: JobId) -> Result<()> {
-        let mut jobs = self.jobs.write().unwrap();
-        jobs.remove(&id);
+        self.jobs.remove(&id);
         Ok(())
     }
 
     // ── Queue operations ────────────────────────────────────────────────
 
     async fn dequeue(&self, queue: &str, count: u32) -> Result<Vec<Job>> {
-        let mut jobs = self.jobs.write().unwrap();
-
-        // Collect candidates: matching queue + Waiting state.
-        let mut candidates: Vec<JobId> = jobs
-            .values()
-            .filter(|j| j.queue == queue && j.state == JobState::Waiting)
-            .map(|j| j.id)
-            .collect();
+        // Collect candidate IDs with priority info for sorting.
+        let mut candidates: Vec<(JobId, i32, DateTime<Utc>)> = Vec::new();
+        for entry in self.jobs.iter() {
+            let j = entry.value();
+            if j.queue == queue && j.state == JobState::Waiting {
+                candidates.push((j.id, j.priority, j.created_at));
+            }
+        }
 
         // Sort: priority DESC, then created_at ASC (FIFO tiebreaker).
-        candidates.sort_by(|a_id, b_id| {
-            let a = &jobs[a_id];
-            let b = &jobs[b_id];
-            b.priority
-                .cmp(&a.priority)
-                .then_with(|| a.created_at.cmp(&b.created_at))
-        });
+        candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
 
         // Take up to `count` and transition to Active.
         let now = Utc::now();
-        let selected: Vec<Job> = candidates
-            .into_iter()
-            .take(count as usize)
-            .map(|id| {
-                let job = jobs.get_mut(&id).unwrap();
-                job.state = JobState::Active;
-                job.started_at = Some(now);
-                job.updated_at = now;
-                job.clone()
-            })
-            .collect();
+        let mut selected = Vec::new();
+
+        for (id, _, _) in candidates.into_iter().take(count as usize) {
+            if let Some(mut entry) = self.jobs.get_mut(&id) {
+                let job = entry.value_mut();
+                // Double-check state hasn't changed (concurrent dequeue race).
+                if job.state == JobState::Waiting {
+                    job.state = JobState::Active;
+                    job.started_at = Some(now);
+                    job.updated_at = now;
+                    selected.push(job.clone());
+                }
+            }
+        }
 
         Ok(selected)
     }
 
     async fn get_queue_counts(&self, queue: &str) -> Result<QueueCounts> {
-        let jobs = self.jobs.read().unwrap();
-
         let mut counts = QueueCounts::default();
-        for job in jobs.values() {
+        for entry in self.jobs.iter() {
+            let job = entry.value();
             if job.queue != queue {
                 continue;
             }
@@ -119,7 +114,6 @@ impl StorageBackend for MemoryStorage {
                 JobState::Completed => counts.completed += 1,
                 JobState::Failed => counts.failed += 1,
                 JobState::Dlq => counts.dlq += 1,
-                // Cancelled, Blocked are not tracked in QueueCounts for v0.1.
                 _ => {}
             }
         }
@@ -129,17 +123,17 @@ impl StorageBackend for MemoryStorage {
     // ── Scheduled jobs ──────────────────────────────────────────────────
 
     async fn get_ready_scheduled(&self, now: DateTime<Utc>) -> Result<Vec<Job>> {
-        let jobs = self.jobs.read().unwrap();
-
-        let ready = jobs
-            .values()
-            .filter(|j| {
+        let ready = self
+            .jobs
+            .iter()
+            .filter(|entry| {
+                let j = entry.value();
                 j.state == JobState::Delayed
                     && j.delay_until
                         .map(|delay_until| delay_until <= now)
                         .unwrap_or(false)
             })
-            .cloned()
+            .map(|entry| entry.value().clone())
             .collect();
 
         Ok(ready)
@@ -148,25 +142,24 @@ impl StorageBackend for MemoryStorage {
     // ── DLQ ─────────────────────────────────────────────────────────────
 
     async fn move_to_dlq(&self, job: &Job, reason: &str) -> Result<()> {
-        let mut jobs = self.jobs.write().unwrap();
-
         let mut updated = job.clone();
         updated.state = JobState::Dlq;
         updated.last_error = Some(reason.to_string());
         updated.updated_at = Utc::now();
-
-        jobs.insert(updated.id, updated);
+        self.jobs.insert(updated.id, updated);
         Ok(())
     }
 
     async fn get_dlq_jobs(&self, queue: &str, limit: u32) -> Result<Vec<Job>> {
-        let jobs = self.jobs.read().unwrap();
-
-        let dlq_jobs: Vec<Job> = jobs
-            .values()
-            .filter(|j| j.queue == queue && j.state == JobState::Dlq)
+        let dlq_jobs: Vec<Job> = self
+            .jobs
+            .iter()
+            .filter(|entry| {
+                let j = entry.value();
+                j.queue == queue && j.state == JobState::Dlq
+            })
             .take(limit as usize)
-            .cloned()
+            .map(|entry| entry.value().clone())
             .collect();
 
         Ok(dlq_jobs)
@@ -175,58 +168,59 @@ impl StorageBackend for MemoryStorage {
     // ── Cleanup ─────────────────────────────────────────────────────────
 
     async fn remove_completed_before(&self, before: DateTime<Utc>) -> Result<u64> {
-        let mut jobs = self.jobs.write().unwrap();
-
-        let to_remove: Vec<JobId> = jobs
-            .values()
-            .filter(|j| {
+        let to_remove: Vec<JobId> = self
+            .jobs
+            .iter()
+            .filter(|entry| {
+                let j = entry.value();
                 j.state == JobState::Completed
                     && j.completed_at
                         .map(|completed_at| completed_at < before)
                         .unwrap_or(false)
             })
-            .map(|j| j.id)
+            .map(|entry| *entry.key())
             .collect();
 
         let count = to_remove.len() as u64;
         for id in to_remove {
-            jobs.remove(&id);
+            self.jobs.remove(&id);
         }
-
         Ok(count)
     }
 
     async fn remove_failed_before(&self, before: DateTime<Utc>) -> Result<u64> {
-        let mut jobs = self.jobs.write().unwrap();
-
-        let to_remove: Vec<JobId> = jobs
-            .values()
-            .filter(|j| j.state == JobState::Failed && j.updated_at < before)
-            .map(|j| j.id)
+        let to_remove: Vec<JobId> = self
+            .jobs
+            .iter()
+            .filter(|entry| {
+                let j = entry.value();
+                j.state == JobState::Failed && j.updated_at < before
+            })
+            .map(|entry| *entry.key())
             .collect();
 
         let count = to_remove.len() as u64;
         for id in to_remove {
-            jobs.remove(&id);
+            self.jobs.remove(&id);
         }
-
         Ok(count)
     }
 
     async fn remove_dlq_before(&self, before: DateTime<Utc>) -> Result<u64> {
-        let mut jobs = self.jobs.write().unwrap();
-
-        let to_remove: Vec<JobId> = jobs
-            .values()
-            .filter(|j| j.state == JobState::Dlq && j.updated_at < before)
-            .map(|j| j.id)
+        let to_remove: Vec<JobId> = self
+            .jobs
+            .iter()
+            .filter(|entry| {
+                let j = entry.value();
+                j.state == JobState::Dlq && j.updated_at < before
+            })
+            .map(|entry| *entry.key())
             .collect();
 
         let count = to_remove.len() as u64;
         for id in to_remove {
-            jobs.remove(&id);
+            self.jobs.remove(&id);
         }
-
         Ok(count)
     }
 
@@ -240,9 +234,7 @@ impl StorageBackend for MemoryStorage {
 
     async fn get_active_schedules(&self) -> Result<Vec<Schedule>> {
         let schedules = self.schedules.read().unwrap();
-
         let active = schedules.values().filter(|s| !s.paused).cloned().collect();
-
         Ok(active)
     }
 
@@ -265,20 +257,16 @@ impl StorageBackend for MemoryStorage {
     // ── Discovery ────────────────────────────────────────────────────────
 
     async fn list_queue_names(&self) -> Result<Vec<String>> {
-        let jobs = self.jobs.read().unwrap();
-
         let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for job in jobs.values() {
-            names.insert(job.queue.clone());
+        for entry in self.jobs.iter() {
+            names.insert(entry.value().queue.clone());
         }
-
         Ok(names.into_iter().collect())
     }
 
     async fn get_job_by_unique_key(&self, queue: &str, key: &str) -> Result<Option<Job>> {
-        let jobs = self.jobs.read().unwrap();
-
-        for job in jobs.values() {
+        for entry in self.jobs.iter() {
+            let job = entry.value();
             if job.queue == queue
                 && job.unique_key.as_deref() == Some(key)
                 && !matches!(
@@ -289,16 +277,15 @@ impl StorageBackend for MemoryStorage {
                 return Ok(Some(job.clone()));
             }
         }
-
         Ok(None)
     }
 
     async fn get_active_jobs(&self) -> Result<Vec<Job>> {
-        let jobs = self.jobs.read().unwrap();
-        Ok(jobs
-            .values()
-            .filter(|j| j.state == JobState::Active)
-            .cloned()
+        Ok(self
+            .jobs
+            .iter()
+            .filter(|entry| entry.value().state == JobState::Active)
+            .map(|entry| entry.value().clone())
             .collect())
     }
 }

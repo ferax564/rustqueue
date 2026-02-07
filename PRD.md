@@ -3,8 +3,8 @@
 
 **Version:** 1.0
 **Date:** February 5, 2026
-**Updated:** February 6, 2026
-**Status:** Phase 1, 2, 3, 4 & 5 (v0.10) Complete
+**Updated:** February 7, 2026
+**Status:** Phase 1-7 (v0.12) Complete
 **Author:** [Your Name]
 
 ---
@@ -34,6 +34,14 @@
 21. [Future Roadmap](#21-future-roadmap)
 22. [Technical Stack](#22-technical-stack)
 23. [Glossary](#23-glossary)
+
+---
+
+## Feature Status Legend
+
+- ✅ **Implemented** — Working, tested, documented
+- 🚧 **Partial** — Foundation exists, core logic incomplete
+- 📋 **Roadmap** — Planned for a specific phase, not started
 
 ---
 
@@ -236,8 +244,8 @@ RustQueue is a **job queue server and task scheduler** distributed as a single b
 | **Cron scheduling** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Retry + backoff** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 | **Dead Letter Queue** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Job dependencies** | ✅ (DAG) | ✅ (basic) | ✅ (flows) | ❌ | ✅ (canvas) | ✅ | ❌ | ❌ |
-| **Rate limiting** | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| **Job dependencies** | 🚧 (data model) | ✅ (basic) | ✅ (flows) | ❌ | ✅ (canvas) | ✅ | ❌ | ❌ |
+| **Rate limiting** | 🚧 (auth only) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | **Web dashboard** | ✅ (built-in) | ❌ | ❌ (paid) | ✅ | ✅ (Flower) | ✅ | ✅ | ❌ |
 | **Prometheus** | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
 | **WebSocket events** | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -369,7 +377,7 @@ Manages named queues and their configuration. Handles job insertion, dequeuing, 
 - **FIFO** (default): First-in, first-out
 - **LIFO**: Last-in, first-out
 - **Priority**: Highest priority value dequeued first, with FIFO as tiebreaker
-- **Fair**: Round-robin across job groups (for multi-tenant workloads)
+- **Fair**: Round-robin across job groups (for multi-tenant workloads) — 📋 Roadmap: enum exists, no round-robin logic
 
 #### 7.2.2 Scheduler
 
@@ -381,7 +389,7 @@ Manages time-based job execution. Evaluates cron expressions and interval-based 
 - Fixed interval (`every: 300000` = every 5 minutes)
 - One-shot delayed execution (`run_at: "2026-03-01T00:00:00Z"`)
 
-#### 7.2.3 Worker Manager
+#### 7.2.3 Worker Manager — 🚧 Partial (heartbeat implemented, no worker registry)
 
 Tracks registered workers, their heartbeats, assigned jobs, and capacity. Detects stalled workers (missing heartbeats) and reassigns their active jobs.
 
@@ -392,7 +400,7 @@ Tracks registered workers, their heartbeats, assigned jobs, and capacity. Detect
 4. Worker acknowledges completion or reports failure
 5. If heartbeat is missed for `stall_timeout` (default: 30s), job is returned to queue
 
-#### 7.2.4 Flow Engine
+#### 7.2.4 Flow Engine — 🚧 Partial (`depends_on`, `flow_id`, `Blocked` state exist, no DAG logic)
 
 Manages directed acyclic graphs (DAGs) of job dependencies. A parent job only becomes eligible for execution when all its children have completed successfully.
 
@@ -406,7 +414,7 @@ Manages directed acyclic graphs (DAGs) of job dependencies. A parent job only be
 
 Manages jobs that have exhausted their retry budget. Dead-lettered jobs are preserved with their full execution history (every attempt, every error message, every timestamp) for inspection and manual retry.
 
-#### 7.2.6 Rate Limiter
+#### 7.2.6 Rate Limiter — 📋 Roadmap (auth rate limiter exists, no per-queue token bucket)
 
 Implements per-queue rate limiting using a token bucket algorithm. Configurable as:
 - **Max concurrent:** Maximum jobs executing simultaneously in a queue
@@ -474,7 +482,7 @@ pub trait StorageBackend: Send + Sync + 'static {
 |---|---|---|
 | `redb` | P0 (default) | Zero-config embedded, pure Rust, ACID |
 | `sqlite` | P1 | Familiar, tooling ecosystem, debugging ease |
-| `postgres` | P2 | Teams with existing Postgres, shared state |
+| `postgres` | P2 | Teams with existing Postgres, shared state — 🚧 Partial: config + trait defined, `main.rs` returns error at runtime |
 
 ### 7.4 Distributed Mode (Cluster)
 
@@ -599,7 +607,7 @@ A job progresses through the following states:
 | Q-05 | P1 | Drain queue | Remove all waiting jobs from a queue |
 | Q-06 | P2 | Obliterate queue | Remove all data associated with a queue |
 | Q-07 | P1 | Clean queue | Remove completed/failed jobs older than a threshold |
-| Q-08 | P1 | Rate limit | Set max jobs/second and max concurrency per queue |
+| Q-08 | P1 | Rate limit | Set max jobs/second and max concurrency per queue — 📋 Roadmap |
 | Q-09 | P2 | Queue ordering | Configure FIFO, LIFO, priority, or fair ordering per queue |
 
 ### 8.4 Scheduling (Cron)
@@ -615,7 +623,7 @@ A job progresses through the following states:
 | CRON-07 | P2 | Timezone support | Schedules can specify a timezone (default: UTC) |
 | CRON-08 | P2 | Backfill | Retroactively create jobs for missed schedule windows |
 
-### 8.5 Webhooks
+### 8.5 Webhooks — 📋 Roadmap (P2, not started)
 
 | ID | Priority | Requirement | Description |
 |---|---|---|---|
@@ -625,7 +633,7 @@ A job progresses through the following states:
 | WH-04 | P2 | Webhook signing | HMAC-SHA256 signature on webhook payloads for verification |
 | WH-05 | P2 | Webhook management | List, update, and delete webhooks via API |
 
-### 8.6 Worker Management
+### 8.6 Worker Management — 🚧 Partial (heartbeat + stall detection implemented)
 
 | ID | Priority | Requirement | Description |
 |---|---|---|---|
@@ -651,12 +659,16 @@ A job progresses through the following states:
 | Startup time | < 500 ms (cold start) | Fast restarts after crashes or deployments |
 | Recovery time | < 5 seconds | Time to full operation after crash (WAL replay) |
 
-Current benchmark snapshots (February 6, 2026) used for phase tracking:
+Current benchmark snapshots (February 7, 2026) used for phase tracking:
 
-- Sequential single-job (no coalescing): ~348 push/sec
+- **RustQueue beats RabbitMQ** on produce (1.2x), consume (5.3x), and end-to-end (5.1x)
+- Hybrid TCP produce (batch_size=50): **~43,494 push/sec** (vs RabbitMQ 35,975)
+- Hybrid TCP consume (batch_size=50): **~14,195 ops/sec** (vs RabbitMQ 2,675)
+- Hybrid TCP end-to-end (batch_size=50): **~14,681 ops/sec** (vs RabbitMQ 2,902)
+- Hybrid TCP produce (batch_size=1): **~23,382 push/sec**
+- Sequential single-job redb (no coalescing): ~348 push/sec
 - Concurrent push with write coalescing (100 callers): **~22,222 push/sec** (60.6x improvement)
-- Batched TCP profile (`batch_size=50`): ~10,929 push/sec, ~3,692 push+pull+ack cycles/sec
-- References: `docs/performance-analysis.md`, `docs/release-checklist-v0.10.md`
+- References: `docs/performance-analysis.md`, `docs/competitor-benchmark-2026-02-07.md`
 
 ### 9.2 Reliability
 
@@ -1038,13 +1050,13 @@ RustQueue is **protocol-first**. The HTTP REST API and TCP protocol are the prim
 
 ### 12.2 Official SDKs (by priority)
 
-| SDK | Priority | Rationale |
-|---|---|---|
-| **Rust** (embedded library) | P0 | Core crate; enables embedded mode |
-| **TypeScript/JavaScript** | P0 | Largest developer population; replaces BullMQ |
-| **Python** | P1 | Celery replacement story |
-| **Go** | P1 | DevOps/infrastructure audience |
-| **OpenAPI spec** | P0 | Enables auto-generated clients for any language |
+| SDK | Priority | Status | Location |
+|---|---|---|---|
+| **Rust** (embedded library) | P0 | ✅ Shipped | `src/builder.rs` — `RustQueue::memory()`, `::redb()`, `::hybrid()` |
+| **TypeScript/JavaScript** | P0 | ✅ Shipped | `sdk/node/` — HTTP + TCP clients, zero deps, ESM/CJS |
+| **Python** | P1 | ✅ Shipped | `sdk/python/` — HTTP client, stdlib-only, Python >= 3.8 |
+| **Go** | P1 | ⬜ Planned | DevOps/infrastructure audience |
+| **OpenAPI spec** | P0 | ⬜ Planned | Enables auto-generated clients for any language |
 
 ### 12.3 SDK Design Principles
 
@@ -1116,12 +1128,14 @@ tcp_port = 6789
 http_port = 6790
 
 [storage]
-backend = "redb"                  # "redb", "in_memory", "sqlite", "postgres"
-path = "/var/lib/rustqueue/data"  # For redb/sqlite
+backend = "redb"                  # "redb", "hybrid", "in_memory", "sqlite", "postgres"
+path = "/var/lib/rustqueue/data"  # For redb/sqlite/hybrid
 redb_durability = "immediate"     # "none" (unsafe fastest), "eventual", "immediate" (safest)
 write_coalescing_enabled = false  # Buffer single push/ack into batched flushes
 write_coalescing_interval_ms = 10 # Flush interval (ms)
 write_coalescing_max_batch = 100  # Max buffered ops before forced flush
+hybrid_snapshot_interval_ms = 1000 # Hybrid: how often to flush to disk (ms)
+hybrid_max_dirty = 5000           # Hybrid: max dirty entries before forced flush
 # postgres_url = "postgres://..."  # For postgres backend
 
 [auth]
@@ -1177,76 +1191,39 @@ RUSTQUEUE_CLUSTER_ENABLED=true
 RUSTQUEUE_LOG_LEVEL=info
 ```
 
-### 13.3 Docker Compose (Production)
+### 13.3 Docker Compose
 
-```yaml
-version: "3.8"
-services:
-  rustqueue:
-    image: ghcr.io/rustqueue/rustqueue:latest
-    ports:
-      - "6789:6789"   # TCP
-      - "6790:6790"   # HTTP + Dashboard
-    volumes:
-      - rustqueue-data:/var/lib/rustqueue/data
-    environment:
-      - RUSTQUEUE_AUTH_TOKENS=your-secret-token
-      - RUSTQUEUE_LOG_LEVEL=info
-      - RUSTQUEUE_LOG_FORMAT=json
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6790/api/v1/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+RustQueue ships with ready-to-use Docker deployment files:
 
-volumes:
-  rustqueue-data:
+```bash
+# Standalone deployment (builds from source)
+docker compose up -d
+
+# Full monitoring stack (RustQueue + Prometheus + Grafana)
+docker compose -f docker-compose.monitoring.yml up -d
+
+# Access points:
+#   RustQueue HTTP API:  http://localhost:6790
+#   RustQueue Dashboard: http://localhost:6790/dashboard
+#   Prometheus:          http://localhost:9090
+#   Grafana:             http://localhost:3000 (admin/admin)
 ```
 
-### 13.4 Docker Compose (3-Node Cluster)
+**Deployment files:**
 
-```yaml
-version: "3.8"
-services:
-  node1:
-    image: ghcr.io/rustqueue/rustqueue:latest
-    ports:
-      - "6789:6789"
-      - "6790:6790"
-    environment:
-      - RUSTQUEUE_CLUSTER_ENABLED=true
-      - RUSTQUEUE_CLUSTER_NODE_ID=node-1
-      - RUSTQUEUE_CLUSTER_PEERS=node2:6800,node3:6800
-      - RUSTQUEUE_CLUSTER_RAFT_PORT=6800
-    volumes:
-      - node1-data:/var/lib/rustqueue/data
+| File | Purpose |
+|------|---------|
+| `Dockerfile` | Multi-stage build (rust:1.85-slim → debian:bookworm-slim), non-root user |
+| `docker-compose.yml` | Standalone RustQueue with persistent volume |
+| `docker-compose.monitoring.yml` | RustQueue + Prometheus + Grafana (auto-provisioned dashboard) |
+| `deploy/rustqueue.toml` | Production config template |
+| `deploy/prometheus.yml` | Prometheus scrape config for RustQueue metrics |
+| `deploy/grafana-datasources.yml` | Grafana Prometheus datasource provisioning |
+| `deploy/grafana-dashboards.yml` | Grafana dashboard provisioning |
 
-  node2:
-    image: ghcr.io/rustqueue/rustqueue:latest
-    environment:
-      - RUSTQUEUE_CLUSTER_ENABLED=true
-      - RUSTQUEUE_CLUSTER_NODE_ID=node-2
-      - RUSTQUEUE_CLUSTER_PEERS=node1:6800,node3:6800
-      - RUSTQUEUE_CLUSTER_RAFT_PORT=6800
-    volumes:
-      - node2-data:/var/lib/rustqueue/data
+### 13.4 Docker Compose (3-Node Cluster) — Future
 
-  node3:
-    image: ghcr.io/rustqueue/rustqueue:latest
-    environment:
-      - RUSTQUEUE_CLUSTER_ENABLED=true
-      - RUSTQUEUE_CLUSTER_NODE_ID=node-3
-      - RUSTQUEUE_CLUSTER_PEERS=node1:6800,node2:6800
-      - RUSTQUEUE_CLUSTER_RAFT_PORT=6800
-    volumes:
-      - node3-data:/var/lib/rustqueue/data
-
-volumes:
-  node1-data:
-  node2-data:
-  node3-data:
-```
+Cluster mode requires the distributed Raft consensus feature (Phase 7). Multi-node Docker Compose examples will be provided when cluster mode ships.
 
 ---
 
@@ -1317,26 +1294,33 @@ Log levels: `trace`, `debug`, `info`, `warn`, `error`.
 
 Exposed at `GET /api/v1/metrics/prometheus`. Key metrics:
 
-**Counters:**
+**Counters (shipped):**
 - `rustqueue_jobs_pushed_total{queue}` — Total jobs submitted
 - `rustqueue_jobs_completed_total{queue}` — Total jobs completed
 - `rustqueue_jobs_failed_total{queue}` — Total job failures (including retries)
+- `rustqueue_jobs_pulled_total{queue}` — Total jobs pulled by workers
+- `rustqueue_http_requests_total{method, status}` — HTTP request count by method and status code
+
+**Gauges (shipped):**
+- `rustqueue_queue_waiting_jobs{queue}` — Current waiting jobs
+- `rustqueue_queue_active_jobs{queue}` — Current active jobs
+- `rustqueue_queue_delayed_jobs{queue}` — Current delayed jobs
+- `rustqueue_queue_dlq_jobs{queue}` — Current DLQ size
+- `rustqueue_websocket_clients_connected` — Connected WebSocket clients
+- `rustqueue_scheduler_tick_duration_seconds` — Scheduler tick duration
+
+**Histograms (shipped):**
+- `rustqueue_push_duration_seconds` — Push operation latency
+- `rustqueue_pull_duration_seconds` — Pull operation latency
+- `rustqueue_ack_duration_seconds` — Ack operation latency
+- `rustqueue_http_request_duration_seconds{method, status}` — HTTP request latency
+
+**Planned:**
 - `rustqueue_jobs_dlq_total{queue}` — Total jobs moved to DLQ
 - `rustqueue_jobs_retried_total{queue}` — Total retry attempts
 - `rustqueue_schedules_fired_total{schedule}` — Times each schedule has fired
 
-**Gauges:**
-- `rustqueue_jobs_waiting{queue}` — Current waiting jobs
-- `rustqueue_jobs_active{queue}` — Current active jobs
-- `rustqueue_jobs_delayed{queue}` — Current delayed jobs
-- `rustqueue_jobs_dlq{queue}` — Current DLQ size
-- `rustqueue_workers_connected{queue}` — Connected workers
-- `rustqueue_queues_total` — Total number of queues
-
-**Histograms:**
-- `rustqueue_job_duration_seconds{queue}` — Job processing time
-- `rustqueue_job_wait_time_seconds{queue}` — Time from push to start
-- `rustqueue_api_request_duration_seconds{method, path}` — API latency
+A pre-built **Grafana dashboard** is provided at `docs/grafana/rustqueue-dashboard.json`.
 
 ### 15.3 Health Check
 
@@ -1457,7 +1441,7 @@ The dashboard is a static web application compiled into the RustQueue binary usi
 |---|---|---|
 | In-Memory backend | ✅ | Always compiled, ideal for tests and ephemeral queues |
 | SQLite backend | ✅ | WAL mode, `json_extract()` queries, behind `sqlite` feature |
-| PostgreSQL backend | ✅ | `SELECT FOR UPDATE SKIP LOCKED`, hybrid schema, behind `postgres` feature |
+| PostgreSQL backend | 🚧 | `SELECT FOR UPDATE SKIP LOCKED`, hybrid schema, behind `postgres` feature — config + trait defined, runtime error |
 | Generic test harness | ✅ | `backend_tests!` macro — 18 canonical tests × N backends |
 | Config-driven backend | ✅ | `storage.backend` in TOML selects redb/memory/sqlite/postgres |
 | RustQueue builder | ✅ | `RustQueue::memory().build()` / `RustQueue::redb(path).build()` for embeddable use |
@@ -1538,10 +1522,11 @@ The dashboard is a static web application compiled into the RustQueue binary usi
 | Unique key index | ✅ | `JOBS_UNIQUE_KEY_INDEX` — O(1) lookup for `get_job_by_unique_key()` |
 | Index-based cleanup | ✅ | `remove_*_before()` uses `JOBS_STATE_UPDATED_INDEX` prefix scan — O(K) not O(N) |
 | Queue names from index | ✅ | `list_queue_names()` extracts from index keys without JSON deserialization |
-| Hybrid memory+disk storage | ⬜ | In-memory hot path with periodic redb snapshots |
-| Per-queue table sharding | ⬜ | Partition jobs by queue name in separate redb tables |
+| Hybrid memory+disk storage | ✅ | DashMap in-memory hot path with periodic redb snapshots (`src/storage/hybrid.rs`) |
+| DashMap MemoryStorage | ✅ | Lock-free concurrent access replacing `RwLock<HashMap>` |
+| Per-queue table sharding | Won't do | redb single-writer model makes table sharding ineffective; index prefix partitioning + BufferedRedb/HybridStorage solve this better |
 
-**Phase 5 stats:** 4 redb tables, all O(N) scans eliminated, 183+ tests (default), ~199 with sqlite
+**Phase 5 stats:** 4 redb tables, all O(N) scans eliminated, hybrid storage added, DashMap MemoryStorage
 
 **Benchmark results (redb, 2026-02-06, Criterion):**
 
@@ -1553,15 +1538,64 @@ The dashboard is a static web application compiled into the RustQueue binary usi
 
 **References:** `docs/performance-analysis.md`, `docs/release-checklist-v0.10.md`
 
-**Remaining (deferred to Phase 5b):**
+**Remaining (deferred):**
 
-1. Hybrid memory+disk storage mode for sustained >50K push/sec.
-2. Per-queue table sharding for reduced write contention.
-3. Re-run competitor suite with `--write-coalescing` for apples-to-apples comparison.
+1. Re-run competitor suite with hybrid storage mode (`--hybrid` flag now wired up).
 
-**Exit criteria:** ✅ ≥ 10,000 push/sec achieved (22,222/s at 100 concurrent with write coalescing). ≥ 50,000 push/sec deferred to hybrid memory/disk mode.
+**Exit criteria:** ✅ ≥ 10,000 push/sec achieved (22,222/s at 100 concurrent with write coalescing). Hybrid storage available for in-memory speed with disk durability.
 
-### Phase 6: Distributed Mode (v0.5) — Weeks 31-40
+### Phase 6: Production Readiness & Ecosystem (v0.11) — Weeks 31-34 ✅ COMPLETE
+
+**Goal:** Security hardening, comprehensive observability, client SDKs, and deployment tooling.
+
+| Deliverable | Status | Description |
+|---|---|---|
+| Input validation | ✅ | Max queue name (256), job name (1024), data (1MB), unique key (1024), error message (10KB) |
+| Queue pause/resume | ✅ | `POST /queues/{queue}/pause\|resume`, rejects pushes to paused queues with 503 |
+| Auth rate limiting | ✅ | 5 failed attempts = 5-minute lockout per IP via DashMap tracker |
+| Gauge metrics | ✅ | Per-queue waiting/active/delayed/dlq gauges, scheduler tick duration, WebSocket clients |
+| Latency histograms | ✅ | `push_duration_seconds`, `pull_duration_seconds`, `ack_duration_seconds` |
+| HTTP error rate middleware | ✅ | Request count + latency per response status code |
+| Grafana dashboard | ✅ | Pre-built dashboard JSON at `docs/grafana/rustqueue-dashboard.json` |
+| Node.js SDK | ✅ | TypeScript, HTTP + TCP clients, ESM/CJS, zero runtime deps (`sdk/node/`) |
+| Python SDK | ✅ | stdlib-only HTTP client, Python >= 3.8 (`sdk/python/`) |
+| Docker deployment | ✅ | Dockerfile, docker-compose.yml, docker-compose.monitoring.yml (Prometheus + Grafana) |
+| Deploy configs | ✅ | Production TOML, Prometheus scrape config, Grafana provisioning (`deploy/`) |
+
+**Phase 6 stats:** 212+ tests (default), ~228 with sqlite. 15+ Prometheus metrics.
+
+**Exit criteria:** ✅ All security features active, metrics cover gauges + histograms, SDKs cover full API surface, Docker one-command deployment works.
+
+### Phase 7: TCP & Consume Performance (v0.12) — Weeks 35-36 ✅ COMPLETE
+
+**Goal:** Beat RabbitMQ on produce throughput and eliminate consume bottleneck in HybridStorage.
+
+| Deliverable | Status | Description |
+|---|---|---|
+| TCP_NODELAY | ✅ | Disable Nagle's algorithm on accepted TCP connections |
+| BufWriter + flush | ✅ | Application-level write buffering with explicit flush for fewer syscalls |
+| TCP pipelining | ✅ | Read all buffered lines before processing, single flush per batch response |
+| Clone reduction | ✅ | Eliminate unnecessary `cmd.clone()` in TCP push handlers |
+| estimate_json_size | ✅ | Walk Value tree for fast payload size check without serialization |
+| Stack-allocated index key | ✅ | `state_updated_key()` returns `[u8; 25]` instead of `Vec<u8>` |
+| Eventual durability for hybrid | ✅ | Force `Eventual` redb durability for hybrid inner backend (safe since hybrid accepts data loss) |
+| Per-queue BTreeSet waiting index | ✅ | HybridStorage dequeue uses BTreeSet — O(log N) instead of O(total_jobs) full-table scan |
+
+**Phase 7 stats:** 221+ tests passing. RustQueue beats RabbitMQ across all three metrics.
+
+**Benchmark results (February 7, 2026, hybrid TCP):**
+
+| Metric | batch_size=1 | batch_size=50 | RabbitMQ (batch=50) |
+|---|---|---|---|
+| Produce | 23,382/s | **43,494/s** | 35,975/s |
+| Consume | 10,987/s | **14,195/s** | 2,675/s |
+| End-to-end | 9,486/s | **14,681/s** | 2,902/s |
+
+**Key win — consume throughput:** Per-queue BTreeSet waiting index improved consume from 292/s to 10,987/s (**37.6x improvement**). The old O(N) DashMap full scan was the bottleneck.
+
+**Exit criteria:** ✅ RustQueue beats RabbitMQ on produce (1.2x), consume (5.3x), and end-to-end (5.1x). Consume bottleneck eliminated.
+
+### Phase 8: Distributed Mode (v0.5) — Weeks 37-46
 
 **Goal:** High-availability cluster mode.
 
@@ -1597,19 +1631,25 @@ Stabilize APIs, write migration guides, achieve production use at 3+ organizatio
 
 ### 18.2 Technical Metrics
 
-| Metric | Target | Current (v0.10) | Status |
+| Metric | Target | Current (v0.12) | Status |
 |---|---|---|---|
+| Throughput (push, hybrid TCP batch_size=50) | ≥ 50,000 jobs/sec | **~43,494/sec** | Within 1.15x |
+| Throughput (push, hybrid TCP batch_size=1) | ≥ 30,000 jobs/sec | **~23,382/sec** | Within 1.3x |
+| Throughput (consume, hybrid TCP batch_size=50) | ≥ 10,000 jobs/sec | **~14,195/sec** | PASS |
+| Throughput (end-to-end, hybrid TCP batch_size=50) | ≥ 10,000 jobs/sec | **~14,681/sec** | PASS |
 | Throughput (push, 100 concurrent + write coalescing) | ≥ 50,000 jobs/sec | **~22,222/sec** | Within 2.3x |
-| Throughput (push, sequential single-job) | ≥ 50,000 jobs/sec | ~348/sec | Needs Phase 5b |
-| Throughput (push, batched TCP `batch_size=50`) | ≥ 50,000 jobs/sec | ~10,929/sec | In Progress |
-| Throughput (push+pull+ack, batched TCP `batch_size=50`) | ≥ 30,000 jobs/sec | ~3,692/sec | In Progress |
+| Beats RabbitMQ on produce | > 30,000 jobs/sec | **43,494/sec** (1.2x RabbitMQ) | PASS |
+| Beats RabbitMQ on consume | > 3,000 jobs/sec | **14,195/sec** (5.3x RabbitMQ) | PASS |
 | Unique key lookup | O(1) | O(1) index | PASS |
 | Cleanup (retention) | O(K) | O(K) indexed | PASS |
 | P99 latency (push) | < 5 ms | ~3 ms | OK |
+| Prometheus metrics | 15+ | 15+ (counters + gauges + histograms) | PASS |
 | Binary size | < 15 MB | 6.8 MB | PASS |
 | Memory usage (idle) | < 20 MB | ~15 MB | PASS |
 | Startup time | < 500 ms | ~10 ms | PASS |
-| Test coverage | > 80% | 183+ tests | OK |
+| Test coverage | > 80% | 212+ tests | OK |
+| Client SDKs | 2 | Node.js + Python | PASS |
+| Input validation | Complete | All fields validated | PASS |
 | Zero CVEs | Continuous | 0 | PASS |
 
 ### 18.3 Community Metrics
@@ -1687,7 +1727,6 @@ Items explicitly out of scope for v1.0 but planned for the future:
 | Feature | Description | Timeframe |
 |---|---|---|
 | **WASM SDK** | Core scheduling logic compiled to WASM for browser-side use | v1.1 |
-| **Grafana dashboard template** | Pre-built Grafana dashboard JSON for Prometheus metrics | v1.1 |
 | **Job batching** | Process a batch of jobs as a single unit (all-or-nothing) | v1.2 |
 | **Multi-tenancy** | Namespace isolation for different teams/services | v1.2 |
 | **Audit log** | Immutable record of all administrative actions | v1.2 |

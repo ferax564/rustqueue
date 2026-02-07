@@ -1,0 +1,12 @@
+target/
+.git/
+scripts/
+docs/
+*.md
+sdk/
+benches/
+tests/
+deploy/
+data/
+.github/
+.vscode/
