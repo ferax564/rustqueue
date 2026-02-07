@@ -95,9 +95,15 @@ References:
 
 Immediate next steps:
 
-1. Re-run competitor suite with `--write-coalescing` to measure actual single-job improvement.
-2. Expand SDK/client helpers so batch commands are the default high-throughput path.
-3. Re-run competitor suite on fixed control (`batch_size=1`) and batch (`batch_size=50`) profiles for trend tracking.
+1. Deliver Phase 6 distributed mode alpha (Raft election/replication/failover baseline).
+2. Add ForgePipe workflow metadata primitives (workflow/step/artifact fields and transitions).
+3. Stabilize orchestration APIs consumed by cross-engine workers.
+4. Continue Phase 5b throughput track (hybrid memory+disk and sharding path).
+5. Keep competitor tracking with write-coalescing and batch-first client defaults.
+
+Planning guardrail: RustQueue is the organization scheduler and orchestration spine.
+
+Roadmap reference: `ROADMAP.md`.
 
 ## Conventions
 

@@ -299,6 +299,16 @@ cargo build --no-default-features       # Server only, no CLI commands
 
 > **v0.10 highlight:** `BufferedRedbStorage` write coalescing delivers **22,222 jobs/sec at 100 concurrent callers** (60.6x faster than raw redb). Enable with `write_coalescing_enabled = true` in your config. The benefit scales with concurrency — 1.7x at 10 callers, 11x at 50, 60.6x at 100. See `docs/performance-analysis.md` for details.
 
+## Roadmap Priorities (2026)
+
+- **P0:** phase 6 distributed mode (Raft/failover) and ForgePipe workflow metadata primitives.
+- **P1:** phase 5b throughput backlog (hybrid memory+disk, sharding path) and batch-first client paths.
+- **P2:** post-v1 multi-tenant controls, audit log, and flow-builder UX.
+
+RustQueue is the organization scheduler and orchestration spine for ForgePipe and engine workflows.
+
+See `ROADMAP.md` for the synchronized project roadmap.
+
 ## Development
 
 ```bash
