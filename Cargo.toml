@@ -38,7 +38,12 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uu
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
-reqwest = { version = "0.12", features = ["json"], optional = true }
+reqwest = { version = "0.12", features = ["json"] }
+
+# Webhook signing (HMAC-SHA256)
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
 
 # Configuration
 config = "0.15"
@@ -102,7 +107,7 @@ sysinfo = "0.30"
 
 [features]
 default = ["cli"]
-cli = ["reqwest"]
+cli = []
 tls = ["rustls", "tokio-rustls", "rustls-pemfile"]
 otel = ["opentelemetry", "opentelemetry-otlp", "opentelemetry_sdk", "tracing-opentelemetry"]
 sqlite = ["rusqlite"]

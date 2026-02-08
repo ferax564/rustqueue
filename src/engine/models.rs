@@ -160,6 +160,7 @@ pub struct QueueCounts {
     pub completed: u64,
     pub failed: u64,
     pub dlq: u64,
+    pub blocked: u64,
 }
 
 /// A recurring or one-time schedule that creates jobs.

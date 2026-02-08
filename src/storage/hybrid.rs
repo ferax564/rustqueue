@@ -502,10 +502,22 @@ impl StorageBackend for HybridStorage {
                 JobState::Completed => counts.completed += 1,
                 JobState::Failed => counts.failed += 1,
                 JobState::Dlq => counts.dlq += 1,
+                JobState::Blocked => counts.blocked += 1,
                 _ => {}
             }
         }
         Ok(counts)
+    }
+
+    async fn get_jobs_by_flow_id(&self, flow_id: &str) -> Result<Vec<Job>> {
+        self.ensure_loaded().await?;
+        Ok(self
+            .state
+            .jobs
+            .iter()
+            .filter(|entry| entry.value().flow_id.as_deref() == Some(flow_id))
+            .map(|entry| entry.value().clone())
+            .collect())
     }
 
     // ── Scheduled jobs ──────────────────────────────────────────────────

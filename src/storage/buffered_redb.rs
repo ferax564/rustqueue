@@ -318,4 +318,8 @@ impl StorageBackend for BufferedRedbStorage {
     async fn get_active_jobs(&self) -> Result<Vec<Job>> {
         self.inner.get_active_jobs().await
     }
+
+    async fn get_jobs_by_flow_id(&self, flow_id: &str) -> Result<Vec<Job>> {
+        self.inner.get_jobs_by_flow_id(flow_id).await
+    }
 }

@@ -39,6 +39,7 @@ async fn start_test_server_with_scheduler() -> (String, tokio::task::JoinHandle<
         event_tx,
         auth_config: AuthConfig::default(),
         auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
+        webhook_manager: None,
     });
     let app = api::router(state);
 

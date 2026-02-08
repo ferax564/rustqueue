@@ -127,6 +127,14 @@ pub trait StorageBackend: Send + Sync + 'static {
 
     /// Get all jobs currently in Active state (for timeout/stall detection).
     async fn get_active_jobs(&self) -> anyhow::Result<Vec<Job>>;
+
+    /// Get all jobs belonging to a flow (for DAG flow status).
+    ///
+    /// Default implementation returns an empty list. Backends with efficient
+    /// query support should override this.
+    async fn get_jobs_by_flow_id(&self, _flow_id: &str) -> anyhow::Result<Vec<Job>> {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Debug, Clone)]

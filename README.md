@@ -10,6 +10,8 @@ A high-performance distributed job queue and task scheduler written in Rust. Zer
 - **Single binary deployment** — Download, run, done.
 - **Multiple storage backends** — redb (default), hybrid memory+disk, SQLite, PostgreSQL, or in-memory
 - **Job queuing** with priorities, delays, FIFO/LIFO ordering
+- **DAG workflows** — Job dependencies with `depends_on`, cycle detection, cascade failure, and flow status tracking
+- **Webhooks** — HTTP callbacks with HMAC-SHA256 signing, event/queue filtering, and retry delivery
 - **Cron & interval scheduling** — Full schedule engine with cron expressions and interval-based execution
 - **Automatic retries** with configurable backoff (fixed, linear, exponential)
 - **Dead letter queues** for inspecting and retrying failed jobs
@@ -31,7 +33,7 @@ A high-performance distributed job queue and task scheduler written in Rust. Zer
 - **Landing page** — Marketing page at `/` with feature showcase
 - **CORS + Request tracing** — Cross-origin support and structured HTTP request spans
 - **Embeddable** — Use as a standalone server or as a Rust library with zero config
-- **Client SDKs** — Official Node.js (TypeScript) and Python SDKs
+- **Client SDKs** — Official Node.js (TypeScript), Python, and Go SDKs
 - **CLI management** — `status`, `push`, `inspect`, `schedules` commands for operating a running server
 - **Docker ready** — Dockerfile + Docker Compose with optional Prometheus/Grafana monitoring
 - **Language-agnostic** — HTTP REST API + TCP protocol works with any language
@@ -130,6 +132,13 @@ default_max_attempts = 3
 default_backoff = "exponential"
 default_backoff_delay_ms = 1000
 stall_timeout_ms = 30000
+max_dag_depth = 10                  # Maximum DAG dependency chain depth
+
+[webhooks]
+enabled = false
+delivery_timeout_ms = 10000
+max_retries = 3
+retry_base_delay_ms = 1000
 
 [scheduler]
 tick_interval_ms = 1000
@@ -207,6 +216,11 @@ GET    /api/v1/schedules/{name}       # Get schedule by name
 DELETE /api/v1/schedules/{name}       # Delete schedule
 POST   /api/v1/schedules/{name}/pause  # Pause schedule
 POST   /api/v1/schedules/{name}/resume # Resume schedule
+POST   /api/v1/webhooks               # Register webhook
+GET    /api/v1/webhooks               # List webhooks
+GET    /api/v1/webhooks/{id}          # Get webhook
+DELETE /api/v1/webhooks/{id}          # Delete webhook
+GET    /api/v1/flows/{flow_id}        # Flow status (DAG jobs + summary)
 GET    /api/v1/events                  # WebSocket event stream
 GET    /dashboard                      # Embedded web dashboard
 GET    /                               # Landing page
@@ -321,7 +335,7 @@ cargo build --no-default-features       # Server only, no CLI commands
 | Redis (LPUSH/RPOP) | 5,460 | 4,673 | 2,346 |
 | BullMQ | 4,761 | 5,130 | 845 |
 
-| Metric | Target | Current (v0.12) |
+| Metric | Target | Current (v0.13) |
 |--------|--------|----------------|
 | Throughput (push, hybrid TCP batch_size=50) | >= 50,000 jobs/sec | **~43,494/sec** |
 | Throughput (push, hybrid TCP batch_size=1) | >= 30,000 jobs/sec | **~23,382/sec** |
@@ -331,12 +345,12 @@ cargo build --no-default-features       # Server only, no CLI commands
 | Binary size | < 15 MB | 6.8 MB |
 | Startup time | < 500 ms | ~10 ms |
 
-> **v0.12 highlights:**
+> **v0.13 highlights:**
+> - **Webhooks**: HMAC-SHA256 signed HTTP callbacks with event/queue filtering and retry delivery.
+> - **DAG Flows**: Job dependencies with `depends_on`, BFS cycle detection, cascade DLQ failure, flow status endpoint.
 > - **Beats RabbitMQ**: 1.2x faster produce, 5.3x faster consume, 5.1x faster end-to-end.
-> - **TCP pipelining**: Reads all buffered commands before processing, single flush per batch. Massive throughput improvement for concurrent clients.
-> - **TCP_NODELAY + BufWriter**: Eliminates Nagle delays and reduces syscalls.
-> - **Per-queue dequeue index**: BTreeSet-based waiting index eliminates O(N) full-table scan in dequeue, improving consume throughput by 37.6x.
-> - **HybridStorage**: DashMap in-memory hot path with periodic redb snapshots.
+> - **TCP pipelining**: Reads all buffered commands before processing, single flush per batch.
+> - **Per-queue dequeue index**: BTreeSet-based waiting index for O(log N) dequeue.
 > - See `docs/performance-analysis.md` and `docs/competitor-benchmark-2026-02-07.md` for details.
 
 ## Client SDKs
@@ -377,7 +391,24 @@ jobs = client.pull("emails")
 client.ack(jobs[0]["id"])
 ```
 
-Both SDKs support: push, pull, ack, fail, cancel, progress, heartbeat, batch operations, schedule CRUD, queue stats, DLQ, and health checks. See `sdk/node/examples/` and `sdk/python/examples/` for comprehensive examples.
+### Go
+
+```go
+import "github.com/rustqueue/rustqueue-go/rustqueue"
+
+// HTTP client
+client := rustqueue.NewClient("http://localhost:6790", "")
+jobID, _ := client.Push("emails", "send-welcome", map[string]any{"to": "alice@example.com"})
+jobs, _ := client.Pull("emails", 1)
+client.Ack(jobs[0].ID, nil)
+
+// TCP client (higher throughput)
+tcp, _ := rustqueue.NewTCPClient("127.0.0.1:6789", "")
+tcp.Push("emails", "send-welcome", map[string]any{"to": "alice@example.com"}, nil)
+tcp.Close()
+```
+
+All three SDKs support: push, pull, ack, fail, cancel, progress, heartbeat, batch operations, schedule CRUD, queue stats, DLQ, and health checks. See `sdk/node/examples/`, `sdk/python/examples/`, and `sdk/go/examples/` for comprehensive examples.
 
 ## Roadmap Priorities (2026)
 

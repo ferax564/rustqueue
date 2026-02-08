@@ -211,6 +211,8 @@ async fn handle_push(cmd: &Value, manager: &QueueManager) -> Value {
                 || cmd.get("ttl_ms").is_some()
                 || cmd.get("backoff").is_some()
                 || cmd.get("tags").is_some()
+                || cmd.get("depends_on").is_some()
+                || cmd.get("flow_id").is_some()
             {
                 serde_json::from_value(cmd.clone()).ok()
             } else {

@@ -23,6 +23,7 @@ async fn test_websocket_receives_push_event() {
         event_tx,
         auth_config: rustqueue::config::AuthConfig::default(),
         auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
+        webhook_manager: None,
     });
     let app = api::router(state);
 
@@ -73,6 +74,7 @@ async fn test_websocket_receives_completed_event() {
         event_tx,
         auth_config: rustqueue::config::AuthConfig::default(),
         auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
+        webhook_manager: None,
     });
     let app = api::router(state);
 
@@ -136,6 +138,7 @@ async fn test_websocket_receives_cancelled_event() {
         event_tx,
         auth_config: rustqueue::config::AuthConfig::default(),
         auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
+        webhook_manager: None,
     });
     let app = api::router(state);
 
@@ -197,6 +200,7 @@ async fn test_websocket_receives_failed_event_on_dlq() {
         event_tx,
         auth_config: rustqueue::config::AuthConfig::default(),
         auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
+        webhook_manager: None,
     });
     let app = api::router(state);
 
@@ -261,6 +265,7 @@ async fn test_websocket_no_event_on_retry() {
         event_tx,
         auth_config: rustqueue::config::AuthConfig::default(),
         auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
+        webhook_manager: None,
     });
     let app = api::router(state);
 

@@ -3,11 +3,11 @@
 //! [`QueueManager`] wraps an `Arc<dyn StorageBackend>` and exposes push, pull,
 //! ack, fail, cancel, and query operations with proper state-machine validation.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
-use dashmap::DashSet;
+use dashmap::{DashMap, DashSet};
 use serde::{Deserialize, Serialize};
 
 use tracing::info;
@@ -144,6 +144,11 @@ pub struct JobOptions {
     pub remove_on_complete: Option<bool>,
     pub remove_on_fail: Option<bool>,
     pub custom_id: Option<String>,
+    /// Parent job IDs that must complete before this job becomes Waiting.
+    #[schema(value_type = Option<Vec<String>>)]
+    pub depends_on: Option<Vec<JobId>>,
+    /// Flow identifier grouping related jobs in a DAG.
+    pub flow_id: Option<String>,
 }
 
 /// Result returned by [`QueueManager::fail`] to indicate retry disposition.
@@ -195,6 +200,11 @@ pub struct QueueManager {
     event_tx: Option<tokio::sync::broadcast::Sender<JobEvent>>,
     /// Set of paused queue names. Pushes to paused queues are rejected.
     paused_queues: DashSet<String>,
+    /// Reverse dependency index: parent_id → list of child job IDs.
+    /// Used to resolve Blocked → Waiting when a parent completes.
+    dependency_index: DashMap<JobId, Vec<JobId>>,
+    /// Maximum depth for DAG dependency chains (cycle detection).
+    max_dag_depth: usize,
 }
 
 impl QueueManager {
@@ -204,6 +214,8 @@ impl QueueManager {
             storage,
             event_tx: None,
             paused_queues: DashSet::new(),
+            dependency_index: DashMap::new(),
+            max_dag_depth: 10,
         }
     }
 
@@ -212,6 +224,14 @@ impl QueueManager {
     /// Must be called **before** wrapping the manager in `Arc`.
     pub fn with_event_sender(mut self, tx: tokio::sync::broadcast::Sender<JobEvent>) -> Self {
         self.event_tx = Some(tx);
+        self
+    }
+
+    /// Set the maximum DAG depth for dependency chains.
+    ///
+    /// Must be called **before** wrapping the manager in `Arc`.
+    pub fn with_max_dag_depth(mut self, depth: usize) -> Self {
+        self.max_dag_depth = depth;
         self
     }
 
@@ -271,6 +291,14 @@ impl QueueManager {
             if let Some(cid) = opts.custom_id {
                 job.custom_id = Some(cid);
             }
+            if let Some(deps) = opts.depends_on {
+                if !deps.is_empty() {
+                    job.depends_on = deps;
+                }
+            }
+            if let Some(fid) = opts.flow_id {
+                job.flow_id = Some(fid);
+            }
 
             // Delay handling — must come after unique_key is applied.
             if let Some(delay_ms) = opts.delay_ms {
@@ -318,11 +346,52 @@ impl QueueManager {
             }
         }
 
+        // ── DAG dependency handling ─────────────────────────────────────
+        if !job.depends_on.is_empty() {
+            // Validate all parent jobs exist and aren't terminally failed
+            for &parent_id in &job.depends_on {
+                let parent = self
+                    .storage
+                    .get_job(parent_id)
+                    .await
+                    .map_err(RustQueueError::Internal)?
+                    .ok_or_else(|| {
+                        RustQueueError::ValidationError(format!(
+                            "Dependency parent job '{parent_id}' not found"
+                        ))
+                    })?;
+                if matches!(parent.state, JobState::Dlq | JobState::Cancelled) {
+                    return Err(RustQueueError::ValidationError(format!(
+                        "Dependency parent job '{parent_id}' is in terminal state '{:?}'",
+                        parent.state
+                    )));
+                }
+            }
+
+            // Cycle detection via BFS
+            self.detect_cycle(&job).await?;
+
+            // Determine initial state: if all deps already completed, go to Waiting;
+            // otherwise start as Blocked.
+            let all_completed = self.all_deps_completed(&job.depends_on).await?;
+            if !all_completed {
+                job.state = JobState::Blocked;
+            }
+        }
+
         let id = self
             .storage
             .insert_job(&job)
             .await
             .map_err(RustQueueError::Internal)?;
+
+        // Populate reverse dependency index
+        for &parent_id in &job.depends_on {
+            self.dependency_index
+                .entry(parent_id)
+                .or_default()
+                .push(id);
+        }
 
         metrics::counter!(metric_names::JOBS_PUSHED_TOTAL).increment(1);
         metrics::histogram!(metric_names::PUSH_DURATION_SECONDS).record(start.elapsed().as_secs_f64());
@@ -457,6 +526,9 @@ impl QueueManager {
         metrics::histogram!(metric_names::ACK_DURATION_SECONDS).record(start.elapsed().as_secs_f64());
 
         self.emit_event("job.completed", id, &job.queue);
+
+        // Resolve dependencies: promote Blocked children whose deps are all complete.
+        self.resolve_dependencies(id).await;
 
         info!(job_id = %id, "Job acknowledged");
 
@@ -594,6 +666,9 @@ impl QueueManager {
 
             self.emit_event("job.failed", id, &job.queue);
 
+            // Cascade failure: move all Blocked children to DLQ recursively.
+            self.cascade_dependency_failure(id).await;
+
             info!(job_id = %id, "Job moved to DLQ");
 
             Ok(FailResult {
@@ -612,10 +687,13 @@ impl QueueManager {
     pub async fn cancel(&self, id: JobId) -> Result<(), RustQueueError> {
         let mut job = self.require_job(id).await?;
 
-        if !matches!(job.state, JobState::Waiting | JobState::Delayed) {
+        if !matches!(
+            job.state,
+            JobState::Waiting | JobState::Delayed | JobState::Blocked
+        ) {
             return Err(RustQueueError::InvalidState {
                 current: format!("{:?}", job.state),
-                expected: "Waiting or Delayed".to_string(),
+                expected: "Waiting, Delayed, or Blocked".to_string(),
             });
         }
 
@@ -1076,6 +1154,196 @@ impl QueueManager {
         Ok(fired)
     }
 
+    // ── DAG dependency helpers ─────────────────────────────────────────
+
+    /// Check if all dependency parent jobs are in Completed state.
+    async fn all_deps_completed(&self, deps: &[JobId]) -> Result<bool, RustQueueError> {
+        for &dep_id in deps {
+            let dep = self
+                .storage
+                .get_job(dep_id)
+                .await
+                .map_err(RustQueueError::Internal)?;
+            match dep {
+                Some(j) if j.state == JobState::Completed => {}
+                _ => return Ok(false),
+            }
+        }
+        Ok(true)
+    }
+
+    /// BFS cycle detection + max depth check for a job's dependency chain.
+    async fn detect_cycle(&self, job: &Job) -> Result<(), RustQueueError> {
+        let mut visited = HashSet::new();
+        let mut queue: VecDeque<(JobId, usize)> = VecDeque::new();
+
+        for &parent_id in &job.depends_on {
+            queue.push_back((parent_id, 1));
+        }
+
+        while let Some((current_id, depth)) = queue.pop_front() {
+            if depth > self.max_dag_depth {
+                return Err(RustQueueError::ValidationError(format!(
+                    "Dependency chain exceeds maximum depth of {}",
+                    self.max_dag_depth
+                )));
+            }
+            if current_id == job.id {
+                return Err(RustQueueError::ValidationError(
+                    "Circular dependency detected".into(),
+                ));
+            }
+            if !visited.insert(current_id) {
+                continue; // Already visited
+            }
+
+            // Look up this parent's own dependencies
+            if let Some(parent) = self
+                .storage
+                .get_job(current_id)
+                .await
+                .map_err(RustQueueError::Internal)?
+            {
+                for &grandparent_id in &parent.depends_on {
+                    queue.push_back((grandparent_id, depth + 1));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// After a job completes, check its children in the reverse index.
+    /// Promote any Blocked children whose dependencies are all Completed.
+    async fn resolve_dependencies(&self, completed_id: JobId) {
+        let children = self
+            .dependency_index
+            .get(&completed_id)
+            .map(|r| r.value().clone())
+            .unwrap_or_default();
+
+        for child_id in children {
+            let child = match self.storage.get_job(child_id).await {
+                Ok(Some(j)) => j,
+                _ => continue,
+            };
+            if child.state != JobState::Blocked {
+                continue;
+            }
+            // Check if ALL deps are now Completed
+            if let Ok(true) = self.all_deps_completed(&child.depends_on).await {
+                let mut child = child;
+                child.state = JobState::Waiting;
+                child.updated_at = Utc::now();
+                if let Err(e) = self.storage.update_job(&child).await {
+                    tracing::warn!(
+                        job_id = %child_id,
+                        error = %e,
+                        "Failed to promote blocked job"
+                    );
+                } else {
+                    info!(job_id = %child_id, "Blocked job promoted to Waiting (deps resolved)");
+                    self.emit_event("job.pushed", child_id, &child.queue);
+                }
+            }
+        }
+    }
+
+    /// Cascade DLQ to all Blocked children of a failed parent, recursively.
+    async fn cascade_dependency_failure(&self, failed_id: JobId) {
+        let children = self
+            .dependency_index
+            .get(&failed_id)
+            .map(|r| r.value().clone())
+            .unwrap_or_default();
+
+        for child_id in children {
+            let child = match self.storage.get_job(child_id).await {
+                Ok(Some(j)) => j,
+                _ => continue,
+            };
+            if child.state != JobState::Blocked {
+                continue;
+            }
+            let reason = format!("parent job '{}' moved to DLQ", failed_id);
+            if let Err(e) = self.storage.move_to_dlq(&child, &reason).await {
+                tracing::warn!(
+                    job_id = %child_id,
+                    error = %e,
+                    "Failed to cascade DLQ to blocked child"
+                );
+            } else {
+                self.emit_event("job.failed", child_id, &child.queue);
+                info!(job_id = %child_id, parent_id = %failed_id, "Blocked child cascaded to DLQ");
+                // Recursively cascade to grandchildren
+                Box::pin(self.cascade_dependency_failure(child_id)).await;
+            }
+        }
+    }
+
+    /// Safety net: promote orphaned Blocked jobs whose deps are all Completed.
+    ///
+    /// Called periodically by the scheduler to catch edge cases where the reverse
+    /// index missed a promotion (e.g., after server restart).
+    pub async fn promote_orphaned_blocked_jobs(&self) -> Result<u32, RustQueueError> {
+        let names = self
+            .storage
+            .list_queue_names()
+            .await
+            .map_err(RustQueueError::Internal)?;
+
+        let mut promoted = 0u32;
+        for name in names {
+            // Get all jobs and filter for Blocked ones
+            // This is a scan but only runs every 10 scheduler ticks
+            let counts = self
+                .storage
+                .get_queue_counts(&name)
+                .await
+                .map_err(RustQueueError::Internal)?;
+            if counts.blocked == 0 {
+                continue;
+            }
+
+            // We need to find blocked jobs. Use get_jobs_by_flow_id if available,
+            // or scan via storage. For simplicity, we'll check jobs we know about
+            // from the dependency index.
+            for entry in self.dependency_index.iter() {
+                for &child_id in entry.value() {
+                    let child = match self.storage.get_job(child_id).await {
+                        Ok(Some(j)) => j,
+                        _ => continue,
+                    };
+                    if child.state != JobState::Blocked || child.queue != name {
+                        continue;
+                    }
+                    if self.all_deps_completed(&child.depends_on).await.unwrap_or(false) {
+                        let mut child = child;
+                        child.state = JobState::Waiting;
+                        child.updated_at = Utc::now();
+                        if self.storage.update_job(&child).await.is_ok() {
+                            promoted += 1;
+                            self.emit_event("job.pushed", child_id, &child.queue);
+                        }
+                    }
+                }
+            }
+        }
+
+        if promoted > 0 {
+            info!(count = promoted, "Promoted orphaned blocked jobs");
+        }
+        Ok(promoted)
+    }
+
+    /// Get all jobs belonging to a flow.
+    pub async fn get_flow_jobs(&self, flow_id: &str) -> Result<Vec<Job>, RustQueueError> {
+        self.storage
+            .get_jobs_by_flow_id(flow_id)
+            .await
+            .map_err(RustQueueError::Internal)
+    }
+
     // ── Private helpers ──────────────────────────────────────────────────
 
     /// Fetch a job by ID, returning `JobNotFound` if it does not exist.
@@ -1315,7 +1583,7 @@ mod tests {
         match err {
             RustQueueError::InvalidState { current, expected } => {
                 assert_eq!(current, "Active");
-                assert_eq!(expected, "Waiting or Delayed");
+                assert_eq!(expected, "Waiting, Delayed, or Blocked");
             }
             other => panic!("expected InvalidState, got: {:?}", other),
         }

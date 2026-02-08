@@ -5,3 +5,4 @@ pub mod queue;
 pub mod scheduler;
 #[cfg(feature = "otel")]
 pub mod telemetry;
+pub mod webhook;

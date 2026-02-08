@@ -31,6 +31,7 @@ async fn start_server_with_shutdown() -> (
         event_tx,
         auth_config: AuthConfig::default(),
         auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
+        webhook_manager: None,
     });
     let app = api::router(state);
 

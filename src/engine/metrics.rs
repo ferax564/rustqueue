@@ -59,3 +59,11 @@ pub const HTTP_REQUESTS_TOTAL: &str = "rustqueue_http_requests_total";
 
 /// Histogram for HTTP request duration in seconds.
 pub const HTTP_REQUEST_DURATION_SECONDS: &str = "rustqueue_http_request_duration_seconds";
+
+// ── Webhook metrics ─────────────────────────────────────────────────────────
+
+/// Counter for successfully delivered webhook events.
+pub const WEBHOOKS_DELIVERED_TOTAL: &str = "rustqueue_webhooks_delivered_total";
+
+/// Counter for webhook delivery failures (all retries exhausted).
+pub const WEBHOOKS_DELIVERY_FAILURES_TOTAL: &str = "rustqueue_webhooks_delivery_failures_total";

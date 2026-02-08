@@ -486,7 +486,46 @@ macro_rules! backend_tests {
                 assert_eq!(active_only[0].name, "active-sched");
             }
 
-            // ── 18. remove_dlq_before ───────────────────────────────────
+            // ── 18. get_jobs_by_flow_id ──────────────────────────────────
+
+            #[tokio::test]
+            async fn get_jobs_by_flow_id() {
+                let storage = $factory;
+
+                // Insert two jobs with the same flow_id.
+                let mut job_a = test_job("dag-q");
+                job_a.flow_id = Some("flow-123".to_string());
+                storage.insert_job(&job_a).await.unwrap();
+
+                let mut job_b = test_job("dag-q");
+                job_b.flow_id = Some("flow-123".to_string());
+                storage.insert_job(&job_b).await.unwrap();
+
+                // Insert one job with a different flow_id.
+                let mut job_c = test_job("dag-q");
+                job_c.flow_id = Some("flow-456".to_string());
+                storage.insert_job(&job_c).await.unwrap();
+
+                // Insert a job without flow_id.
+                let job_d = test_job("dag-q");
+                storage.insert_job(&job_d).await.unwrap();
+
+                let flow_jobs = storage.get_jobs_by_flow_id("flow-123").await.unwrap();
+                assert_eq!(flow_jobs.len(), 2, "should find exactly 2 jobs in flow-123");
+
+                let ids: Vec<Uuid> = flow_jobs.iter().map(|j| j.id).collect();
+                assert!(ids.contains(&job_a.id));
+                assert!(ids.contains(&job_b.id));
+
+                let other_flow = storage.get_jobs_by_flow_id("flow-456").await.unwrap();
+                assert_eq!(other_flow.len(), 1);
+                assert_eq!(other_flow[0].id, job_c.id);
+
+                let empty = storage.get_jobs_by_flow_id("nonexistent").await.unwrap();
+                assert!(empty.is_empty());
+            }
+
+            // ── 19. remove_dlq_before ───────────────────────────────────
 
             #[tokio::test]
             async fn remove_dlq_before() {

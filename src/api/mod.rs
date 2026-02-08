@@ -9,6 +9,7 @@ pub mod openapi;
 pub mod prometheus;
 pub mod queues;
 pub mod schedules;
+pub mod webhooks;
 pub mod websocket;
 
 use std::sync::Arc;
@@ -40,6 +41,8 @@ pub struct AppState {
     pub auth_config: crate::config::AuthConfig,
     /// Rate limiter for auth failures (per-IP lockout).
     pub auth_rate_limiter: auth::AuthRateLimiter,
+    /// Webhook manager (None when webhooks are disabled).
+    pub webhook_manager: Option<Arc<crate::engine::webhook::WebhookManager>>,
 }
 
 /// Build the full API router with all endpoint groups merged.
@@ -65,7 +68,8 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
         .merge(jobs::routes())
         .merge(queues::routes())
         .merge(schedules::routes())
-        .merge(websocket::routes());
+        .merge(websocket::routes())
+        .merge(webhooks::routes());
 
     // Dashboard SPA is public when auth is disabled, protected when enabled.
     if state.auth_config.enabled {

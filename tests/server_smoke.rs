@@ -29,6 +29,7 @@ async fn start_full_server() -> (String, std::net::SocketAddr) {
         event_tx,
         auth_config: rustqueue::config::AuthConfig::default(),
         auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
+        webhook_manager: None,
     });
     let app = api::router(state);
 
@@ -115,6 +116,7 @@ async fn test_server_with_memory_backend() {
         event_tx,
         auth_config: rustqueue::config::AuthConfig::default(),
         auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
+        webhook_manager: None,
     });
     let app = api::router(state);
 

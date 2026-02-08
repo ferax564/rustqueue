@@ -104,6 +104,37 @@ func (c *Client) Ack(ctx context.Context, jobID string, result interface{}) erro
 	return c.request(ctx, http.MethodPost, "/api/v1/jobs/"+url.PathEscape(jobID)+"/ack", body, nil)
 }
 
+// AckBatch acknowledges multiple jobs in individual HTTP requests.
+// Returns an AckBatchResponse summarizing successes and failures.
+// Note: Unlike the TCP client which uses a single ack_batch command,
+// the HTTP API processes acks individually, so this method makes N requests.
+func (c *Client) AckBatch(ctx context.Context, items []AckBatchItem) (*AckBatchResponse, error) {
+	results := make([]AckBatchResult, len(items))
+	acked := 0
+	failed := 0
+	for i, item := range items {
+		err := c.Ack(ctx, item.ID, item.Result)
+		if err != nil {
+			failed++
+			rqe, ok := IsRustQueueError(err)
+			if ok {
+				results[i] = AckBatchResult{ID: item.ID, OK: false, Error: &AckBatchResultError{Code: rqe.Code, Message: rqe.Message}}
+			} else {
+				results[i] = AckBatchResult{ID: item.ID, OK: false, Error: &AckBatchResultError{Code: "UNKNOWN_ERROR", Message: err.Error()}}
+			}
+		} else {
+			acked++
+			results[i] = AckBatchResult{ID: item.ID, OK: true}
+		}
+	}
+	return &AckBatchResponse{
+		OK:      failed == 0,
+		Acked:   acked,
+		Failed:  failed,
+		Results: results,
+	}, nil
+}
+
 // Fail reports that a job has failed.
 // The server will determine whether to retry (based on max_attempts and backoff)
 // or move the job to the dead-letter queue.

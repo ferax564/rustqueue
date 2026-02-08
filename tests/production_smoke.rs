@@ -27,6 +27,7 @@ async fn start_auth_server() -> String {
             tokens: vec!["test-token".to_string()],
         },
         auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
+        webhook_manager: None,
     });
     let app = api::router(state);
 

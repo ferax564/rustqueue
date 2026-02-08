@@ -29,22 +29,24 @@ src/
 ├── api/              # HTTP REST API (axum)
 │   ├── mod.rs        # AppState, router composition (public vs protected routes)
 │   ├── auth.rs       # Bearer token auth middleware (HTTP + config)
-│   ├── jobs.rs       # Job CRUD + progress + heartbeat + DLQ list endpoints
+│   ├── jobs.rs       # Job CRUD + progress + heartbeat + DLQ list + flow status endpoints
 │   ├── schedules.rs  # Schedule CRUD + pause/resume endpoints
 │   ├── queues.rs     # Queue listing and stats
 │   ├── health.rs     # Health check
 │   ├── openapi.rs    # OpenAPI 3.1 spec generation (utoipa) + Scalar UI
 │   ├── prometheus.rs # Prometheus metrics endpoint
+│   ├── webhooks.rs   # Webhook CRUD (register, list, get, delete)
 │   └── websocket.rs  # WebSocket event streaming (/api/v1/events)
 ├── engine/           # Core business logic
 │   ├── models.rs     # Data types: Job, Schedule, Worker, enums
-│   ├── queue.rs      # QueueManager: push, pull, ack, fail, progress, heartbeat, timeouts, stalls, schedule CRUD + execution
-│   ├── scheduler.rs  # Background tick loop: promote delayed, execute schedules, check timeouts, detect stalls
+│   ├── queue.rs      # QueueManager: push, pull, ack, fail, progress, heartbeat, timeouts, stalls, schedule CRUD + execution, DAG dependency resolution
+│   ├── scheduler.rs  # Background tick loop: promote delayed, execute schedules, check timeouts, detect stalls, promote orphaned blocked jobs
+│   ├── webhook.rs    # WebhookManager: HMAC-SHA256 signing, retry delivery, broadcast dispatcher
 │   ├── metrics.rs    # Prometheus counter/gauge instrumentation
 │   ├── error.rs      # RustQueueError (thiserror)
 │   └── telemetry.rs  # OpenTelemetry OTLP integration (behind `otel` feature)
 ├── storage/          # Storage abstraction and backends
-│   ├── mod.rs        # StorageBackend trait (23 async methods)
+│   ├── mod.rs        # StorageBackend trait (24 async methods)
 │   ├── redb.rs       # redb embedded backend (default, always compiled)
 │   ├── buffered_redb.rs # Write-coalescing wrapper around RedbStorage
 │   ├── hybrid.rs     # Hybrid memory+disk backend (DashMap hot path + redb snapshots)
@@ -58,7 +60,7 @@ src/
 
 ## Key Design Decisions
 
-- **Storage trait**: All backends implement `StorageBackend` (23 async methods, see `src/storage/mod.rs`). Swap redb/sqlite/postgres/memory/hybrid via config without changing engine code.
+- **Storage trait**: All backends implement `StorageBackend` (24 async methods, see `src/storage/mod.rs`). Swap redb/sqlite/postgres/memory/hybrid via config without changing engine code.
 - **Dual protocol**: HTTP (port 6790) for general use + TCP (port 6789) for high-throughput workers. Both support identical operations.
 - **Crash-only design**: All state is persisted before acknowledging writes. Safe to `kill -9` at any time.
 - **UUID v7 for job IDs**: Time-sortable, globally unique, no coordination needed.
@@ -69,9 +71,11 @@ src/
 - **Auth rate limiting**: 5 failed auth attempts = 5-minute lockout per IP via in-memory DashMap tracker.
 - **Comprehensive metrics**: 15+ Prometheus metrics — counters, gauges (per-queue depth), histograms (push/pull/ack latency), HTTP request tracking.
 - **Hybrid storage**: DashMap in-memory hot path with periodic background snapshot to redb. Configurable flush interval and dirty threshold.
-- **Client SDKs**: Node.js (`sdk/node/`, TypeScript, HTTP + TCP, zero deps) and Python (`sdk/python/`, stdlib-only HTTP).
+- **Webhooks**: `WebhookManager` with DashMap storage, HMAC-SHA256 signing, configurable retry delivery, event/queue filtering. HTTP CRUD API at `/api/v1/webhooks`.
+- **DAG Flows**: Job dependencies via `depends_on` field. BFS cycle detection with configurable max depth. Inline resolution in `ack()` promotes Blocked->Waiting children. Cascade DLQ failure on parent fail. Scheduler safety net promotes orphaned blocked jobs every 10 ticks.
+- **Client SDKs**: Node.js (`sdk/node/`, TypeScript, HTTP + TCP, zero deps), Python (`sdk/python/`, stdlib-only HTTP), and Go (`sdk/go/`, HTTP + TCP, zero deps).
 - **Docker deployment**: Multi-stage Dockerfile, docker-compose.yml (standalone), docker-compose.monitoring.yml (with Prometheus + Grafana).
-- **Background scheduler**: Tick loop (configurable interval) handles delayed job promotion, schedule execution (cron + interval), timeout detection, stall detection, and retention cleanup.
+- **Background scheduler**: Tick loop (configurable interval) handles delayed job promotion, schedule execution (cron + interval), timeout detection, stall detection, retention cleanup, and orphaned blocked job promotion (DAG safety net).
 - **WebSocket events**: Real-time job lifecycle events via `tokio::sync::broadcast` channel (capacity 1024).
 - **Authentication**: Bearer token auth for HTTP (public/protected route split) and TCP (connection-level handshake). Configurable via `[auth]` TOML section.
 - **Graceful shutdown**: `Ctrl+C` triggers coordinated drain with 30s timeout for HTTP, TCP, and scheduler.
@@ -133,10 +137,10 @@ References:
 
 - **Unit tests**: Each module has `#[cfg(test)] mod tests` testing individual functions.
 - **Integration tests**: `tests/` directory tests full server behavior (HTTP + TCP + WebSocket).
-- **Generic backend harness**: `tests/storage_backend_tests.rs` — `backend_tests!` macro generates 18 canonical tests per storage backend (memory, redb, buffered_redb, hybrid; + sqlite with feature).
+- **Generic backend harness**: `tests/storage_backend_tests.rs` — `backend_tests!` macro generates 19 canonical tests per storage backend (memory, redb, buffered_redb, hybrid; + sqlite with feature).
 - **Property tests**: State machine transitions, serialization roundtrips.
 - **Benchmarks**: `benches/throughput.rs` measures jobs/sec for push, pull, ack operations.
-- **Current counts**: ~212 tests (default features), ~228 tests (with `sqlite`).
+- **Current counts**: ~249 tests (default features), ~268 tests (with `sqlite`).
 
 ## Configuration Priority
 
@@ -176,6 +180,11 @@ GET    /api/v1/schedules/{name}       # Get schedule by name
 DELETE /api/v1/schedules/{name}       # Delete schedule
 POST   /api/v1/schedules/{name}/pause  # Pause schedule
 POST   /api/v1/schedules/{name}/resume # Resume schedule
+POST   /api/v1/webhooks               # Register webhook
+GET    /api/v1/webhooks               # List webhooks
+GET    /api/v1/webhooks/{id}          # Get webhook
+DELETE /api/v1/webhooks/{id}          # Delete webhook
+GET    /api/v1/flows/{flow_id}        # Flow status (DAG jobs + summary)
 GET    /api/v1/events                  # WebSocket event stream
 GET    /api/v1/openapi.json            # OpenAPI 3.1 spec (JSON)
 GET    /api/v1/docs                    # Scalar API reference UI
@@ -215,7 +224,8 @@ rustqueue schedules resume NAME
 | `metrics` + `metrics-exporter-prometheus` | Prometheus metrics |
 | `dashmap` | Lock-free concurrent HashMap (MemoryStorage, HybridStorage, auth rate limiter) |
 | `rust-embed` | Compile dashboard assets into binary |
-| `reqwest` | CLI HTTP client (optional, `cli` feature) |
+| `reqwest` | HTTP client (webhook delivery + CLI commands) |
+| `hmac` + `sha2` | HMAC-SHA256 webhook payload signing |
 
 ## Client SDKs
 

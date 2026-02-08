@@ -80,6 +80,13 @@ pub fn start_scheduler(
                 }
             }
 
+            // Promote orphaned blocked jobs every 10 ticks (DAG safety net)
+            if tick_count % 10 == 0 {
+                if let Err(e) = manager.promote_orphaned_blocked_jobs().await {
+                    warn!(error = %e, "Orphaned blocked job promotion failed");
+                }
+            }
+
             // Retention cleanup every 60 ticks (~1 minute at 1s tick)
             if tick_count % 60 == 0 {
                 if let Err(e) = manager

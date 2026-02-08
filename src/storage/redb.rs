@@ -642,6 +642,7 @@ impl StorageBackend for RedbStorage {
                 completed: count_for_state(JobState::Completed)?,
                 failed: count_for_state(JobState::Failed)?,
                 dlq: count_for_state(JobState::Dlq)?,
+                blocked: count_for_state(JobState::Blocked)?,
             };
 
             // Keep compatibility with callers expecting non-negative counters.
@@ -651,6 +652,7 @@ impl StorageBackend for RedbStorage {
                 && counts.completed == 0
                 && counts.failed == 0
                 && counts.dlq == 0
+                && counts.blocked == 0
             {
                 counts = QueueCounts::default();
             }
@@ -1120,6 +1122,25 @@ impl StorageBackend for RedbStorage {
                 }
                 None => Ok(None),
             }
+        })
+        .await
+    }
+
+    async fn get_jobs_by_flow_id(&self, flow_id: &str) -> Result<Vec<Job>> {
+        let flow_id = flow_id.to_string();
+        self.run_blocking("get_jobs_by_flow_id", move |db| {
+            let read_txn = db.begin_read()?;
+            let jobs_table = read_txn.open_table(JOBS_TABLE)?;
+            let mut result = Vec::new();
+            for entry in jobs_table.iter()? {
+                let (_, value) = entry?;
+                let job: Job = serde_json::from_slice(value.value())
+                    .context("failed to deserialize job for flow_id lookup")?;
+                if job.flow_id.as_deref() == Some(flow_id.as_str()) {
+                    result.push(job);
+                }
+            }
+            Ok(result)
         })
         .await
     }

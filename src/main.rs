@@ -348,13 +348,29 @@ async fn main() -> anyhow::Result<()> {
             // 5. Create QueueManager with storage and event sender
             let queue_manager = Arc::new(
                 rustqueue::engine::queue::QueueManager::new(storage)
-                    .with_event_sender(event_tx.clone()),
+                    .with_event_sender(event_tx.clone())
+                    .with_max_dag_depth(config.jobs.max_dag_depth),
             );
 
             // 6. Install Prometheus metrics recorder
             let metrics_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
                 .install_recorder()
                 .expect("failed to install Prometheus recorder");
+
+            // 6b. Optionally create webhook manager and start dispatcher
+            let webhook_manager = if config.webhooks.enabled {
+                let mgr = Arc::new(
+                    rustqueue::engine::webhook::WebhookManager::new(config.webhooks.clone()),
+                );
+                let _webhook_handle = rustqueue::engine::webhook::start_webhook_dispatcher(
+                    Arc::clone(&mgr),
+                    event_tx.subscribe(),
+                );
+                info!("Webhook dispatcher started");
+                Some(mgr)
+            } else {
+                None
+            };
 
             // 7. Build HTTP app state and router
             let state = Arc::new(rustqueue::api::AppState {
@@ -364,6 +380,7 @@ async fn main() -> anyhow::Result<()> {
                 event_tx: event_tx.clone(),
                 auth_config: config.auth.clone(),
                 auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
+                webhook_manager,
             });
             let app = rustqueue::api::router(state);
 

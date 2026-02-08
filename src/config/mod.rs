@@ -33,6 +33,8 @@ pub struct RustQueueConfig {
     pub metrics: MetricsConfig,
     #[serde(default)]
     pub tls: TlsConfig,
+    #[serde(default)]
+    pub webhooks: crate::engine::webhook::WebhookConfig,
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +236,9 @@ pub struct JobsConfig {
     /// How long a job can be active without a heartbeat before it is considered stalled.
     #[serde(default = "default_stall_timeout_ms")]
     pub stall_timeout_ms: u64,
+    /// Maximum dependency chain depth for DAG flows (cycle detection).
+    #[serde(default = "default_max_dag_depth")]
+    pub max_dag_depth: usize,
 }
 
 impl Default for JobsConfig {
@@ -244,6 +249,7 @@ impl Default for JobsConfig {
             default_backoff_delay_ms: default_backoff_delay_ms(),
             default_timeout_ms: default_timeout_ms(),
             stall_timeout_ms: default_stall_timeout_ms(),
+            max_dag_depth: default_max_dag_depth(),
         }
     }
 }
@@ -262,6 +268,9 @@ fn default_timeout_ms() -> u64 {
 }
 fn default_stall_timeout_ms() -> u64 {
     30_000
+}
+fn default_max_dag_depth() -> usize {
+    10
 }
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@
 **Version:** 1.0
 **Date:** February 5, 2026
 **Updated:** February 7, 2026
-**Status:** Phase 1-7 (v0.12) Complete
+**Status:** Phase 1-8 (v0.13) Complete
 **Author:** [Your Name]
 
 ---
@@ -244,7 +244,8 @@ RustQueue is a **job queue server and task scheduler** distributed as a single b
 | **Cron scheduling** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **Retry + backoff** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ |
 | **Dead Letter Queue** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| **Job dependencies** | 🚧 (data model) | ✅ (basic) | ✅ (flows) | ❌ | ✅ (canvas) | ✅ | ❌ | ❌ |
+| **Job dependencies** | ✅ (DAG flows) | ✅ (basic) | ✅ (flows) | ❌ | ✅ (canvas) | ✅ | ❌ | ❌ |
+| **Webhooks** | ✅ (HMAC signed) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | **Rate limiting** | 🚧 (auth only) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | **Web dashboard** | ✅ (built-in) | ❌ | ❌ (paid) | ✅ | ✅ (Flower) | ✅ | ✅ | ❌ |
 | **Prometheus** | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
@@ -400,15 +401,18 @@ Tracks registered workers, their heartbeats, assigned jobs, and capacity. Detect
 4. Worker acknowledges completion or reports failure
 5. If heartbeat is missed for `stall_timeout` (default: 30s), job is returned to queue
 
-#### 7.2.4 Flow Engine — 🚧 Partial (`depends_on`, `flow_id`, `Blocked` state exist, no DAG logic)
+#### 7.2.4 Flow Engine — ✅ Implemented
 
-Manages directed acyclic graphs (DAGs) of job dependencies. A parent job only becomes eligible for execution when all its children have completed successfully.
+Manages directed acyclic graphs (DAGs) of job dependencies. A child job starts in `Blocked` state until all its parent dependencies complete successfully. On parent `ack()`, children are promoted inline (not on scheduler tick) for minimal latency.
 
 **DAG rules:**
-- Cycles are detected at submission time and rejected
-- If any child fails (exhausts retries), the parent is moved to a "blocked" state
-- Blocked parents can be manually retried once the child issue is resolved
-- Maximum DAG depth: configurable (default: 10)
+- Cycles are detected at submission time via BFS and rejected
+- If a parent goes to DLQ (exhausts retries), all Blocked children are recursively cascaded to DLQ
+- If all dependencies are already Completed when a child is pushed, it goes directly to Waiting
+- Maximum DAG depth: configurable (`max_dag_depth`, default: 10)
+- In-memory reverse index (`DashMap<JobId, Vec<JobId>>`) for O(1) child lookup
+- Scheduler safety net: every 10 ticks, promotes orphaned Blocked jobs whose deps are all Completed
+- Flow status endpoint: `GET /api/v1/flows/{flow_id}` returns all jobs + summary counts
 
 #### 7.2.5 DLQ Manager
 
@@ -473,6 +477,9 @@ pub trait StorageBackend: Send + Sync + 'static {
     async fn list_queue_names(&self) -> Result<Vec<String>>;
     async fn get_job_by_unique_key(&self, queue: &str, key: &str) -> Result<Option<Job>>;
     async fn get_active_jobs(&self) -> Result<Vec<Job>>;
+
+    // Flows
+    async fn get_jobs_by_flow_id(&self, flow_id: &str) -> Result<Vec<Job>>;
 }
 ```
 
@@ -623,15 +630,15 @@ A job progresses through the following states:
 | CRON-07 | P2 | Timezone support | Schedules can specify a timezone (default: UTC) |
 | CRON-08 | P2 | Backfill | Retroactively create jobs for missed schedule windows |
 
-### 8.5 Webhooks — 📋 Roadmap (P2, not started)
+### 8.5 Webhooks — ✅ Implemented (v0.13)
 
 | ID | Priority | Requirement | Description |
 |---|---|---|---|
-| WH-01 | P2 | Register webhook | Add an HTTP callback URL for job events |
-| WH-02 | P2 | Event filtering | Filter webhook triggers by queue, event type, and tags |
-| WH-03 | P2 | Retry delivery | Retry failed webhook deliveries with exponential backoff |
-| WH-04 | P2 | Webhook signing | HMAC-SHA256 signature on webhook payloads for verification |
-| WH-05 | P2 | Webhook management | List, update, and delete webhooks via API |
+| WH-01 | P2 | Register webhook | ✅ `POST /api/v1/webhooks` with URL, events, queues, secret |
+| WH-02 | P2 | Event filtering | ✅ Filter by event type (JobPushed/Completed/Failed/Dlq/Cancelled/Progress) and queue |
+| WH-03 | P2 | Retry delivery | ✅ 3 retries with exponential backoff (1s, 2s, 4s) |
+| WH-04 | P2 | Webhook signing | ✅ HMAC-SHA256 via `hmac` + `sha2` crates, `X-RustQueue-Signature` header |
+| WH-05 | P2 | Webhook management | ✅ List, get, delete via HTTP API + TCP commands |
 
 ### 8.6 Worker Management — 🚧 Partial (heartbeat + stall detection implemented)
 
@@ -1055,8 +1062,8 @@ RustQueue is **protocol-first**. The HTTP REST API and TCP protocol are the prim
 | **Rust** (embedded library) | P0 | ✅ Shipped | `src/builder.rs` — `RustQueue::memory()`, `::redb()`, `::hybrid()` |
 | **TypeScript/JavaScript** | P0 | ✅ Shipped | `sdk/node/` — HTTP + TCP clients, zero deps, ESM/CJS |
 | **Python** | P1 | ✅ Shipped | `sdk/python/` — HTTP client, stdlib-only, Python >= 3.8 |
-| **Go** | P1 | ⬜ Planned | DevOps/infrastructure audience |
-| **OpenAPI spec** | P0 | ⬜ Planned | Enables auto-generated clients for any language |
+| **Go** | P1 | ✅ Shipped | `sdk/go/` — HTTP + TCP clients, zero deps, Go >= 1.21 |
+| **OpenAPI spec** | P0 | ✅ Shipped | `src/api/openapi.rs` — OpenAPI 3.1, Scalar UI at `/api/v1/docs` |
 
 ### 12.3 SDK Design Principles
 
@@ -1441,8 +1448,8 @@ The dashboard is a static web application compiled into the RustQueue binary usi
 |---|---|---|
 | In-Memory backend | ✅ | Always compiled, ideal for tests and ephemeral queues |
 | SQLite backend | ✅ | WAL mode, `json_extract()` queries, behind `sqlite` feature |
-| PostgreSQL backend | 🚧 | `SELECT FOR UPDATE SKIP LOCKED`, hybrid schema, behind `postgres` feature — config + trait defined, runtime error |
-| Generic test harness | ✅ | `backend_tests!` macro — 18 canonical tests × N backends |
+| PostgreSQL backend | ✅ | `SELECT FOR UPDATE SKIP LOCKED`, behind `postgres` feature |
+| Generic test harness | ✅ | `backend_tests!` macro — 19 canonical tests × N backends |
 | Config-driven backend | ✅ | `storage.backend` in TOML selects redb/memory/sqlite/postgres |
 | RustQueue builder | ✅ | `RustQueue::memory().build()` / `RustQueue::redb(path).build()` for embeddable use |
 | Custom job IDs | ✅ | `JobOptions.custom_id` for idempotency |
@@ -1595,7 +1602,31 @@ The dashboard is a static web application compiled into the RustQueue binary usi
 
 **Exit criteria:** ✅ RustQueue beats RabbitMQ on produce (1.2x), consume (5.3x), and end-to-end (5.1x). Consume bottleneck eliminated.
 
-### Phase 8: Distributed Mode (v0.5) — Weeks 37-46
+### Phase 8: Webhooks & DAG Flows (v0.13) — Weeks 37-38 ✅ COMPLETE
+
+**Goal:** Event-driven integrations via webhooks and job dependency graphs for multi-step workflows.
+
+| Deliverable | Status | Description |
+|---|---|---|
+| WebhookManager | ✅ | In-memory DashMap storage, HMAC-SHA256 signing, retry delivery with exponential backoff |
+| Webhook HTTP API | ✅ | `POST/GET/DELETE /api/v1/webhooks` — register, list, get, delete |
+| Webhook TCP commands | ✅ | `webhook_create`, `webhook_list`, `webhook_delete` |
+| Webhook event dispatch | ✅ | Background task subscribes to broadcast channel, matches events to webhooks, delivers with retries |
+| Webhook events | ✅ | JobPushed, JobCompleted, JobFailed, JobDlq, JobCancelled, JobProgress |
+| DAG dependency resolution | ✅ | `depends_on: Vec<JobId>` on Job, inline promotion on `ack()`, Blocked→Waiting |
+| BFS cycle detection | ✅ | Detects cycles at push time, configurable `max_dag_depth` (default: 10) |
+| Cascade DLQ failure | ✅ | Parent DLQ → recursive cascade of Blocked children to DLQ via `Box::pin()` |
+| Flow status endpoint | ✅ | `GET /api/v1/flows/{flow_id}` — all jobs + summary counts |
+| Scheduler safety net | ✅ | Every 10 ticks, promote orphaned Blocked jobs whose deps are all Completed |
+| `get_jobs_by_flow_id` | ✅ | Added to StorageBackend trait (24 methods), implemented in all backends |
+| Go SDK | ✅ | HTTP + TCP clients, 23 tests, 2 examples, `AckBatch` support (`sdk/go/`) |
+| OpenAPI spec | ✅ | OpenAPI 3.1 with 21 endpoints, 36 schemas, Scalar UI at `/api/v1/docs` |
+
+**Phase 8 stats:** 249+ tests passing. StorageBackend trait expanded to 24 async methods. 3 client SDKs (Node.js, Python, Go).
+
+**Exit criteria:** ✅ Webhooks fire on job lifecycle events with HMAC signing. DAG flows resolve dependencies inline on ack. Cascade failure propagates to all blocked children. Go SDK and OpenAPI spec complete.
+
+### Phase 9: Distributed Mode (v0.5) — Weeks 39-48
 
 **Goal:** High-availability cluster mode.
 
@@ -1631,7 +1662,7 @@ Stabilize APIs, write migration guides, achieve production use at 3+ organizatio
 
 ### 18.2 Technical Metrics
 
-| Metric | Target | Current (v0.12) | Status |
+| Metric | Target | Current (v0.13) | Status |
 |---|---|---|---|
 | Throughput (push, hybrid TCP batch_size=50) | ≥ 50,000 jobs/sec | **~43,494/sec** | Within 1.15x |
 | Throughput (push, hybrid TCP batch_size=1) | ≥ 30,000 jobs/sec | **~23,382/sec** | Within 1.3x |
@@ -1647,8 +1678,8 @@ Stabilize APIs, write migration guides, achieve production use at 3+ organizatio
 | Binary size | < 15 MB | 6.8 MB | PASS |
 | Memory usage (idle) | < 20 MB | ~15 MB | PASS |
 | Startup time | < 500 ms | ~10 ms | PASS |
-| Test coverage | > 80% | 212+ tests | OK |
-| Client SDKs | 2 | Node.js + Python | PASS |
+| Test coverage | > 80% | 249+ tests | OK |
+| Client SDKs | 3 | Node.js + Python + Go | PASS |
 | Input validation | Complete | All fields validated | PASS |
 | Zero CVEs | Continuous | 0 | PASS |
 

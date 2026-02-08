@@ -202,6 +202,7 @@ pub fn routes() -> Router<Arc<AppState>> {
         .route("/api/v1/jobs/{id}/cancel", post(cancel_job))
         .route("/api/v1/jobs/{id}/progress", post(update_progress))
         .route("/api/v1/jobs/{id}/heartbeat", post(heartbeat_job))
+        .route("/api/v1/flows/{flow_id}", get(get_flow_status))
 }
 
 // ── Handlers ────────────────────────────────────────────────────────────────
@@ -463,4 +464,72 @@ async fn get_dlq_jobs(
 
 fn build_options(opts: JobOptions) -> JobOptions {
     opts
+}
+
+// ── Flow status ─────────────────────────────────────────────────────────────
+
+#[derive(Serialize, ToSchema)]
+struct FlowStatusResponse {
+    ok: bool,
+    flow_id: String,
+    jobs: Vec<Job>,
+    summary: FlowSummary,
+}
+
+#[derive(Serialize, ToSchema)]
+struct FlowSummary {
+    total: usize,
+    waiting: usize,
+    active: usize,
+    blocked: usize,
+    completed: usize,
+    failed: usize,
+    dlq: usize,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/flows/{flow_id}",
+    tag = "Flows",
+    params(("flow_id" = String, Path, description = "Flow identifier")),
+    responses(
+        (status = 200, description = "Flow status with all jobs", body = FlowStatusResponse),
+    )
+)]
+async fn get_flow_status(
+    State(state): State<Arc<AppState>>,
+    Path(flow_id): Path<String>,
+) -> Result<Json<FlowStatusResponse>, ApiError> {
+    let jobs = state.queue_manager.get_flow_jobs(&flow_id).await?;
+
+    let mut summary = FlowSummary {
+        total: jobs.len(),
+        waiting: 0,
+        active: 0,
+        blocked: 0,
+        completed: 0,
+        failed: 0,
+        dlq: 0,
+    };
+
+    for job in &jobs {
+        match job.state {
+            crate::engine::models::JobState::Waiting | crate::engine::models::JobState::Created => {
+                summary.waiting += 1
+            }
+            crate::engine::models::JobState::Active => summary.active += 1,
+            crate::engine::models::JobState::Blocked => summary.blocked += 1,
+            crate::engine::models::JobState::Completed => summary.completed += 1,
+            crate::engine::models::JobState::Failed => summary.failed += 1,
+            crate::engine::models::JobState::Dlq => summary.dlq += 1,
+            _ => {}
+        }
+    }
+
+    Ok(Json(FlowStatusResponse {
+        ok: true,
+        flow_id,
+        jobs,
+        summary,
+    }))
 }

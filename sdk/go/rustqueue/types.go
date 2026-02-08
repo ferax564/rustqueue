@@ -132,6 +132,7 @@ type QueueCounts struct {
 	Completed int `json:"completed"`
 	Failed    int `json:"failed"`
 	Dlq       int `json:"dlq"`
+	Blocked   int `json:"blocked"`
 }
 
 // QueueInfo contains high-level information about a single queue.
