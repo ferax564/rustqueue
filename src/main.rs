@@ -290,17 +290,15 @@ async fn main() -> anyhow::Result<()> {
                             rustqueue::storage::RedbDurability::Eventual
                         }
                     };
-                    let redb: Arc<dyn rustqueue::storage::StorageBackend> =
-                        Arc::new(rustqueue::storage::RedbStorage::new_with_durability(
-                            &db_path, durability,
-                        )?);
+                    let redb: Arc<dyn rustqueue::storage::StorageBackend> = Arc::new(
+                        rustqueue::storage::RedbStorage::new_with_durability(&db_path, durability)?,
+                    );
                     let hybrid_config = rustqueue::storage::HybridConfig {
                         snapshot_interval_ms: config.storage.hybrid_snapshot_interval_ms,
                         max_dirty_before_flush: config.storage.hybrid_max_dirty,
                     };
-                    let s: Arc<dyn rustqueue::storage::StorageBackend> = Arc::new(
-                        rustqueue::storage::HybridStorage::new(redb, hybrid_config),
-                    );
+                    let s: Arc<dyn rustqueue::storage::StorageBackend> =
+                        Arc::new(rustqueue::storage::HybridStorage::new(redb, hybrid_config));
                     info!(
                         path = %db_path.display(),
                         snapshot_interval_ms = config.storage.hybrid_snapshot_interval_ms,
@@ -352,16 +350,23 @@ async fn main() -> anyhow::Result<()> {
                     .with_max_dag_depth(config.jobs.max_dag_depth),
             );
 
-            // 6. Install Prometheus metrics recorder
-            let metrics_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
-                .install_recorder()
-                .expect("failed to install Prometheus recorder");
+            // 6. Install the default Prometheus recorder unless one is already
+            // configured by an embedding/host platform.
+            let metrics_registry =
+                rustqueue::metrics_registry::MetricsRegistry::install_default_prometheus_if_unset(
+                )?;
+            let metrics_handle = metrics_registry.prometheus_handle();
+            if metrics_handle.is_some() {
+                info!("Prometheus metrics recorder installed");
+            } else {
+                info!("Using externally configured global metrics recorder");
+            }
 
             // 6b. Optionally create webhook manager and start dispatcher
             let webhook_manager = if config.webhooks.enabled {
-                let mgr = Arc::new(
-                    rustqueue::engine::webhook::WebhookManager::new(config.webhooks.clone()),
-                );
+                let mgr = Arc::new(rustqueue::engine::webhook::WebhookManager::new(
+                    config.webhooks.clone(),
+                ));
                 let _webhook_handle = rustqueue::engine::webhook::start_webhook_dispatcher(
                     Arc::clone(&mgr),
                     event_tx.subscribe(),
@@ -376,7 +381,7 @@ async fn main() -> anyhow::Result<()> {
             let state = Arc::new(rustqueue::api::AppState {
                 queue_manager: Arc::clone(&queue_manager),
                 start_time: std::time::Instant::now(),
-                metrics_handle: Some(metrics_handle),
+                metrics_handle,
                 event_tx: event_tx.clone(),
                 auth_config: config.auth.clone(),
                 auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),

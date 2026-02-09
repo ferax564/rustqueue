@@ -9,8 +9,12 @@ A high-performance distributed job queue and task scheduler written in Rust. Zer
 - **Zero dependencies** — No Redis, no PostgreSQL, no message broker. Just one binary.
 - **Single binary deployment** — Download, run, done.
 - **Multiple storage backends** — redb (default), hybrid memory+disk, SQLite, PostgreSQL, or in-memory
+- **Job metadata** — Attach arbitrary orchestration context (workflow_id, step_id, artifact_ref) that survives the full lifecycle
 - **Job queuing** with priorities, delays, FIFO/LIFO ordering
 - **DAG workflows** — Job dependencies with `depends_on`, cycle detection, cascade failure, and flow status tracking
+- **Workflow runtime primitives** — `WorkflowStep` trait + ordered execution with sequential and fan-out/fan-in stages
+- **Plugin worker registry** — Register engine-backed worker factories and route jobs by queue or `metadata.engine`
+- **Cross-engine job chaining** — Auto-enqueue follow-up jobs via `metadata.follow_ups` when parent jobs complete
 - **Webhooks** — HTTP callbacks with HMAC-SHA256 signing, event/queue filtering, and retry delivery
 - **Cron & interval scheduling** — Full schedule engine with cron expressions and interval-based execution
 - **Automatic retries** with configurable backoff (fixed, linear, exponential)
@@ -22,9 +26,11 @@ A high-performance distributed job queue and task scheduler written in Rust. Zer
 - **Input validation** — Payload size limits, name sanitization, length restrictions
 - **Real-time events** via WebSocket at `/api/v1/events`
 - **Comprehensive Prometheus metrics** — 15+ metrics: counters, gauges (per-queue depth), histograms (latency)
+- **External metrics integration** — Use an externally installed `metrics::Recorder` for shared platform registries
 - **OpenTelemetry** integration (optional, `--features otel`)
 - **Grafana dashboard** — Pre-built dashboard JSON with starter Prometheus + Grafana stack
 - **Bearer token authentication** — HTTP middleware + TCP connection-level auth
+- **Shared auth validation core** — HTTP and TCP auth paths use the same bearer-token validator
 - **Auth rate limiting** — 5 failed attempts = 5-minute lockout per IP
 - **TLS for TCP** — `rustls`-based encryption (optional, `--features tls`)
 - **Graceful shutdown** — Connection draining with 30s timeout on `Ctrl+C`
@@ -51,6 +57,11 @@ rustqueue serve
 curl -X POST http://localhost:6790/api/v1/queues/emails/jobs \
   -H "Content-Type: application/json" \
   -d '{"name": "send-welcome", "data": {"to": "user@example.com"}}'
+
+# Push a job with orchestration metadata
+curl -X POST http://localhost:6790/api/v1/queues/build/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"name": "compile", "data": {"repo": "acme/app"}, "options": {"metadata": {"workflow_id": "wf-1", "step_id": "build"}}}'
 
 # Push a job (CLI)
 rustqueue push --queue emails --name send-welcome --data '{"to": "user@example.com"}'
@@ -305,12 +316,52 @@ async fn main() -> anyhow::Result<()> {
     let jobs = rq.pull("emails", 1).await?;
     for job in &jobs {
         // do work...
-        rq.ack(job.id).await?;
+        rq.ack(job.id, None).await?;
     }
 
     Ok(())
 }
 ```
+
+## ForgePipe Integration Primitives
+
+### Workflow Step Abstraction
+
+`rustqueue::Workflow` and `rustqueue::WorkflowStep` provide ordered workflow execution with data piping between steps and optional fan-out/fan-in joins.
+
+### Plugin Worker Routing
+
+Use `WorkerRegistry` to register engine-specific worker factories at startup, then attach it with `RustQueueBuilder::with_worker_registry(...)`. Jobs can be routed by queue mapping or overridden per job with `metadata.engine`.
+
+### Cross-engine Chaining
+
+Attach follow-up jobs in `metadata.follow_ups`; RustQueue enqueues them automatically when the parent is acknowledged:
+
+```json
+{
+  "name": "document-extract",
+  "data": {"doc_id": "d-1"},
+  "options": {
+    "flow_id": "forgepipe-run-001",
+    "metadata": {
+      "workflow_id": "forgepipe-run-001",
+      "follow_ups": [
+        {
+          "queue": "image-process",
+          "name": "render-pages",
+          "data": {"doc_id": "d-1"}
+        }
+      ]
+    }
+  }
+}
+```
+
+Follow-up jobs inherit `flow_id`, are linked to the parent via `depends_on`, and can continue chaining across queues.
+
+### Shared Metrics Registry
+
+Use `MetricsRegistry` when running RustQueue inside a larger platform where another subsystem owns global metrics recorder setup.
 
 ## Feature Flags
 
@@ -412,13 +463,14 @@ All three SDKs support: push, pull, ack, fail, cancel, progress, heartbeat, batc
 
 ## Roadmap Priorities (2026)
 
-- **P0:** phase 6 distributed mode (Raft/failover) and ForgePipe workflow metadata primitives.
-- **P1:** phase 5b throughput backlog (hybrid memory+disk, sharding path) and batch-first client paths.
-- **P2:** post-v1 multi-tenant controls, audit log, and flow-builder UX.
+- **Phase A complete (2026-02-08):** RQ-A1 (workflow metadata) and RQ-A2 (orchestration API stability) shipped. ForgePipe integration unblocked.
+- **P0:** Phase 6 distributed mode (Raft/failover).
+- **P1:** Phase 5b throughput backlog (hybrid memory+disk, sharding path) and batch-first client paths.
+- **P2:** Post-v1 multi-tenant controls, audit log, and flow-builder UX.
 
 RustQueue is the organization scheduler and orchestration spine for ForgePipe and engine workflows.
 
-See `ROADMAP.md` for the synchronized project roadmap.
+See `ROADMAP.md` for the synchronized project roadmap and `docs/orchestration-api.md` for the orchestration API reference.
 
 ## Development
 

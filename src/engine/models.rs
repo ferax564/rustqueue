@@ -95,6 +95,10 @@ pub struct Job {
     pub tags: Vec<String>,
     pub group_id: Option<String>,
 
+    // Orchestration metadata (arbitrary JSON, separate from job data payload)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+
     // Dependencies
     #[schema(value_type = Vec<String>)]
     pub depends_on: Vec<JobId>,
@@ -140,6 +144,7 @@ impl Job {
             unique_key: None,
             tags: Vec::new(),
             group_id: None,
+            metadata: None,
             depends_on: Vec::new(),
             flow_id: None,
             lifo: false,

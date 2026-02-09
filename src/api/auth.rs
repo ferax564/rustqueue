@@ -20,6 +20,7 @@ use axum::response::{IntoResponse, Response};
 use dashmap::DashMap;
 
 use crate::api::{AppState, ErrorDetail, ErrorResponse};
+use crate::auth::validate_bearer_header;
 
 /// Maximum auth failures before lockout.
 const MAX_AUTH_FAILURES: u32 = 5;
@@ -158,38 +159,23 @@ pub async fn auth_middleware(
         }
     }
 
-    // Extract the Authorization header.
     let auth_header = request
         .headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
 
-    match auth_header {
-        Some(header_value) if header_value.starts_with("Bearer ") => {
-            let token = &header_value[7..]; // Skip "Bearer "
-            if state.auth_config.tokens.iter().any(|t| t == token) {
-                if let Some(ip) = client_ip {
-                    state.auth_rate_limiter.record_success(&ip);
-                }
-                next.run(request).await
-            } else {
-                if let Some(ip) = client_ip {
-                    state.auth_rate_limiter.record_failure(ip);
-                }
-                unauthorized_response("Invalid bearer token")
+    match validate_bearer_header(auth_header, &state.auth_config.tokens) {
+        Ok(()) => {
+            if let Some(ip) = client_ip {
+                state.auth_rate_limiter.record_success(&ip);
             }
+            next.run(request).await
         }
-        Some(_) => {
+        Err(err) => {
             if let Some(ip) = client_ip {
                 state.auth_rate_limiter.record_failure(ip);
             }
-            unauthorized_response("Authorization header must use Bearer scheme")
-        }
-        None => {
-            if let Some(ip) = client_ip {
-                state.auth_rate_limiter.record_failure(ip);
-            }
-            unauthorized_response("Missing Authorization header")
+            unauthorized_response(err.message())
         }
     }
 }

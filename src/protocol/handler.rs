@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, warn};
 
+use crate::auth::validate_bearer_token;
 use crate::config::AuthConfig;
 use crate::engine::models::Schedule;
 use crate::engine::queue::{BatchAckItem, BatchPushItem, JobOptions, QueueManager};
@@ -137,7 +138,7 @@ fn process_auth_line(line: &str, auth_config: &AuthConfig, authenticated: &mut b
         }
     };
 
-    if auth_config.tokens.contains(&token.to_string()) {
+    if validate_bearer_token(token, &auth_config.tokens).is_ok() {
         *authenticated = true;
         json!({"ok": true})
     } else {

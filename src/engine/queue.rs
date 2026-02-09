@@ -10,12 +10,13 @@ use chrono::{DateTime, Duration, Utc};
 use dashmap::{DashMap, DashSet};
 use serde::{Deserialize, Serialize};
 
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::api::websocket::JobEvent;
 use crate::engine::error::RustQueueError;
 use crate::engine::metrics as metric_names;
 use crate::engine::models::{BackoffStrategy, Job, JobId, JobState, QueueCounts, Schedule};
+use crate::engine::plugins::WorkerRegistry;
 use crate::storage::{CompleteJobOutcome, StorageBackend};
 
 // ── Validation constants ─────────────────────────────────────────────────────
@@ -30,6 +31,10 @@ pub const MAX_JOB_DATA_SIZE: usize = 1_048_576;
 pub const MAX_UNIQUE_KEY_LEN: usize = 1024;
 /// Maximum length of an error message in bytes (10 KB).
 pub const MAX_ERROR_MESSAGE_LEN: usize = 10_240;
+/// Maximum size of job metadata in bytes (64 KB).
+pub const MAX_METADATA_SIZE: usize = 65_536;
+/// Reserved metadata key used for automatic cross-queue follow-up jobs.
+const FOLLOW_UPS_METADATA_KEY: &str = "follow_ups";
 
 /// Estimate the JSON-serialized byte size of a `serde_json::Value` without allocating.
 ///
@@ -101,9 +106,7 @@ fn validate_push_input(
     let estimated_size = estimate_json_size(data);
     if estimated_size > MAX_JOB_DATA_SIZE {
         // Near the limit — do the exact check
-        let data_size = serde_json::to_string(data)
-            .map(|s| s.len())
-            .unwrap_or(0);
+        let data_size = serde_json::to_string(data).map(|s| s.len()).unwrap_or(0);
         if data_size > MAX_JOB_DATA_SIZE {
             return Err(RustQueueError::ValidationError(format!(
                 "Job data payload ({data_size} bytes) exceeds maximum of {MAX_JOB_DATA_SIZE} bytes"
@@ -111,13 +114,24 @@ fn validate_push_input(
         }
     }
 
-    // Unique key
+    // Unique key and metadata
     if let Some(opts) = opts {
         if let Some(uk) = &opts.unique_key {
             if uk.len() > MAX_UNIQUE_KEY_LEN {
                 return Err(RustQueueError::ValidationError(format!(
                     "Unique key exceeds maximum length of {MAX_UNIQUE_KEY_LEN} bytes"
                 )));
+            }
+        }
+        if let Some(ref meta) = opts.metadata {
+            let estimated_size = estimate_json_size(meta);
+            if estimated_size > MAX_METADATA_SIZE {
+                let meta_size = serde_json::to_string(meta).map(|s| s.len()).unwrap_or(0);
+                if meta_size > MAX_METADATA_SIZE {
+                    return Err(RustQueueError::ValidationError(format!(
+                        "Job metadata ({meta_size} bytes) exceeds maximum of {MAX_METADATA_SIZE} bytes"
+                    )));
+                }
             }
         }
     }
@@ -144,10 +158,28 @@ pub struct JobOptions {
     pub remove_on_complete: Option<bool>,
     pub remove_on_fail: Option<bool>,
     pub custom_id: Option<String>,
+    /// Arbitrary orchestration metadata (separate from job data payload).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
     /// Parent job IDs that must complete before this job becomes Waiting.
     #[schema(value_type = Option<Vec<String>>)]
     pub depends_on: Option<Vec<JobId>>,
     /// Flow identifier grouping related jobs in a DAG.
+    pub flow_id: Option<String>,
+}
+
+/// Metadata-driven follow-up job descriptor for cross-engine chaining.
+///
+/// Stored under `metadata.follow_ups` on a parent job.
+#[derive(Debug, Clone, Deserialize)]
+struct FollowUpJobSpec {
+    pub queue: String,
+    pub name: String,
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
+    #[serde(default)]
+    pub options: Option<JobOptions>,
+    #[serde(default)]
     pub flow_id: Option<String>,
 }
 
@@ -205,6 +237,8 @@ pub struct QueueManager {
     dependency_index: DashMap<JobId, Vec<JobId>>,
     /// Maximum depth for DAG dependency chains (cycle detection).
     max_dag_depth: usize,
+    /// Optional registry for pluggable workers, keyed by engine.
+    worker_registry: Option<Arc<WorkerRegistry>>,
 }
 
 impl QueueManager {
@@ -216,6 +250,7 @@ impl QueueManager {
             paused_queues: DashSet::new(),
             dependency_index: DashMap::new(),
             max_dag_depth: 10,
+            worker_registry: None,
         }
     }
 
@@ -232,6 +267,14 @@ impl QueueManager {
     /// Must be called **before** wrapping the manager in `Arc`.
     pub fn with_max_dag_depth(mut self, depth: usize) -> Self {
         self.max_dag_depth = depth;
+        self
+    }
+
+    /// Attach a pluggable worker registry for cross-engine dispatch.
+    ///
+    /// Must be called **before** wrapping the manager in `Arc`.
+    pub fn with_worker_registry(mut self, registry: Arc<WorkerRegistry>) -> Self {
+        self.worker_registry = Some(registry);
         self
     }
 
@@ -290,6 +333,9 @@ impl QueueManager {
             }
             if let Some(cid) = opts.custom_id {
                 job.custom_id = Some(cid);
+            }
+            if let Some(meta) = opts.metadata {
+                job.metadata = Some(meta);
             }
             if let Some(deps) = opts.depends_on {
                 if !deps.is_empty() {
@@ -387,14 +433,12 @@ impl QueueManager {
 
         // Populate reverse dependency index
         for &parent_id in &job.depends_on {
-            self.dependency_index
-                .entry(parent_id)
-                .or_default()
-                .push(id);
+            self.dependency_index.entry(parent_id).or_default().push(id);
         }
 
         metrics::counter!(metric_names::JOBS_PUSHED_TOTAL).increment(1);
-        metrics::histogram!(metric_names::PUSH_DURATION_SECONDS).record(start.elapsed().as_secs_f64());
+        metrics::histogram!(metric_names::PUSH_DURATION_SECONDS)
+            .record(start.elapsed().as_secs_f64());
 
         self.emit_event("job.pushed", id, queue);
 
@@ -486,9 +530,59 @@ impl QueueManager {
             metrics::counter!(metric_names::JOBS_PULLED_TOTAL).increment(jobs.len() as u64);
         }
 
-        metrics::histogram!(metric_names::PULL_DURATION_SECONDS).record(start.elapsed().as_secs_f64());
+        metrics::histogram!(metric_names::PULL_DURATION_SECONDS)
+            .record(start.elapsed().as_secs_f64());
 
         Ok(jobs)
+    }
+
+    /// Pull one job from a queue and dispatch it to a registered engine worker.
+    ///
+    /// The worker is resolved from `metadata.engine` first, then queue routing
+    /// rules in the attached [`WorkerRegistry`]. On success, the job is acked.
+    /// On processor error, the job is failed through normal retry/DLQ logic.
+    pub async fn dispatch_next_with_registered_worker(
+        &self,
+        queue: &str,
+    ) -> Result<Option<JobId>, RustQueueError> {
+        let registry = self.worker_registry.as_ref().ok_or_else(|| {
+            RustQueueError::ValidationError("Worker registry is not configured".to_string())
+        })?;
+
+        let mut jobs = self.pull(queue, 1).await?;
+        let Some(job) = jobs.pop() else {
+            return Ok(None);
+        };
+
+        let worker = registry
+            .resolve_worker(&job.queue, job.metadata.as_ref())?
+            .ok_or_else(|| {
+                RustQueueError::ValidationError(format!(
+                    "No worker route matched queue '{}' (metadata.engine or queue route required)",
+                    job.queue
+                ))
+            })?;
+
+        let job_id = job.id;
+        match worker.process(job).await {
+            Ok(result) => {
+                self.ack(job_id, result).await?;
+                Ok(Some(job_id))
+            }
+            Err(process_err) => {
+                let reason = process_err.to_string();
+                if let Err(fail_err) = self.fail(job_id, &reason).await {
+                    warn!(
+                        job_id = %job_id,
+                        process_error = %process_err,
+                        fail_error = %fail_err,
+                        "worker processing failed and fail transition also failed"
+                    );
+                    return Err(fail_err);
+                }
+                Err(process_err)
+            }
+        }
     }
 
     // ── Ack ──────────────────────────────────────────────────────────────
@@ -523,12 +617,15 @@ impl QueueManager {
         };
 
         metrics::counter!(metric_names::JOBS_COMPLETED_TOTAL).increment(1);
-        metrics::histogram!(metric_names::ACK_DURATION_SECONDS).record(start.elapsed().as_secs_f64());
+        metrics::histogram!(metric_names::ACK_DURATION_SECONDS)
+            .record(start.elapsed().as_secs_f64());
 
         self.emit_event("job.completed", id, &job.queue);
 
         // Resolve dependencies: promote Blocked children whose deps are all complete.
         self.resolve_dependencies(id).await;
+        // Fan-out cross-engine follow-up jobs, if configured in metadata.
+        self.enqueue_follow_ups(&job).await;
 
         info!(job_id = %id, "Job acknowledged");
 
@@ -567,6 +664,8 @@ impl QueueManager {
                 CompleteJobOutcome::Completed(job) => {
                     completed += 1;
                     self.emit_event("job.completed", item.id, &job.queue);
+                    self.resolve_dependencies(item.id).await;
+                    self.enqueue_follow_ups(&job).await;
                     results.push(BatchAckResult {
                         id: item.id,
                         ok: true,
@@ -1317,7 +1416,11 @@ impl QueueManager {
                     if child.state != JobState::Blocked || child.queue != name {
                         continue;
                     }
-                    if self.all_deps_completed(&child.depends_on).await.unwrap_or(false) {
+                    if self
+                        .all_deps_completed(&child.depends_on)
+                        .await
+                        .unwrap_or(false)
+                    {
                         let mut child = child;
                         child.state = JobState::Waiting;
                         child.updated_at = Utc::now();
@@ -1342,6 +1445,109 @@ impl QueueManager {
             .get_jobs_by_flow_id(flow_id)
             .await
             .map_err(RustQueueError::Internal)
+    }
+
+    /// Parse follow-up descriptors from `job.metadata.follow_ups`.
+    fn extract_follow_up_specs(job: &Job) -> Result<Vec<FollowUpJobSpec>, RustQueueError> {
+        let Some(metadata) = job.metadata.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let Some(raw_specs) = metadata.get(FOLLOW_UPS_METADATA_KEY) else {
+            return Ok(Vec::new());
+        };
+
+        serde_json::from_value::<Vec<FollowUpJobSpec>>(raw_specs.clone()).map_err(|e| {
+            RustQueueError::ValidationError(format!(
+                "Invalid metadata.{FOLLOW_UPS_METADATA_KEY} on job '{}': {e}",
+                job.id
+            ))
+        })
+    }
+
+    /// Prepare metadata to inherit into follow-up jobs, excluding follow-up config itself.
+    fn inherited_metadata_without_follow_ups(job: &Job) -> Option<serde_json::Value> {
+        let mut inherited = job.metadata.clone()?;
+        if let serde_json::Value::Object(ref mut map) = inherited {
+            map.remove(FOLLOW_UPS_METADATA_KEY);
+            if map.is_empty() {
+                return None;
+            }
+        }
+        Some(inherited)
+    }
+
+    /// Enqueue follow-up jobs after a parent job completes.
+    ///
+    /// Follow-ups are declared in `metadata.follow_ups` and are linked to the
+    /// parent via `depends_on` and inherited `flow_id`.
+    async fn enqueue_follow_ups(&self, parent_job: &Job) {
+        let specs = match Self::extract_follow_up_specs(parent_job) {
+            Ok(specs) => specs,
+            Err(err) => {
+                warn!(
+                    parent_job_id = %parent_job.id,
+                    error = %err,
+                    "ignoring invalid follow-up metadata"
+                );
+                return;
+            }
+        };
+
+        if specs.is_empty() {
+            return;
+        }
+
+        let inherited_metadata = Self::inherited_metadata_without_follow_ups(parent_job);
+        for spec in specs {
+            let mut options = spec.options.unwrap_or_default();
+
+            match options.depends_on.as_mut() {
+                Some(deps) => {
+                    if !deps.contains(&parent_job.id) {
+                        deps.push(parent_job.id);
+                    }
+                }
+                None => options.depends_on = Some(vec![parent_job.id]),
+            }
+
+            if options.flow_id.is_none() {
+                options.flow_id = spec.flow_id.clone().or_else(|| parent_job.flow_id.clone());
+            }
+
+            if options.metadata.is_none() {
+                options.metadata = inherited_metadata.clone();
+            }
+
+            let data = spec.data.unwrap_or_else(|| {
+                parent_job
+                    .result
+                    .clone()
+                    .unwrap_or_else(|| serde_json::json!({}))
+            });
+
+            match self
+                .push(&spec.queue, &spec.name, data, Some(options))
+                .await
+            {
+                Ok(child_id) => {
+                    info!(
+                        parent_job_id = %parent_job.id,
+                        child_job_id = %child_id,
+                        queue = %spec.queue,
+                        "Enqueued follow-up job"
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        parent_job_id = %parent_job.id,
+                        queue = %spec.queue,
+                        name = %spec.name,
+                        error = %err,
+                        "Failed to enqueue follow-up job"
+                    );
+                }
+            }
+        }
     }
 
     // ── Private helpers ──────────────────────────────────────────────────
@@ -2191,10 +2397,7 @@ mod tests {
         // Create a JSON value larger than 1MB
         let big_str = "x".repeat(super::MAX_JOB_DATA_SIZE + 1);
         let data = json!({"huge": big_str});
-        let err = mgr
-            .push("queue", "job", data, None)
-            .await
-            .unwrap_err();
+        let err = mgr.push("queue", "job", data, None).await.unwrap_err();
         match err {
             RustQueueError::ValidationError(msg) => {
                 assert!(msg.contains("payload"), "got: {msg}");
@@ -2226,10 +2429,7 @@ mod tests {
     #[tokio::test]
     async fn test_fail_validates_error_message_length() {
         let mgr = temp_manager();
-        let id = mgr
-            .push("work", "process", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("work", "process", json!({}), None).await.unwrap();
         mgr.pull("work", 1).await.unwrap();
 
         let long_error = "e".repeat(super::MAX_ERROR_MESSAGE_LEN + 1);
@@ -2265,10 +2465,7 @@ mod tests {
         mgr.pause_queue("emails");
         mgr.resume_queue("emails");
 
-        let id = mgr
-            .push("emails", "send", json!({}), None)
-            .await
-            .unwrap();
+        let id = mgr.push("emails", "send", json!({}), None).await.unwrap();
         let job = mgr.get_job(id).await.unwrap().expect("job should exist");
         assert_eq!(job.queue, "emails");
     }

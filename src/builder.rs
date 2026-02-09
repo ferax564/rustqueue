@@ -19,8 +19,12 @@ use std::sync::Arc;
 
 use crate::engine::error::RustQueueError;
 use crate::engine::models::{Job, JobId, QueueCounts};
+use crate::engine::plugins::WorkerRegistry;
 use crate::engine::queue::{FailResult, JobOptions, QueueInfo, QueueManager};
-use crate::storage::{BufferedRedbConfig, BufferedRedbStorage, HybridConfig, HybridStorage, MemoryStorage, RedbStorage, StorageBackend};
+use crate::storage::{
+    BufferedRedbConfig, BufferedRedbStorage, HybridConfig, HybridStorage, MemoryStorage,
+    RedbStorage, StorageBackend,
+};
 
 /// High-level client for RustQueue, usable as an embedded library.
 ///
@@ -40,6 +44,7 @@ pub struct RustQueueBuilder {
     storage: Arc<dyn StorageBackend>,
     buffered_config: Option<BufferedRedbConfig>,
     hybrid_config: Option<HybridConfig>,
+    worker_registry: Option<Arc<WorkerRegistry>>,
 }
 
 impl RustQueue {
@@ -52,6 +57,7 @@ impl RustQueue {
             storage: Arc::new(MemoryStorage::new()),
             buffered_config: None,
             hybrid_config: None,
+            worker_registry: None,
         }
     }
 
@@ -65,6 +71,7 @@ impl RustQueue {
             storage,
             buffered_config: None,
             hybrid_config: None,
+            worker_registry: None,
         })
     }
 
@@ -79,6 +86,7 @@ impl RustQueue {
             storage,
             buffered_config: None,
             hybrid_config: Some(HybridConfig::default()),
+            worker_registry: None,
         })
     }
 }
@@ -101,6 +109,12 @@ impl RustQueueBuilder {
         self
     }
 
+    /// Attach a worker plugin registry used for engine-specific dispatch.
+    pub fn with_worker_registry(mut self, registry: Arc<WorkerRegistry>) -> Self {
+        self.worker_registry = Some(registry);
+        self
+    }
+
     /// Build the [`RustQueue`] instance.
     pub fn build(self) -> anyhow::Result<RustQueue> {
         let storage: Arc<dyn StorageBackend> = if let Some(config) = self.hybrid_config {
@@ -110,9 +124,12 @@ impl RustQueueBuilder {
         } else {
             self.storage
         };
-        Ok(RustQueue {
-            manager: QueueManager::new(storage),
-        })
+        let manager = if let Some(registry) = self.worker_registry {
+            QueueManager::new(storage).with_worker_registry(registry)
+        } else {
+            QueueManager::new(storage)
+        };
+        Ok(RustQueue { manager })
     }
 }
 
@@ -137,6 +154,18 @@ impl RustQueue {
     /// Returned jobs are transitioned to `Active` state atomically.
     pub async fn pull(&self, queue: &str, count: u32) -> Result<Vec<Job>, RustQueueError> {
         self.manager.pull(queue, count).await
+    }
+
+    /// Pull one job and dispatch it through the registered worker plugin.
+    ///
+    /// Returns the processed job id, or `None` if no job was available.
+    pub async fn dispatch_next_with_registered_worker(
+        &self,
+        queue: &str,
+    ) -> Result<Option<JobId>, RustQueueError> {
+        self.manager
+            .dispatch_next_with_registered_worker(queue)
+            .await
     }
 
     /// Acknowledge successful completion of a job.
