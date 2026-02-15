@@ -3,6 +3,7 @@ pub mod metrics;
 pub mod models;
 pub mod plugins;
 pub mod queue;
+pub mod rate_limit;
 pub mod scheduler;
 #[cfg(feature = "otel")]
 pub mod telemetry;

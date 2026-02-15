@@ -4,6 +4,8 @@
 //! All structs derive `Serialize`, `Deserialize`, `Debug`, `Clone`, and `PartialEq`,
 //! and implement `Default` with sensible production-ready values.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
@@ -35,6 +37,8 @@ pub struct RustQueueConfig {
     pub tls: TlsConfig,
     #[serde(default)]
     pub webhooks: crate::engine::webhook::WebhookConfig,
+    #[serde(default)]
+    pub queues: QueueRateLimitMap,
 }
 
 // ---------------------------------------------------------------------------
@@ -413,6 +417,28 @@ pub struct TlsConfig {
 }
 
 // ---------------------------------------------------------------------------
+// Per-queue rate limiting
+// ---------------------------------------------------------------------------
+
+/// Per-queue rate limit configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueueRateLimit {
+    /// Maximum sustained push rate (jobs per second). None = unlimited.
+    #[serde(default)]
+    pub rate_limit_per_second: Option<f64>,
+    /// Burst allowance above the sustained rate. Defaults to rate_limit_per_second.
+    #[serde(default)]
+    pub rate_limit_burst: Option<u32>,
+}
+
+/// Top-level map of queue names to their rate-limit configs.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct QueueRateLimitMap {
+    #[serde(default)]
+    pub queues: HashMap<String, QueueRateLimit>,
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -569,5 +595,39 @@ key_path = "/etc/certs/server.key"
         let eventual = RedbDurabilityConfig::Eventual;
         let json = serde_json::to_string(&eventual).unwrap();
         assert_eq!(json, "\"eventual\"");
+    }
+
+    #[test]
+    fn test_queue_rate_limit_from_toml() {
+        let input = r#"
+[queues.queues.emails]
+rate_limit_per_second = 100.0
+rate_limit_burst = 200
+
+[queues.queues.bulk]
+rate_limit_per_second = 10.0
+
+[queues.queues.critical]
+"#;
+        let cfg: RustQueueConfig = toml::from_str(input).expect("parse queue rate limit TOML");
+        assert_eq!(cfg.queues.queues.len(), 3);
+
+        let emails = &cfg.queues.queues["emails"];
+        assert_eq!(emails.rate_limit_per_second, Some(100.0));
+        assert_eq!(emails.rate_limit_burst, Some(200));
+
+        let bulk = &cfg.queues.queues["bulk"];
+        assert_eq!(bulk.rate_limit_per_second, Some(10.0));
+        assert_eq!(bulk.rate_limit_burst, None);
+
+        let critical = &cfg.queues.queues["critical"];
+        assert_eq!(critical.rate_limit_per_second, None);
+        assert_eq!(critical.rate_limit_burst, None);
+    }
+
+    #[test]
+    fn test_queue_rate_limit_defaults_empty() {
+        let cfg = RustQueueConfig::default();
+        assert!(cfg.queues.queues.is_empty());
     }
 }

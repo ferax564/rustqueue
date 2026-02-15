@@ -67,3 +67,6 @@ pub const WEBHOOKS_DELIVERED_TOTAL: &str = "rustqueue_webhooks_delivered_total";
 
 /// Counter for webhook delivery failures (all retries exhausted).
 pub const WEBHOOKS_DELIVERY_FAILURES_TOTAL: &str = "rustqueue_webhooks_delivery_failures_total";
+
+/// Counter for pushes rejected by per-queue rate limiting.
+pub const RATE_LIMIT_REJECTED_TOTAL: &str = "rustqueue_rate_limit_rejected_total";

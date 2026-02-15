@@ -17,6 +17,7 @@ use crate::engine::error::RustQueueError;
 use crate::engine::metrics as metric_names;
 use crate::engine::models::{BackoffStrategy, Job, JobId, JobState, QueueCounts, Schedule};
 use crate::engine::plugins::WorkerRegistry;
+use crate::engine::rate_limit::QueueRateLimiter;
 use crate::storage::{CompleteJobOutcome, StorageBackend};
 
 // ── Validation constants ─────────────────────────────────────────────────────
@@ -239,6 +240,8 @@ pub struct QueueManager {
     max_dag_depth: usize,
     /// Optional registry for pluggable workers, keyed by engine.
     worker_registry: Option<Arc<WorkerRegistry>>,
+    /// Optional per-queue token-bucket rate limiter.
+    rate_limiter: Option<Arc<QueueRateLimiter>>,
 }
 
 impl QueueManager {
@@ -251,6 +254,7 @@ impl QueueManager {
             dependency_index: DashMap::new(),
             max_dag_depth: 10,
             worker_registry: None,
+            rate_limiter: None,
         }
     }
 
@@ -275,6 +279,14 @@ impl QueueManager {
     /// Must be called **before** wrapping the manager in `Arc`.
     pub fn with_worker_registry(mut self, registry: Arc<WorkerRegistry>) -> Self {
         self.worker_registry = Some(registry);
+        self
+    }
+
+    /// Attach a per-queue rate limiter.
+    ///
+    /// Must be called **before** wrapping the manager in `Arc`.
+    pub fn with_rate_limiter(mut self, limiter: Arc<QueueRateLimiter>) -> Self {
+        self.rate_limiter = Some(limiter);
         self
     }
 
@@ -377,6 +389,14 @@ impl QueueManager {
             return Err(RustQueueError::QueuePaused(queue.to_string()));
         }
 
+        // Per-queue rate limiting
+        if let Some(ref rl) = self.rate_limiter {
+            if !rl.check(queue) {
+                metrics::counter!(metric_names::RATE_LIMIT_REJECTED_TOTAL, "queue" => queue.to_string()).increment(1);
+                return Err(RustQueueError::RateLimited);
+            }
+        }
+
         let mut job = Job::new(queue, name, data);
         Self::apply_job_options(&mut job, opts);
 
@@ -464,6 +484,14 @@ impl QueueManager {
         // Check if queue is paused
         if self.paused_queues.contains(queue) {
             return Err(RustQueueError::QueuePaused(queue.to_string()));
+        }
+
+        // Per-queue rate limiting (check once for the whole batch)
+        if let Some(ref rl) = self.rate_limiter {
+            if !rl.check(queue) {
+                metrics::counter!(metric_names::RATE_LIMIT_REJECTED_TOTAL, "queue" => queue.to_string()).increment(1);
+                return Err(RustQueueError::RateLimited);
+            }
         }
 
         let mut jobs = Vec::with_capacity(items.len());

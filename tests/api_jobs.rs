@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use rustqueue::api::{self, AppState};
 use rustqueue::engine::queue::QueueManager;
+use rustqueue::engine::rate_limit::QueueRateLimiter;
 use rustqueue::storage::RedbStorage;
 
 /// Install the Prometheus recorder exactly once across all tests in this binary.
@@ -634,4 +635,94 @@ async fn test_prometheus_metrics_endpoint() {
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.contains("rustqueue_jobs_pushed_total"));
+}
+
+// ── Per-queue rate limiting ─────────────────────────────────────────────────
+
+/// Start a test server with a per-queue rate limiter configured on "limited" queue.
+async fn start_test_server_with_rate_limit() -> String {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("test.redb");
+    let _keep = Box::leak(Box::new(dir));
+
+    let (event_tx, _) = tokio::sync::broadcast::channel(1024);
+    let storage = Arc::new(RedbStorage::new(&db_path).unwrap());
+
+    // Configure rate limiter: "limited" queue allows 2/sec with burst of 2.
+    let limiter = Arc::new(QueueRateLimiter::new());
+    limiter.configure("limited", 2.0, Some(2));
+
+    let qm = Arc::new(QueueManager::new(storage).with_rate_limiter(limiter));
+    let state = Arc::new(AppState {
+        queue_manager: qm,
+        start_time: std::time::Instant::now(),
+        metrics_handle: None,
+        event_tx,
+        auth_config: rustqueue::config::AuthConfig::default(),
+        auth_rate_limiter: rustqueue::api::auth::AuthRateLimiter::new(),
+        webhook_manager: None,
+    });
+    let app = api::router(state);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn test_per_queue_rate_limit_rejection() {
+    let base = start_test_server_with_rate_limit().await;
+    let client = Client::new();
+
+    // Push 2 jobs — should succeed (burst = 2).
+    for i in 0..2 {
+        let resp = client
+            .post(format!("{base}/api/v1/queues/limited/jobs"))
+            .json(&json!({
+                "name": format!("job-{i}"),
+                "data": {"seq": i}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 201, "job {i} should be accepted");
+    }
+
+    // 3rd push should be rate limited (429).
+    let resp = client
+        .post(format!("{base}/api/v1/queues/limited/jobs"))
+        .json(&json!({
+            "name": "job-rejected",
+            "data": {"seq": 2}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 429);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+}
+
+#[tokio::test]
+async fn test_per_queue_rate_limit_does_not_affect_other_queues() {
+    let base = start_test_server_with_rate_limit().await;
+    let client = Client::new();
+
+    // "unlimited" queue has no rate limit configured — should always succeed.
+    for i in 0..10 {
+        let resp = client
+            .post(format!("{base}/api/v1/queues/unlimited/jobs"))
+            .json(&json!({
+                "name": format!("job-{i}"),
+                "data": {}
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 201, "unlimited queue job {i} should be accepted");
+    }
 }
