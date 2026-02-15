@@ -486,9 +486,9 @@ impl QueueManager {
             return Err(RustQueueError::QueuePaused(queue.to_string()));
         }
 
-        // Per-queue rate limiting (check once for the whole batch)
+        // Per-queue rate limiting (consume one token per job in the batch)
         if let Some(ref rl) = self.rate_limiter {
-            if !rl.check(queue) {
+            if !rl.check_n(queue, items.len() as u32) {
                 metrics::counter!(metric_names::RATE_LIMIT_REJECTED_TOTAL, "queue" => queue.to_string()).increment(1);
                 return Err(RustQueueError::RateLimited);
             }

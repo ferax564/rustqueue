@@ -343,11 +343,38 @@ async fn main() -> anyhow::Result<()> {
             // 4. Create broadcast channel for real-time job events
             let (event_tx, _) = tokio::sync::broadcast::channel(1024);
 
-            // 5. Create QueueManager with storage and event sender
+            // 5. Create per-queue rate limiter from config, then create QueueManager
+            let rate_limiter = {
+                let rl = rustqueue::engine::rate_limit::QueueRateLimiter::new();
+                for (queue_name, queue_cfg) in &config.queues.queues {
+                    if let Some(rate) = queue_cfg.rate_limit_per_second {
+                        match rl.configure(queue_name, rate, queue_cfg.rate_limit_burst) {
+                            Ok(()) => {
+                                info!(
+                                    queue = %queue_name,
+                                    rate_per_second = rate,
+                                    burst = ?queue_cfg.rate_limit_burst,
+                                    "Per-queue rate limit configured"
+                                );
+                            }
+                            Err(e) => {
+                                warn!(
+                                    queue = %queue_name,
+                                    error = %e,
+                                    "Invalid rate limit config, skipping"
+                                );
+                            }
+                        }
+                    }
+                }
+                Arc::new(rl)
+            };
+
             let queue_manager = Arc::new(
                 rustqueue::engine::queue::QueueManager::new(storage)
                     .with_event_sender(event_tx.clone())
-                    .with_max_dag_depth(config.jobs.max_dag_depth),
+                    .with_max_dag_depth(config.jobs.max_dag_depth)
+                    .with_rate_limiter(rate_limiter),
             );
 
             // 6. Install the default Prometheus recorder unless one is already

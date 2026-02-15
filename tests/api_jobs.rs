@@ -650,7 +650,7 @@ async fn start_test_server_with_rate_limit() -> String {
 
     // Configure rate limiter: "limited" queue allows 2/sec with burst of 2.
     let limiter = Arc::new(QueueRateLimiter::new());
-    limiter.configure("limited", 2.0, Some(2));
+    limiter.configure("limited", 2.0, Some(2)).unwrap();
 
     let qm = Arc::new(QueueManager::new(storage).with_rate_limiter(limiter));
     let state = Arc::new(AppState {

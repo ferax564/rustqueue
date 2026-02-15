@@ -432,9 +432,12 @@ pub struct QueueRateLimit {
 }
 
 /// Top-level map of queue names to their rate-limit configs.
+///
+/// Uses `#[serde(flatten)]` so that in TOML the queue entries appear directly
+/// under `[queues]`, e.g. `[queues.emails]` rather than `[queues.queues.emails]`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct QueueRateLimitMap {
-    #[serde(default)]
+    #[serde(flatten)]
     pub queues: HashMap<String, QueueRateLimit>,
 }
 
@@ -600,14 +603,14 @@ key_path = "/etc/certs/server.key"
     #[test]
     fn test_queue_rate_limit_from_toml() {
         let input = r#"
-[queues.queues.emails]
+[queues.emails]
 rate_limit_per_second = 100.0
 rate_limit_burst = 200
 
-[queues.queues.bulk]
+[queues.bulk]
 rate_limit_per_second = 10.0
 
-[queues.queues.critical]
+[queues.critical]
 "#;
         let cfg: RustQueueConfig = toml::from_str(input).expect("parse queue rate limit TOML");
         assert_eq!(cfg.queues.queues.len(), 3);

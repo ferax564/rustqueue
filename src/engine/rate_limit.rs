@@ -41,9 +41,12 @@ impl TokenBucket {
         }
     }
 
-    /// Refill tokens based on elapsed time, then try to consume one token.
-    /// Returns `true` if the request is allowed, `false` if rate limited.
-    fn try_consume(&mut self) -> bool {
+    /// Refill tokens based on elapsed time, then try to consume `n` tokens.
+    ///
+    /// This is all-or-nothing: if there are not enough tokens for the full
+    /// request, no tokens are consumed and `false` is returned.
+    fn try_consume_n(&mut self, n: u32) -> bool {
+        let cost = n as f64;
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_refill).as_secs_f64();
         self.last_refill = now;
@@ -51,8 +54,8 @@ impl TokenBucket {
         // Refill tokens proportionally to elapsed time.
         self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.max_tokens);
 
-        if self.tokens >= 1.0 {
-            self.tokens -= 1.0;
+        if self.tokens >= cost {
+            self.tokens -= cost;
             true
         } else {
             false
@@ -71,26 +74,56 @@ impl QueueRateLimiter {
     /// Configure a rate limit for the given queue.
     ///
     /// - `rate_per_second`: sustained push rate (tokens refilled per second).
+    ///   Must be finite and greater than zero.
     /// - `burst`: maximum tokens the bucket can hold. When `None`, defaults to
-    ///   `rate_per_second` (i.e. one second of burst).
-    pub fn configure(&self, queue: &str, rate_per_second: f64, burst: Option<u32>) {
+    ///   `rate_per_second` (i.e. one second of burst). When `Some`, must be > 0.
+    ///
+    /// Returns `Err` with a description if the inputs are invalid.
+    pub fn configure(
+        &self,
+        queue: &str,
+        rate_per_second: f64,
+        burst: Option<u32>,
+    ) -> Result<(), String> {
+        if !rate_per_second.is_finite() || rate_per_second <= 0.0 {
+            return Err(format!(
+                "rate_per_second must be finite and > 0, got {rate_per_second}"
+            ));
+        }
+        if let Some(b) = burst {
+            if b == 0 {
+                return Err("burst must be > 0".to_string());
+            }
+        }
         let burst = burst.unwrap_or(rate_per_second.ceil() as u32);
         self.buckets.insert(
             queue.to_string(),
             Mutex::new(TokenBucket::new(rate_per_second, burst)),
         );
+        Ok(())
     }
 
-    /// Check whether a push to `queue` is allowed.
+    /// Check whether a single push to `queue` is allowed.
     ///
     /// Returns `true` if the push should proceed, `false` if rate limited.
     /// Queues without a configured rate limit always return `true`.
     pub fn check(&self, queue: &str) -> bool {
+        self.check_n(queue, 1)
+    }
+
+    /// Check whether `n` pushes to `queue` are allowed.
+    ///
+    /// This is all-or-nothing: either all `n` tokens are consumed or none are.
+    /// Queues without a configured rate limit always return `true`.
+    pub fn check_n(&self, queue: &str, n: u32) -> bool {
+        if n == 0 {
+            return true;
+        }
         let Some(entry) = self.buckets.get(queue) else {
             return true; // unconfigured = unlimited
         };
         let mut bucket = entry.lock().unwrap();
-        bucket.try_consume()
+        bucket.try_consume_n(n)
     }
 }
 
@@ -109,7 +142,7 @@ mod tests {
     #[test]
     fn test_allows_within_rate() {
         let rl = QueueRateLimiter::new();
-        rl.configure("emails", 10.0, Some(5));
+        rl.configure("emails", 10.0, Some(5)).unwrap();
 
         // Should allow up to burst (5 tokens).
         for i in 0..5 {
@@ -120,7 +153,7 @@ mod tests {
     #[test]
     fn test_rejects_over_burst() {
         let rl = QueueRateLimiter::new();
-        rl.configure("emails", 10.0, Some(3));
+        rl.configure("emails", 10.0, Some(3)).unwrap();
 
         // Consume all 3 burst tokens.
         assert!(rl.check("emails"));
@@ -144,7 +177,7 @@ mod tests {
     fn test_refills_over_time() {
         let rl = QueueRateLimiter::new();
         // 10 tokens/sec, burst of 2.
-        rl.configure("slow", 10.0, Some(2));
+        rl.configure("slow", 10.0, Some(2)).unwrap();
 
         // Exhaust burst.
         assert!(rl.check("slow"));
@@ -161,7 +194,7 @@ mod tests {
     fn test_burst_defaults_to_rate() {
         let rl = QueueRateLimiter::new();
         // rate=5.0, burst=None → burst defaults to ceil(5.0) = 5.
-        rl.configure("default-burst", 5.0, None);
+        rl.configure("default-burst", 5.0, None).unwrap();
 
         for i in 0..5 {
             assert!(rl.check("default-burst"), "request {i} should be allowed");
@@ -175,8 +208,8 @@ mod tests {
     #[test]
     fn test_independent_queues() {
         let rl = QueueRateLimiter::new();
-        rl.configure("a", 1.0, Some(1));
-        rl.configure("b", 1.0, Some(1));
+        rl.configure("a", 1.0, Some(1)).unwrap();
+        rl.configure("b", 1.0, Some(1)).unwrap();
 
         // Exhaust queue "a".
         assert!(rl.check("a"));
@@ -184,5 +217,101 @@ mod tests {
 
         // Queue "b" should be unaffected.
         assert!(rl.check("b"));
+    }
+
+    // ── check_n tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_check_n_consumes_multiple_tokens() {
+        let rl = QueueRateLimiter::new();
+        rl.configure("batch", 100.0, Some(10)).unwrap();
+
+        // Consume 7 of 10 tokens in one call.
+        assert!(rl.check_n("batch", 7));
+        // Only 3 left — requesting 4 should fail (all-or-nothing).
+        assert!(!rl.check_n("batch", 4));
+        // But 3 should succeed.
+        assert!(rl.check_n("batch", 3));
+    }
+
+    #[test]
+    fn test_check_n_zero_always_passes() {
+        let rl = QueueRateLimiter::new();
+        rl.configure("q", 1.0, Some(1)).unwrap();
+        // Exhaust the single token.
+        assert!(rl.check("q"));
+        assert!(!rl.check("q"));
+        // check_n(0) should still pass — no tokens consumed.
+        assert!(rl.check_n("q", 0));
+    }
+
+    #[test]
+    fn test_check_n_all_or_nothing() {
+        let rl = QueueRateLimiter::new();
+        rl.configure("aon", 100.0, Some(5)).unwrap();
+
+        // Request more than available — should fail without consuming any.
+        assert!(!rl.check_n("aon", 6));
+        // All 5 tokens should still be available.
+        assert!(rl.check_n("aon", 5));
+    }
+
+    #[test]
+    fn test_check_n_unlimited_queue() {
+        let rl = QueueRateLimiter::new();
+        // No configuration for "free" — should always pass any N.
+        assert!(rl.check_n("free", 1_000_000));
+    }
+
+    // ── Input validation tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_configure_rejects_zero_rate() {
+        let rl = QueueRateLimiter::new();
+        let err = rl.configure("q", 0.0, None).unwrap_err();
+        assert!(err.contains("rate_per_second"), "error: {err}");
+    }
+
+    #[test]
+    fn test_configure_rejects_negative_rate() {
+        let rl = QueueRateLimiter::new();
+        let err = rl.configure("q", -5.0, None).unwrap_err();
+        assert!(err.contains("rate_per_second"), "error: {err}");
+    }
+
+    #[test]
+    fn test_configure_rejects_nan() {
+        let rl = QueueRateLimiter::new();
+        let err = rl.configure("q", f64::NAN, None).unwrap_err();
+        assert!(err.contains("rate_per_second"), "error: {err}");
+    }
+
+    #[test]
+    fn test_configure_rejects_infinity() {
+        let rl = QueueRateLimiter::new();
+        let err = rl.configure("q", f64::INFINITY, None).unwrap_err();
+        assert!(err.contains("rate_per_second"), "error: {err}");
+    }
+
+    #[test]
+    fn test_configure_rejects_neg_infinity() {
+        let rl = QueueRateLimiter::new();
+        let err = rl.configure("q", f64::NEG_INFINITY, None).unwrap_err();
+        assert!(err.contains("rate_per_second"), "error: {err}");
+    }
+
+    #[test]
+    fn test_configure_rejects_zero_burst() {
+        let rl = QueueRateLimiter::new();
+        let err = rl.configure("q", 10.0, Some(0)).unwrap_err();
+        assert!(err.contains("burst"), "error: {err}");
+    }
+
+    #[test]
+    fn test_configure_accepts_valid_inputs() {
+        let rl = QueueRateLimiter::new();
+        assert!(rl.configure("q1", 0.001, None).is_ok());
+        assert!(rl.configure("q2", 1_000_000.0, Some(1)).is_ok());
+        assert!(rl.configure("q3", 1.0, Some(u32::MAX)).is_ok());
     }
 }
