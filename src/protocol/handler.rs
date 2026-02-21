@@ -1,6 +1,11 @@
 //! TCP connection handler — reads newline-delimited JSON commands, dispatches
 //! to [`QueueManager`], and writes JSON responses.
 //!
+//! Also supports the binary wire protocol defined in [`super::binary`]. The
+//! handler auto-detects the frame type by peeking at the first byte:
+//! - `0x01`–`0x03`: binary command (PushBatch, PullBatch, AckBatch)
+//! - Any other byte: newline-delimited JSON
+//!
 //! Supports pipelining: if the client sends multiple commands before waiting
 //! for responses, the handler reads all available lines from the buffer,
 //! processes them, and writes all responses in a single batch with one flush.
@@ -8,13 +13,15 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, warn};
 
 use crate::auth::validate_bearer_token;
 use crate::config::AuthConfig;
 use crate::engine::models::Schedule;
 use crate::engine::queue::{BatchAckItem, BatchPushItem, JobOptions, QueueManager};
+
+use super::binary::{self, BinaryCommand};
 
 /// Handle a single TCP connection, processing commands until the client disconnects.
 ///
@@ -48,6 +55,45 @@ where
     let mut line = String::new();
 
     loop {
+        // Peek the first byte to determine frame type (binary vs JSON).
+        let first_byte = match reader.fill_buf().await {
+            Ok([]) => {
+                debug!(peer = %peer, "Client disconnected");
+                break;
+            }
+            Ok(buf) => buf[0],
+            Err(e) => {
+                warn!(peer = %peer, error = %e, "Read error, closing connection");
+                break;
+            }
+        };
+
+        // Binary frame detection: command bytes 0x01–0x03 never appear as the
+        // first byte of valid JSON (which starts with `{`, `[`, `"`, or digits).
+        if matches!(
+            BinaryCommand::try_from(first_byte),
+            Ok(BinaryCommand::PushBatch | BinaryCommand::PullBatch | BinaryCommand::AckBatch)
+        ) {
+            if !authenticated {
+                // Binary protocol requires pre-authentication on this connection.
+                let err = binary::encode_error_response(
+                    "Authentication required before binary commands",
+                );
+                if writer.write_all(&err).await.is_err() {
+                    break;
+                }
+                let _ = writer.flush().await;
+                break;
+            }
+
+            match read_and_handle_binary_frame(&mut reader, &mut writer, &manager).await {
+                Ok(true) => continue,  // frame handled, continue loop
+                Ok(false) => break,    // write error, close connection
+                Err(_) => break,       // read/decode error, close connection
+            }
+        }
+
+        // JSON path: read a newline-delimited line.
         // 1. Read the first line (blocking wait for data)
         line.clear();
         match reader.read_line(&mut line).await {
@@ -101,6 +147,312 @@ where
             debug!(peer = %peer, "Flush failed, closing connection");
             break;
         }
+    }
+}
+
+// ── Binary protocol handling ─────────────────────────────────────────────────
+
+/// Maximum binary frame size (4 MB). Protects against memory exhaustion from
+/// malicious or malformed frames.
+const MAX_BINARY_FRAME_SIZE: usize = 4 * 1_048_576;
+
+/// Read a complete binary frame from the buffered reader, dispatch it, and
+/// write the binary response.
+///
+/// Returns `Ok(true)` if the frame was handled and the connection should
+/// continue, `Ok(false)` if a write error occurred, or `Err` if a read or
+/// decode error occurred (which closes the connection).
+async fn read_and_handle_binary_frame<R, W>(
+    reader: &mut BufReader<R>,
+    writer: &mut tokio::io::BufWriter<W>,
+    manager: &QueueManager,
+) -> Result<bool, ()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    // Read the command byte (already peeked, now consume it).
+    let mut cmd_byte = [0u8; 1];
+    if reader.read_exact(&mut cmd_byte).await.is_err() {
+        return Err(());
+    }
+
+    let cmd = match BinaryCommand::try_from(cmd_byte[0]) {
+        Ok(cmd) => cmd,
+        Err(_) => {
+            let err = binary::encode_error_response("Invalid binary command");
+            if writer.write_all(&err).await.is_err() {
+                return Ok(false);
+            }
+            let _ = writer.flush().await;
+            return Err(());
+        }
+    };
+
+    // Read the rest of the frame based on command type.
+    let frame_data = match read_binary_frame_body(reader, cmd).await {
+        Ok(data) => data,
+        Err(msg) => {
+            let err = binary::encode_error_response(&msg);
+            if writer.write_all(&err).await.is_err() {
+                return Ok(false);
+            }
+            let _ = writer.flush().await;
+            return Err(());
+        }
+    };
+
+    // Prepend the command byte to form the full frame for decoding.
+    let mut full_frame = Vec::with_capacity(1 + frame_data.len());
+    full_frame.push(cmd_byte[0]);
+    full_frame.extend_from_slice(&frame_data);
+
+    let response = handle_binary_frame(&full_frame, manager).await;
+
+    if writer.write_all(&response).await.is_err() {
+        return Ok(false);
+    }
+    if writer.flush().await.is_err() {
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
+/// Read the body of a binary frame (everything after the command byte).
+///
+/// For PushBatch: reads queue name length, queue name, batch count, then
+/// length-prefixed payloads.
+/// For PullBatch: reads queue name length, queue name, count (4 bytes).
+/// For AckBatch: reads count (4 bytes), then count * 16 bytes of UUIDs.
+async fn read_binary_frame_body<R>(
+    reader: &mut BufReader<R>,
+    cmd: BinaryCommand,
+) -> Result<Vec<u8>, String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    match cmd {
+        BinaryCommand::PushBatch => {
+            // Read queue name length (2 bytes)
+            let mut header = [0u8; 2];
+            reader
+                .read_exact(&mut header)
+                .await
+                .map_err(|e| format!("Failed to read queue name length: {e}"))?;
+            let queue_len = u16::from_be_bytes(header) as usize;
+
+            // Read queue name
+            let mut queue_name = vec![0u8; queue_len];
+            reader
+                .read_exact(&mut queue_name)
+                .await
+                .map_err(|e| format!("Failed to read queue name: {e}"))?;
+
+            // Read batch count (4 bytes)
+            let mut count_buf = [0u8; 4];
+            reader
+                .read_exact(&mut count_buf)
+                .await
+                .map_err(|e| format!("Failed to read batch count: {e}"))?;
+            let count = u32::from_be_bytes(count_buf) as usize;
+
+            // Pre-allocate body: 2 (queue_len) + queue_len + 4 (count) + payloads
+            let mut body = Vec::with_capacity(2 + queue_len + 4);
+            body.extend_from_slice(&header);
+            body.extend_from_slice(&queue_name);
+            body.extend_from_slice(&count_buf);
+
+            // Read each length-prefixed payload
+            for _ in 0..count {
+                let mut len_buf = [0u8; 4];
+                reader
+                    .read_exact(&mut len_buf)
+                    .await
+                    .map_err(|e| format!("Failed to read payload length: {e}"))?;
+                let msg_len = u32::from_be_bytes(len_buf) as usize;
+                if msg_len > MAX_BINARY_FRAME_SIZE {
+                    return Err(format!("Payload too large: {msg_len} bytes"));
+                }
+                let mut payload = vec![0u8; msg_len];
+                reader
+                    .read_exact(&mut payload)
+                    .await
+                    .map_err(|e| format!("Failed to read payload data: {e}"))?;
+                body.extend_from_slice(&len_buf);
+                body.extend_from_slice(&payload);
+            }
+
+            Ok(body)
+        }
+        BinaryCommand::PullBatch => {
+            // Read queue name length (2 bytes) + queue name + count (4 bytes)
+            let mut header = [0u8; 2];
+            reader
+                .read_exact(&mut header)
+                .await
+                .map_err(|e| format!("Failed to read queue name length: {e}"))?;
+            let queue_len = u16::from_be_bytes(header) as usize;
+
+            let mut queue_name = vec![0u8; queue_len];
+            reader
+                .read_exact(&mut queue_name)
+                .await
+                .map_err(|e| format!("Failed to read queue name: {e}"))?;
+
+            let mut count_buf = [0u8; 4];
+            reader
+                .read_exact(&mut count_buf)
+                .await
+                .map_err(|e| format!("Failed to read count: {e}"))?;
+
+            let mut body = Vec::with_capacity(2 + queue_len + 4);
+            body.extend_from_slice(&header);
+            body.extend_from_slice(&queue_name);
+            body.extend_from_slice(&count_buf);
+
+            Ok(body)
+        }
+        BinaryCommand::AckBatch => {
+            // Read count (4 bytes) + count * 16 bytes of UUIDs
+            let mut count_buf = [0u8; 4];
+            reader
+                .read_exact(&mut count_buf)
+                .await
+                .map_err(|e| format!("Failed to read count: {e}"))?;
+            let count = u32::from_be_bytes(count_buf) as usize;
+
+            let uuid_data_len = count * 16;
+            if uuid_data_len > MAX_BINARY_FRAME_SIZE {
+                return Err(format!("Ack batch too large: {count} items"));
+            }
+            let mut uuid_data = vec![0u8; uuid_data_len];
+            reader
+                .read_exact(&mut uuid_data)
+                .await
+                .map_err(|e| format!("Failed to read UUID data: {e}"))?;
+
+            let mut body = Vec::with_capacity(4 + uuid_data_len);
+            body.extend_from_slice(&count_buf);
+            body.extend_from_slice(&uuid_data);
+
+            Ok(body)
+        }
+    }
+}
+
+/// Handle a complete binary frame and return the binary response.
+///
+/// This function decodes the binary command, executes it against the
+/// [`QueueManager`], and encodes the binary response. It can be called
+/// independently for testing.
+///
+/// # Arguments
+///
+/// * `data` — The full binary frame including the command byte.
+/// * `manager` — The queue manager to execute commands against.
+///
+/// # Returns
+///
+/// A binary response suitable for writing directly to the TCP stream.
+pub async fn handle_binary_frame(data: &[u8], manager: &QueueManager) -> Vec<u8> {
+    if data.is_empty() {
+        return binary::encode_error_response("Empty binary frame");
+    }
+
+    let cmd = match BinaryCommand::try_from(data[0]) {
+        Ok(cmd) => cmd,
+        Err(_) => {
+            return binary::encode_error_response(&format!("Invalid command byte: {:#04x}", data[0]));
+        }
+    };
+
+    match cmd {
+        BinaryCommand::PushBatch => handle_binary_push_batch(data, manager).await,
+        BinaryCommand::PullBatch => handle_binary_pull_batch(data, manager).await,
+        BinaryCommand::AckBatch => handle_binary_ack_batch(data, manager).await,
+    }
+}
+
+/// Handle a binary PushBatch command.
+async fn handle_binary_push_batch(data: &[u8], manager: &QueueManager) -> Vec<u8> {
+    let (queue_name, payloads) = match binary::decode_push_batch(data) {
+        Ok(result) => result,
+        Err(e) => {
+            return binary::encode_error_response(&format!("Decode error: {e}"));
+        }
+    };
+
+    // Convert raw payloads into BatchPushItems. Each payload is treated as the
+    // JSON `data` field of a job. If the payload is valid JSON, it's used as-is;
+    // otherwise it's wrapped in a `{"raw": "<hex>"}` envelope.
+    let mut items = Vec::with_capacity(payloads.len());
+    for (idx, payload) in payloads.iter().enumerate() {
+        let data_value: serde_json::Value = serde_json::from_slice(payload).unwrap_or_else(|_| {
+            json!({ "raw": hex::encode(payload) })
+        });
+        items.push(BatchPushItem {
+            name: format!("binary-job-{idx}"),
+            data: data_value,
+            options: None,
+        });
+    }
+
+    match manager.push_batch(&queue_name, items).await {
+        Ok(ids) => binary::encode_push_response(&ids),
+        Err(e) => binary::encode_error_response(&e.to_string()),
+    }
+}
+
+/// Handle a binary PullBatch command.
+async fn handle_binary_pull_batch(data: &[u8], manager: &QueueManager) -> Vec<u8> {
+    let (queue_name, count) = match binary::decode_pull_batch(data) {
+        Ok(result) => result,
+        Err(e) => {
+            return binary::encode_error_response(&format!("Decode error: {e}"));
+        }
+    };
+
+    match manager.pull(&queue_name, count).await {
+        Ok(jobs) => {
+            let serialized: Vec<(uuid::Uuid, Vec<u8>)> = jobs
+                .iter()
+                .map(|job| {
+                    let payload = serde_json::to_vec(&job.data).unwrap_or_default();
+                    (job.id, payload)
+                })
+                .collect();
+            let refs: Vec<(uuid::Uuid, &[u8])> = serialized
+                .iter()
+                .map(|(id, p)| (*id, p.as_slice()))
+                .collect();
+            binary::encode_pull_response(&refs)
+        }
+        Err(e) => binary::encode_error_response(&e.to_string()),
+    }
+}
+
+/// Handle a binary AckBatch command.
+async fn handle_binary_ack_batch(data: &[u8], manager: &QueueManager) -> Vec<u8> {
+    let job_ids = match binary::decode_ack_batch(data) {
+        Ok(ids) => ids,
+        Err(e) => {
+            return binary::encode_error_response(&format!("Decode error: {e}"));
+        }
+    };
+
+    let items: Vec<BatchAckItem> = job_ids
+        .into_iter()
+        .map(|id| BatchAckItem { id, result: None })
+        .collect();
+
+    match manager.ack_batch(items).await {
+        Ok(results) => {
+            let acked = results.iter().filter(|r| r.ok).count() as u32;
+            let failed = (results.len() as u32).saturating_sub(acked);
+            binary::encode_ack_response(acked, failed)
+        }
+        Err(e) => binary::encode_error_response(&e.to_string()),
     }
 }
 
@@ -689,4 +1041,88 @@ fn engine_error_response(e: &crate::engine::error::RustQueueError) -> Value {
             "message": e.to_string(),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::MemoryStorage;
+
+    fn make_manager() -> Arc<QueueManager> {
+        Arc::new(QueueManager::new(Arc::new(MemoryStorage::new())))
+    }
+
+    #[tokio::test]
+    async fn binary_push_batch_handler_roundtrip() {
+        let manager = make_manager();
+        let payloads: Vec<&[u8]> = vec![br#"{"a":1}"#, br#"{"b":2}"#];
+        let frame = binary::encode_push_batch("test-q", &payloads);
+
+        let response = handle_binary_frame(&frame, &manager).await;
+
+        // Decode response: status=0x00, count=2, 2 * 16 bytes UUID
+        assert_eq!(response[0], 0x00, "Expected success status");
+        let ids = binary::decode_push_response(&response).unwrap();
+        assert_eq!(ids.len(), 2, "Should return 2 job IDs");
+        assert!(ids.iter().all(|id| !id.is_nil()));
+    }
+
+    #[tokio::test]
+    async fn binary_push_then_pull_handler() {
+        let manager = make_manager();
+
+        // Push 1 job
+        let payloads: Vec<&[u8]> = vec![br#"{"key":"value"}"#];
+        let push_frame = binary::encode_push_batch("pull-test", &payloads);
+        let push_resp = handle_binary_frame(&push_frame, &manager).await;
+        let pushed_ids = binary::decode_push_response(&push_resp).unwrap();
+        assert_eq!(pushed_ids.len(), 1);
+
+        // Pull 1 job
+        let pull_frame = binary::encode_pull_batch("pull-test", 1);
+        let pull_resp = handle_binary_frame(&pull_frame, &manager).await;
+        assert_eq!(pull_resp[0], 0x00, "pull should succeed");
+        let count = u32::from_be_bytes([pull_resp[1], pull_resp[2], pull_resp[3], pull_resp[4]]) as usize;
+        assert_eq!(count, 1, "should pull 1 job");
+    }
+
+    #[tokio::test]
+    async fn binary_ack_batch_handler() {
+        let manager = make_manager();
+
+        // Push 2 jobs
+        let payloads: Vec<&[u8]> = vec![br#"{}"#, br#"{}"#];
+        let push_frame = binary::encode_push_batch("ack-test", &payloads);
+        let push_resp = handle_binary_frame(&push_frame, &manager).await;
+        let pushed_ids = binary::decode_push_response(&push_resp).unwrap();
+
+        // Pull them (transitions to Active state so they can be acked)
+        let pull_frame = binary::encode_pull_batch("ack-test", 2);
+        let _pull_resp = handle_binary_frame(&pull_frame, &manager).await;
+
+        // Ack both
+        let ack_frame = binary::encode_ack_batch(&pushed_ids);
+        let ack_resp = handle_binary_frame(&ack_frame, &manager).await;
+
+        assert_eq!(ack_resp[0], 0x00, "ack should succeed");
+        let acked = u32::from_be_bytes([ack_resp[1], ack_resp[2], ack_resp[3], ack_resp[4]]);
+        let failed = u32::from_be_bytes([ack_resp[5], ack_resp[6], ack_resp[7], ack_resp[8]]);
+        assert_eq!(acked, 2);
+        assert_eq!(failed, 0);
+    }
+
+    #[tokio::test]
+    async fn binary_invalid_command_byte() {
+        let manager = make_manager();
+        let response = handle_binary_frame(&[0xFF], &manager).await;
+        // Should be an error response
+        assert_eq!(response[0], 0x01, "Expected error status");
+    }
+
+    #[tokio::test]
+    async fn binary_empty_frame() {
+        let manager = make_manager();
+        let response = handle_binary_frame(&[], &manager).await;
+        assert_eq!(response[0], 0x01, "Expected error status for empty frame");
+    }
 }

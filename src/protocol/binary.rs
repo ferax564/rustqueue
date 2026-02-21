@@ -188,6 +188,193 @@ pub fn encode_push_response(job_ids: &[uuid::Uuid]) -> Vec<u8> {
     buf
 }
 
+/// Encode a binary error response.
+///
+/// Layout:
+/// - 1 byte status (0x01 = error)
+/// - 2 bytes message length (BE u16)
+/// - N bytes message (UTF-8)
+pub fn encode_error_response(message: &str) -> Vec<u8> {
+    let msg_bytes = message.as_bytes();
+    let total = 1 + 2 + msg_bytes.len();
+    let mut buf = Vec::with_capacity(total);
+    buf.push(0x01); // status = error
+    buf.extend_from_slice(&(msg_bytes.len() as u16).to_be_bytes());
+    buf.extend_from_slice(msg_bytes);
+    buf
+}
+
+/// Encode a pull-batch request into the binary wire format.
+///
+/// Layout:
+/// - 1 byte command (0x02)
+/// - 2 bytes queue name length (BE u16)
+/// - N bytes queue name (UTF-8)
+/// - 4 bytes count (BE u32)
+pub fn encode_pull_batch(queue: &str, count: u32) -> Vec<u8> {
+    let queue_bytes = queue.as_bytes();
+    let total = 1 + 2 + queue_bytes.len() + 4;
+    let mut buf = Vec::with_capacity(total);
+    buf.push(BinaryCommand::PullBatch as u8);
+    buf.extend_from_slice(&(queue_bytes.len() as u16).to_be_bytes());
+    buf.extend_from_slice(queue_bytes);
+    buf.extend_from_slice(&count.to_be_bytes());
+    buf
+}
+
+/// Decode a pull-batch request from the binary wire format.
+///
+/// Returns `(queue_name, count)` on success.
+pub fn decode_pull_batch(data: &[u8]) -> Result<(String, u32), ProtocolError> {
+    let mut pos = 0;
+
+    // Command byte
+    if data.is_empty() {
+        return Err(ProtocolError::InsufficientData {
+            need: 1,
+            have: 0,
+        });
+    }
+    let cmd = BinaryCommand::try_from(data[pos])?;
+    if cmd != BinaryCommand::PullBatch {
+        return Err(ProtocolError::InvalidCommand(data[pos]));
+    }
+    pos += 1;
+
+    // Queue name length
+    if data.len() < pos + 2 {
+        return Err(ProtocolError::InsufficientData {
+            need: pos + 2,
+            have: data.len(),
+        });
+    }
+    let queue_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+    pos += 2;
+
+    // Queue name
+    if data.len() < pos + queue_len {
+        return Err(ProtocolError::InsufficientData {
+            need: pos + queue_len,
+            have: data.len(),
+        });
+    }
+    let queue = std::str::from_utf8(&data[pos..pos + queue_len])
+        .map_err(|_| ProtocolError::InvalidUtf8)?
+        .to_string();
+    pos += queue_len;
+
+    // Count
+    if data.len() < pos + 4 {
+        return Err(ProtocolError::InsufficientData {
+            need: pos + 4,
+            have: data.len(),
+        });
+    }
+    let count = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
+
+    Ok((queue, count))
+}
+
+/// Encode a pull-batch response containing serialized job payloads.
+///
+/// Layout:
+/// - 1 byte status (0x00 = ok)
+/// - 4 bytes count (BE u32)
+/// - For each job: 16 bytes UUID + 4 bytes payload length + N bytes JSON payload
+pub fn encode_pull_response(jobs: &[(uuid::Uuid, &[u8])]) -> Vec<u8> {
+    let payload_size: usize = jobs.iter().map(|(_, p)| 16 + 4 + p.len()).sum();
+    let total = 1 + 4 + payload_size;
+    let mut buf = Vec::with_capacity(total);
+    buf.push(0x00); // status = ok
+    buf.extend_from_slice(&(jobs.len() as u32).to_be_bytes());
+    for (id, payload) in jobs {
+        buf.extend_from_slice(id.as_bytes());
+        buf.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        buf.extend_from_slice(payload);
+    }
+    buf
+}
+
+/// Encode an ack-batch request into the binary wire format.
+///
+/// Layout:
+/// - 1 byte command (0x03)
+/// - 4 bytes count (BE u32)
+/// - For each job: 16 bytes UUID
+pub fn encode_ack_batch(job_ids: &[uuid::Uuid]) -> Vec<u8> {
+    let total = 1 + 4 + job_ids.len() * 16;
+    let mut buf = Vec::with_capacity(total);
+    buf.push(BinaryCommand::AckBatch as u8);
+    buf.extend_from_slice(&(job_ids.len() as u32).to_be_bytes());
+    for id in job_ids {
+        buf.extend_from_slice(id.as_bytes());
+    }
+    buf
+}
+
+/// Decode an ack-batch request from the binary wire format.
+///
+/// Returns a list of job UUIDs to acknowledge.
+pub fn decode_ack_batch(data: &[u8]) -> Result<Vec<uuid::Uuid>, ProtocolError> {
+    let mut pos = 0;
+
+    // Command byte
+    if data.is_empty() {
+        return Err(ProtocolError::InsufficientData {
+            need: 1,
+            have: 0,
+        });
+    }
+    let cmd = BinaryCommand::try_from(data[pos])?;
+    if cmd != BinaryCommand::AckBatch {
+        return Err(ProtocolError::InvalidCommand(data[pos]));
+    }
+    pos += 1;
+
+    // Count
+    if data.len() < pos + 4 {
+        return Err(ProtocolError::InsufficientData {
+            need: pos + 4,
+            have: data.len(),
+        });
+    }
+    let count =
+        u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+    pos += 4;
+
+    // UUIDs
+    let mut ids = Vec::with_capacity(count);
+    for _ in 0..count {
+        if data.len() < pos + 16 {
+            return Err(ProtocolError::InsufficientData {
+                need: pos + 16,
+                have: data.len(),
+            });
+        }
+        let bytes: [u8; 16] = data[pos..pos + 16]
+            .try_into()
+            .expect("slice length is 16");
+        ids.push(uuid::Uuid::from_bytes(bytes));
+        pos += 16;
+    }
+
+    Ok(ids)
+}
+
+/// Encode an ack-batch response.
+///
+/// Layout:
+/// - 1 byte status (0x00 = ok)
+/// - 4 bytes acked count (BE u32)
+/// - 4 bytes failed count (BE u32)
+pub fn encode_ack_response(acked: u32, failed: u32) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(9);
+    buf.push(0x00); // status = ok
+    buf.extend_from_slice(&acked.to_be_bytes());
+    buf.extend_from_slice(&failed.to_be_bytes());
+    buf
+}
+
 /// Decode a push-batch response into a list of job UUIDs.
 pub fn decode_push_response(data: &[u8]) -> Result<Vec<uuid::Uuid>, ProtocolError> {
     let mut pos = 0;
@@ -287,5 +474,53 @@ mod tests {
         assert_eq!(queue, "bulk");
         assert_eq!(decoded.len(), 1000);
         assert_eq!(decoded[999], format!("msg-999").into_bytes());
+    }
+
+    #[test]
+    fn encode_decode_pull_batch_roundtrip() {
+        let encoded = encode_pull_batch("work-queue", 10);
+        let (queue, count) = decode_pull_batch(&encoded).unwrap();
+        assert_eq!(queue, "work-queue");
+        assert_eq!(count, 10);
+    }
+
+    #[test]
+    fn encode_decode_ack_batch_roundtrip() {
+        let ids: Vec<uuid::Uuid> = (0..3)
+            .map(|i: u8| {
+                let mut bytes = [0u8; 16];
+                bytes[0] = i;
+                uuid::Uuid::from_bytes(bytes)
+            })
+            .collect();
+        let encoded = encode_ack_batch(&ids);
+        let decoded = decode_ack_batch(&encoded).unwrap();
+        assert_eq!(ids, decoded);
+    }
+
+    #[test]
+    fn encode_decode_ack_batch_empty() {
+        let encoded = encode_ack_batch(&[]);
+        let decoded = decode_ack_batch(&encoded).unwrap();
+        assert!(decoded.is_empty());
+    }
+
+    #[test]
+    fn error_response_roundtrip() {
+        let encoded = encode_error_response("something went wrong");
+        assert_eq!(encoded[0], 0x01); // error status
+        let msg_len = u16::from_be_bytes([encoded[1], encoded[2]]) as usize;
+        let msg = std::str::from_utf8(&encoded[3..3 + msg_len]).unwrap();
+        assert_eq!(msg, "something went wrong");
+    }
+
+    #[test]
+    fn ack_response_encoding() {
+        let encoded = encode_ack_response(5, 2);
+        assert_eq!(encoded[0], 0x00); // ok status
+        let acked = u32::from_be_bytes([encoded[1], encoded[2], encoded[3], encoded[4]]);
+        let failed = u32::from_be_bytes([encoded[5], encoded[6], encoded[7], encoded[8]]);
+        assert_eq!(acked, 5);
+        assert_eq!(failed, 2);
     }
 }
