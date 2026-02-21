@@ -110,6 +110,23 @@ pub enum RedbDurabilityConfig {
     Eventual,
 }
 
+/// High-level durability mode for the redb storage backend.
+///
+/// Controls the trade-off between write throughput and crash durability:
+/// - `"immediate"`: fsync per write (~348 ops/sec). Zero data loss on crash.
+/// - `"batched"`: coalesced writes (~22K ops/sec). Up to `write_coalescing_interval_ms`
+///   of data loss on crash. **Default** for 60x throughput improvement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DurabilityMode {
+    /// Fsync per write. Safest, but limited to ~348 ops/sec.
+    Immediate,
+    /// Buffer writes and flush periodically. ~22K ops/sec, with up to
+    /// `write_coalescing_interval_ms` of data loss on crash.
+    #[default]
+    Batched,
+}
+
 /// Persistent storage settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StorageConfig {
@@ -119,6 +136,14 @@ pub struct StorageConfig {
     /// Path to the data directory (for Redb / Sqlite).
     #[serde(default = "default_storage_path")]
     pub path: String,
+    /// High-level durability mode: `"immediate"` (fsync per write) or `"batched"`
+    /// (coalesced writes, 60x faster). Defaults to `"batched"`.
+    ///
+    /// When set to `"batched"`, write coalescing is automatically enabled.
+    /// When set to `"immediate"`, write coalescing is disabled regardless of
+    /// `write_coalescing_enabled`.
+    #[serde(default)]
+    pub durability: DurabilityMode,
     /// redb write durability mode (only used when `backend = "redb"`).
     #[serde(default)]
     pub redb_durability: RedbDurabilityConfig,
@@ -126,7 +151,8 @@ pub struct StorageConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub postgres_url: Option<String>,
     /// Enable write coalescing for redb backend (buffers single writes into batches).
-    #[serde(default)]
+    /// Defaults to `true` (matching the `"batched"` durability mode).
+    #[serde(default = "default_write_coalescing_enabled")]
     pub write_coalescing_enabled: bool,
     /// Flush interval for write coalescing in milliseconds.
     #[serde(default = "default_write_coalescing_interval_ms")]
@@ -147,15 +173,20 @@ impl Default for StorageConfig {
         Self {
             backend: StorageBackendType::default(),
             path: default_storage_path(),
+            durability: DurabilityMode::default(),
             redb_durability: RedbDurabilityConfig::default(),
             postgres_url: None,
-            write_coalescing_enabled: false,
+            write_coalescing_enabled: default_write_coalescing_enabled(),
             write_coalescing_interval_ms: default_write_coalescing_interval_ms(),
             write_coalescing_max_batch: default_write_coalescing_max_batch(),
             hybrid_snapshot_interval_ms: default_hybrid_snapshot_interval_ms(),
             hybrid_max_dirty: default_hybrid_max_dirty(),
         }
     }
+}
+
+fn default_write_coalescing_enabled() -> bool {
+    true
 }
 
 fn default_storage_path() -> String {
@@ -461,7 +492,9 @@ mod tests {
         // Storage
         assert_eq!(cfg.storage.backend, StorageBackendType::Redb);
         assert_eq!(cfg.storage.path, "./data");
+        assert_eq!(cfg.storage.durability, DurabilityMode::Batched);
         assert_eq!(cfg.storage.redb_durability, RedbDurabilityConfig::Immediate);
+        assert!(cfg.storage.write_coalescing_enabled);
         assert_eq!(cfg.storage.postgres_url, None);
 
         // Auth
@@ -632,5 +665,30 @@ rate_limit_per_second = 10.0
     fn test_queue_rate_limit_defaults_empty() {
         let cfg = RustQueueConfig::default();
         assert!(cfg.queues.queues.is_empty());
+    }
+
+    #[test]
+    fn test_durability_mode_serde() {
+        let batched = DurabilityMode::Batched;
+        let json = serde_json::to_string(&batched).unwrap();
+        assert_eq!(json, "\"batched\"");
+
+        let immediate = DurabilityMode::Immediate;
+        let json = serde_json::to_string(&immediate).unwrap();
+        assert_eq!(json, "\"immediate\"");
+    }
+
+    #[test]
+    fn test_durability_mode_from_toml() {
+        let input = r#"
+[storage]
+durability = "immediate"
+"#;
+        let cfg: RustQueueConfig = toml::from_str(input).expect("parse durability TOML");
+        assert_eq!(cfg.storage.durability, DurabilityMode::Immediate);
+
+        // Default is batched
+        let cfg2 = RustQueueConfig::default();
+        assert_eq!(cfg2.storage.durability, DurabilityMode::Batched);
     }
 }

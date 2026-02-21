@@ -257,7 +257,14 @@ async fn main() -> anyhow::Result<()> {
                         durability = ?config.storage.redb_durability,
                         "RedbStorage initialized"
                     );
-                    if config.storage.write_coalescing_enabled {
+                    // Durability mode controls write coalescing:
+                    // - Batched (default): enables write coalescing for ~60x throughput
+                    // - Immediate: disables write coalescing, fsync per write
+                    let use_coalescing = match config.storage.durability {
+                        rustqueue::config::DurabilityMode::Batched => true,
+                        rustqueue::config::DurabilityMode::Immediate => false,
+                    } && config.storage.write_coalescing_enabled;
+                    if use_coalescing {
                         let buffered_config = rustqueue::storage::BufferedRedbConfig {
                             interval_ms: config.storage.write_coalescing_interval_ms,
                             max_batch: config.storage.write_coalescing_max_batch,
