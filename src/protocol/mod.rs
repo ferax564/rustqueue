@@ -3,6 +3,7 @@
 //! Provides [`start_tcp_server`] which binds to a [`TcpListener`](tokio::net::TcpListener)
 //! and spawns a handler task for each incoming connection.
 
+pub mod binary;
 pub mod handler;
 
 use std::sync::Arc;
