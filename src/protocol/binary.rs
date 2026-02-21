@@ -41,6 +41,14 @@ pub enum BinaryCommand {
     PushBatch = 0x01,
     PullBatch = 0x02,
     AckBatch = 0x03,
+    /// Channel-multiplexed frame wrapper. Wire format:
+    /// `[0x10][channel_id:2 BE u16][inner_command_byte][inner_payload...]`
+    ///
+    /// Enables multiple logical channels over a single TCP connection,
+    /// each operating independently on different queues.
+    /// Clients that don't use channels send raw 0x01-0x03 commands and
+    /// are treated as channel 0 (backward compatible).
+    ChannelFrame = 0x10,
 }
 
 impl TryFrom<u8> for BinaryCommand {
@@ -51,6 +59,7 @@ impl TryFrom<u8> for BinaryCommand {
             0x01 => Ok(Self::PushBatch),
             0x02 => Ok(Self::PullBatch),
             0x03 => Ok(Self::AckBatch),
+            0x10 => Ok(Self::ChannelFrame),
             other => Err(ProtocolError::InvalidCommand(other)),
         }
     }
@@ -462,6 +471,58 @@ pub fn encode_ack_response(acked: u32, failed: u32) -> Vec<u8> {
     buf
 }
 
+/// Wrap an inner binary command in a channel frame.
+///
+/// Layout:
+/// - 1 byte command (0x10 = ChannelFrame)
+/// - 2 bytes channel_id (BE u16)
+/// - N bytes inner frame (command byte + payload)
+pub fn encode_channel_frame(channel_id: u16, inner_frame: &[u8]) -> Vec<u8> {
+    let total = 1 + 2 + inner_frame.len();
+    let mut buf = Vec::with_capacity(total);
+    buf.push(BinaryCommand::ChannelFrame as u8);
+    buf.extend_from_slice(&channel_id.to_be_bytes());
+    buf.extend_from_slice(inner_frame);
+    buf
+}
+
+/// Wrap a binary response in a channel frame for multiplexed connections.
+///
+/// Layout:
+/// - 2 bytes channel_id (BE u16)
+/// - N bytes inner response
+pub fn encode_channel_response(channel_id: u16, inner_response: &[u8]) -> Vec<u8> {
+    let total = 2 + inner_response.len();
+    let mut buf = Vec::with_capacity(total);
+    buf.extend_from_slice(&channel_id.to_be_bytes());
+    buf.extend_from_slice(inner_response);
+    buf
+}
+
+/// Decode a channel frame, extracting the channel_id and inner command data.
+///
+/// The input `data` must start with the 0x10 command byte.
+/// Returns `(channel_id, inner_frame)` where `inner_frame` starts with
+/// the inner command byte (0x01-0x03).
+pub fn decode_channel_frame(data: &[u8]) -> Result<(u16, &[u8]), ProtocolError> {
+    if data.is_empty() {
+        return Err(ProtocolError::InsufficientData { need: 1, have: 0 });
+    }
+    let cmd = BinaryCommand::try_from(data[0])?;
+    if cmd != BinaryCommand::ChannelFrame {
+        return Err(ProtocolError::InvalidCommand(data[0]));
+    }
+    if data.len() < 4 {
+        // Need: 1 (cmd) + 2 (channel_id) + 1 (inner cmd) minimum
+        return Err(ProtocolError::InsufficientData {
+            need: 4,
+            have: data.len(),
+        });
+    }
+    let channel_id = u16::from_be_bytes([data[1], data[2]]);
+    Ok((channel_id, &data[3..]))
+}
+
 /// Decode a push-batch response into a list of job UUIDs.
 pub fn decode_push_response(data: &[u8]) -> Result<Vec<uuid::Uuid>, ProtocolError> {
     let mut pos = 0;
@@ -631,5 +692,44 @@ mod tests {
         let failed = u32::from_be_bytes([encoded[5], encoded[6], encoded[7], encoded[8]]);
         assert_eq!(acked, 5);
         assert_eq!(failed, 2);
+    }
+
+    #[test]
+    fn encode_decode_channel_frame_roundtrip() {
+        let inner = encode_push_batch("q", &[b"data"]);
+        let encoded = encode_channel_frame(42, &inner);
+
+        // First byte should be 0x10
+        assert_eq!(encoded[0], BinaryCommand::ChannelFrame as u8);
+
+        let (channel_id, inner_data) = decode_channel_frame(&encoded).unwrap();
+        assert_eq!(channel_id, 42);
+        assert_eq!(inner_data, inner.as_slice());
+    }
+
+    #[test]
+    fn channel_frame_zero_id() {
+        let inner = encode_pull_batch("q", 5);
+        let encoded = encode_channel_frame(0, &inner);
+        let (channel_id, inner_data) = decode_channel_frame(&encoded).unwrap();
+        assert_eq!(channel_id, 0);
+        assert_eq!(inner_data, inner.as_slice());
+    }
+
+    #[test]
+    fn channel_response_encoding() {
+        let inner_resp = encode_push_response(&[]);
+        let encoded = encode_channel_response(99, &inner_resp);
+        // First 2 bytes are channel_id
+        let channel_id = u16::from_be_bytes([encoded[0], encoded[1]]);
+        assert_eq!(channel_id, 99);
+        // Rest is the inner response
+        assert_eq!(&encoded[2..], inner_resp.as_slice());
+    }
+
+    #[test]
+    fn channel_frame_truncated_returns_error() {
+        // Too short: just 0x10 + 1 byte
+        assert!(decode_channel_frame(&[0x10, 0x00]).is_err());
     }
 }

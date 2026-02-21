@@ -72,11 +72,11 @@ where
             }
         };
 
-        // Binary frame detection: command bytes 0x01–0x03 never appear as the
-        // first byte of valid JSON (which starts with `{`, `[`, `"`, or digits).
+        // Binary frame detection: command bytes 0x01–0x03 and 0x10 never appear
+        // as the first byte of valid JSON (which starts with `{`, `[`, `"`, or digits).
         if matches!(
             BinaryCommand::try_from(first_byte),
-            Ok(BinaryCommand::PushBatch | BinaryCommand::PullBatch | BinaryCommand::AckBatch)
+            Ok(BinaryCommand::PushBatch | BinaryCommand::PullBatch | BinaryCommand::AckBatch | BinaryCommand::ChannelFrame)
         ) {
             if !authenticated {
                 // Binary protocol requires pre-authentication on this connection.
@@ -192,6 +192,70 @@ where
             return Err(());
         }
     };
+
+    // Channel frame: read channel_id then recurse for the inner command.
+    if cmd == BinaryCommand::ChannelFrame {
+        // Read 2-byte channel_id
+        let mut chan_buf = [0u8; 2];
+        if reader.read_exact(&mut chan_buf).await.is_err() {
+            return Err(());
+        }
+        let channel_id = u16::from_be_bytes(chan_buf);
+
+        // Read the inner command byte
+        let mut inner_cmd_byte = [0u8; 1];
+        if reader.read_exact(&mut inner_cmd_byte).await.is_err() {
+            return Err(());
+        }
+        let inner_cmd = match BinaryCommand::try_from(inner_cmd_byte[0]) {
+            Ok(c) => c,
+            Err(_) => {
+                let err = binary::encode_channel_response(
+                    channel_id,
+                    &binary::encode_error_response("Invalid inner command in channel frame"),
+                );
+                if writer.write_all(&err).await.is_err() {
+                    return Ok(false);
+                }
+                let _ = writer.flush().await;
+                return Err(());
+            }
+        };
+
+        // Read the inner frame body
+        let inner_data = match read_binary_frame_body(reader, inner_cmd).await {
+            Ok(data) => data,
+            Err(msg) => {
+                let err = binary::encode_channel_response(
+                    channel_id,
+                    &binary::encode_error_response(&msg),
+                );
+                if writer.write_all(&err).await.is_err() {
+                    return Ok(false);
+                }
+                let _ = writer.flush().await;
+                return Err(());
+            }
+        };
+
+        // Build the inner frame and process it
+        let mut inner_frame = BytesMut::with_capacity(1 + inner_data.len());
+        inner_frame.extend_from_slice(&inner_cmd_byte);
+        inner_frame.extend_from_slice(&inner_data);
+        let inner_bytes = inner_frame.freeze();
+
+        let inner_response = handle_binary_frame_zero_copy(inner_bytes, manager).await;
+
+        // Wrap response with channel_id
+        let response = binary::encode_channel_response(channel_id, &inner_response);
+        if writer.write_all(&response).await.is_err() {
+            return Ok(false);
+        }
+        if writer.flush().await.is_err() {
+            return Ok(false);
+        }
+        return Ok(true);
+    }
 
     // Read the rest of the frame based on command type.
     let frame_data = match read_binary_frame_body(reader, cmd).await {
@@ -347,6 +411,10 @@ where
 
             Ok(body)
         }
+        // ChannelFrame is handled before this function is called.
+        BinaryCommand::ChannelFrame => {
+            Err("ChannelFrame should be handled before read_binary_frame_body".to_string())
+        }
     }
 }
 
@@ -380,6 +448,16 @@ pub async fn handle_binary_frame(data: &[u8], manager: &QueueManager) -> Vec<u8>
         BinaryCommand::PushBatch => handle_binary_push_batch(data, manager).await,
         BinaryCommand::PullBatch => handle_binary_pull_batch(data, manager).await,
         BinaryCommand::AckBatch => handle_binary_ack_batch(data, manager).await,
+        BinaryCommand::ChannelFrame => {
+            // Unwrap channel frame and process inner command
+            match binary::decode_channel_frame(data) {
+                Ok((channel_id, inner_data)) => {
+                    let inner_response = Box::pin(handle_binary_frame(inner_data, manager)).await;
+                    binary::encode_channel_response(channel_id, &inner_response)
+                }
+                Err(e) => binary::encode_error_response(&format!("Channel frame error: {e}")),
+            }
+        }
     }
 }
 
@@ -402,6 +480,16 @@ async fn handle_binary_frame_zero_copy(data: Bytes, manager: &QueueManager) -> V
         BinaryCommand::PushBatch => handle_binary_push_batch_zero_copy(data, manager).await,
         BinaryCommand::PullBatch => handle_binary_pull_batch(&data, manager).await,
         BinaryCommand::AckBatch => handle_binary_ack_batch(&data, manager).await,
+        BinaryCommand::ChannelFrame => {
+            // Unwrap channel frame and process inner command
+            match binary::decode_channel_frame(&data) {
+                Ok((channel_id, inner_data)) => {
+                    let inner_response = Box::pin(handle_binary_frame(inner_data, manager)).await;
+                    binary::encode_channel_response(channel_id, &inner_response)
+                }
+                Err(e) => binary::encode_error_response(&format!("Channel frame error: {e}")),
+            }
+        }
     }
 }
 
@@ -1198,5 +1286,74 @@ mod tests {
         let manager = make_manager();
         let response = handle_binary_frame(&[], &manager).await;
         assert_eq!(response[0], 0x01, "Expected error status for empty frame");
+    }
+
+    #[tokio::test]
+    async fn channel_frame_push_batch() {
+        let manager = make_manager();
+        let payloads: Vec<&[u8]> = vec![br#"{"ch":1}"#];
+        let inner_frame = binary::encode_push_batch("chan-q", &payloads);
+        let channel_frame = binary::encode_channel_frame(42, &inner_frame);
+
+        let response = handle_binary_frame(&channel_frame, &manager).await;
+
+        // Response should be prefixed with channel_id=42
+        let channel_id = u16::from_be_bytes([response[0], response[1]]);
+        assert_eq!(channel_id, 42, "Response should carry channel_id=42");
+
+        // Inner response starts at offset 2
+        let inner_resp = &response[2..];
+        assert_eq!(inner_resp[0], 0x00, "Inner response should be success");
+        let ids = binary::decode_push_response(inner_resp).unwrap();
+        assert_eq!(ids.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn channel_frame_different_channels_same_connection() {
+        let manager = make_manager();
+
+        // Push on channel 1
+        let push1 = binary::encode_push_batch("q1", &[br#"{"a":1}"#]);
+        let chan1 = binary::encode_channel_frame(1, &push1);
+        let resp1 = handle_binary_frame(&chan1, &manager).await;
+        assert_eq!(u16::from_be_bytes([resp1[0], resp1[1]]), 1);
+
+        // Push on channel 2 (different queue)
+        let push2 = binary::encode_push_batch("q2", &[br#"{"b":2}"#]);
+        let chan2 = binary::encode_channel_frame(2, &push2);
+        let resp2 = handle_binary_frame(&chan2, &manager).await;
+        assert_eq!(u16::from_be_bytes([resp2[0], resp2[1]]), 2);
+
+        // Both should succeed
+        assert_eq!(resp1[2], 0x00);
+        assert_eq!(resp2[2], 0x00);
+    }
+
+    #[tokio::test]
+    async fn channel_frame_zero_is_default() {
+        let manager = make_manager();
+        let payloads: Vec<&[u8]> = vec![br#"{}"#];
+        let inner_frame = binary::encode_push_batch("default-q", &payloads);
+        let channel_frame = binary::encode_channel_frame(0, &inner_frame);
+
+        let response = handle_binary_frame(&channel_frame, &manager).await;
+        let channel_id = u16::from_be_bytes([response[0], response[1]]);
+        assert_eq!(channel_id, 0, "Default channel should be 0");
+        assert_eq!(response[2], 0x00, "Should succeed");
+    }
+
+    #[tokio::test]
+    async fn backward_compat_raw_command_no_channel() {
+        // Existing clients send raw 0x01-0x03 without channel wrapper.
+        // This should still work (treated as channel 0 implicitly).
+        let manager = make_manager();
+        let payloads: Vec<&[u8]> = vec![br#"{"legacy":true}"#];
+        let frame = binary::encode_push_batch("legacy-q", &payloads);
+        let response = handle_binary_frame(&frame, &manager).await;
+
+        // No channel prefix, direct response
+        assert_eq!(response[0], 0x00, "Raw command should succeed");
+        let ids = binary::decode_push_response(&response).unwrap();
+        assert_eq!(ids.len(), 1);
     }
 }
