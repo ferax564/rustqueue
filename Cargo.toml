@@ -82,6 +82,9 @@ rustls = { version = "0.23", optional = true }
 tokio-rustls = { version = "0.26", optional = true }
 rustls-pemfile = { version = "2", optional = true }
 
+# Zero-copy byte buffers
+bytes = "1"
+
 # Concurrent data structures
 dashmap = "6"
 

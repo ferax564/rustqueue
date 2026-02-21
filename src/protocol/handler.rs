@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use bytes::{Bytes, BytesMut};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, warn};
@@ -22,6 +23,9 @@ use crate::engine::models::Schedule;
 use crate::engine::queue::{BatchAckItem, BatchPushItem, JobOptions, QueueManager};
 
 use super::binary::{self, BinaryCommand};
+
+/// Initial capacity for the binary frame receive buffer (64 KB).
+const BINARY_RECV_BUF_CAPACITY: usize = 64 * 1024;
 
 /// Handle a single TCP connection, processing commands until the client disconnects.
 ///
@@ -203,11 +207,16 @@ where
     };
 
     // Prepend the command byte to form the full frame for decoding.
-    let mut full_frame = Vec::with_capacity(1 + frame_data.len());
-    full_frame.push(cmd_byte[0]);
+    // Use BytesMut for efficient buffer construction, then freeze into
+    // Bytes for zero-copy payload slicing in decode.
+    let mut full_frame = BytesMut::with_capacity(
+        (1 + frame_data.len()).max(BINARY_RECV_BUF_CAPACITY),
+    );
+    full_frame.extend_from_slice(&cmd_byte);
     full_frame.extend_from_slice(&frame_data);
+    let frame_bytes = full_frame.freeze();
 
-    let response = handle_binary_frame(&full_frame, manager).await;
+    let response = handle_binary_frame_zero_copy(frame_bytes, manager).await;
 
     if writer.write_all(&response).await.is_err() {
         return Ok(false);
@@ -374,6 +383,28 @@ pub async fn handle_binary_frame(data: &[u8], manager: &QueueManager) -> Vec<u8>
     }
 }
 
+/// Zero-copy variant of [`handle_binary_frame`] that takes ownership of a
+/// `Bytes` buffer. For PushBatch commands, payloads are sliced from the
+/// original buffer without copying.
+async fn handle_binary_frame_zero_copy(data: Bytes, manager: &QueueManager) -> Vec<u8> {
+    if data.is_empty() {
+        return binary::encode_error_response("Empty binary frame");
+    }
+
+    let cmd = match BinaryCommand::try_from(data[0]) {
+        Ok(cmd) => cmd,
+        Err(_) => {
+            return binary::encode_error_response(&format!("Invalid command byte: {:#04x}", data[0]));
+        }
+    };
+
+    match cmd {
+        BinaryCommand::PushBatch => handle_binary_push_batch_zero_copy(data, manager).await,
+        BinaryCommand::PullBatch => handle_binary_pull_batch(&data, manager).await,
+        BinaryCommand::AckBatch => handle_binary_ack_batch(&data, manager).await,
+    }
+}
+
 /// Handle a binary PushBatch command.
 async fn handle_binary_push_batch(data: &[u8], manager: &QueueManager) -> Vec<u8> {
     let (queue_name, payloads) = match binary::decode_push_batch(data) {
@@ -390,6 +421,34 @@ async fn handle_binary_push_batch(data: &[u8], manager: &QueueManager) -> Vec<u8
     for (idx, payload) in payloads.iter().enumerate() {
         let data_value: serde_json::Value = serde_json::from_slice(payload).unwrap_or_else(|_| {
             json!({ "raw": hex::encode(payload) })
+        });
+        items.push(BatchPushItem {
+            name: format!("binary-job-{idx}"),
+            data: data_value,
+            options: None,
+        });
+    }
+
+    match manager.push_batch(&queue_name, items).await {
+        Ok(ids) => binary::encode_push_response(&ids),
+        Err(e) => binary::encode_error_response(&e.to_string()),
+    }
+}
+
+/// Zero-copy variant of push batch handler. Payloads are `Bytes` slices
+/// into the original frame buffer, avoiding memcpy for large payloads.
+async fn handle_binary_push_batch_zero_copy(data: Bytes, manager: &QueueManager) -> Vec<u8> {
+    let (queue_name, payloads) = match binary::decode_push_batch_zero_copy(data) {
+        Ok(result) => result,
+        Err(e) => {
+            return binary::encode_error_response(&format!("Decode error: {e}"));
+        }
+    };
+
+    let mut items = Vec::with_capacity(payloads.len());
+    for (idx, payload) in payloads.iter().enumerate() {
+        let data_value: serde_json::Value = serde_json::from_slice(payload).unwrap_or_else(|_| {
+            json!({ "raw": hex::encode(payload.as_ref()) })
         });
         items.push(BatchPushItem {
             name: format!("binary-job-{idx}"),
@@ -1109,6 +1168,21 @@ mod tests {
         let failed = u32::from_be_bytes([ack_resp[5], ack_resp[6], ack_resp[7], ack_resp[8]]);
         assert_eq!(acked, 2);
         assert_eq!(failed, 0);
+    }
+
+    #[tokio::test]
+    async fn zero_copy_push_batch_handler() {
+        let manager = make_manager();
+        let payloads: Vec<&[u8]> = vec![br#"{"x":1}"#, br#"{"y":2}"#, br#"{"z":3}"#];
+        let frame = binary::encode_push_batch("zc-q", &payloads);
+        let frame_bytes = Bytes::from(frame);
+
+        let response = handle_binary_frame_zero_copy(frame_bytes, &manager).await;
+
+        assert_eq!(response[0], 0x00, "Expected success status");
+        let ids = binary::decode_push_response(&response).unwrap();
+        assert_eq!(ids.len(), 3, "Should return 3 job IDs");
+        assert!(ids.iter().all(|id| !id.is_nil()));
     }
 
     #[tokio::test]

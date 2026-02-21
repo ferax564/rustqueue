@@ -3,6 +3,9 @@
 //! Provides a compact binary frame format for push/pull/ack batch operations,
 //! avoiding JSON serialization overhead for bulk workloads.
 //!
+//! Uses `bytes::Bytes` for zero-copy payload references where possible,
+//! avoiding memcpy for large payloads.
+//!
 //! # Wire Format
 //!
 //! ## Push Batch Request
@@ -25,6 +28,8 @@
 //! For each item:
 //!   [16 bytes: job_id]       UUID bytes
 //! ```
+
+use bytes::Bytes;
 
 /// Maximum single payload size (1 MB).
 const MAX_PAYLOAD_SIZE: usize = 1_048_576;
@@ -165,6 +170,88 @@ pub fn decode_push_batch(data: &[u8]) -> Result<(String, Vec<Vec<u8>>), Protocol
             });
         }
         payloads.push(data[pos..pos + msg_len].to_vec());
+        pos += msg_len;
+    }
+
+    Ok((queue, payloads))
+}
+
+/// Zero-copy decode of a push-batch request from `Bytes`.
+///
+/// Returns `(queue_name, payloads)` where each payload is a `Bytes` slice
+/// into the original buffer, avoiding memcpy for large payloads.
+pub fn decode_push_batch_zero_copy(data: Bytes) -> Result<(String, Vec<Bytes>), ProtocolError> {
+    let mut pos = 0;
+
+    // Command byte
+    if data.is_empty() {
+        return Err(ProtocolError::InsufficientData {
+            need: 1,
+            have: 0,
+        });
+    }
+    let cmd = BinaryCommand::try_from(data[pos])?;
+    if cmd != BinaryCommand::PushBatch {
+        return Err(ProtocolError::InvalidCommand(data[pos]));
+    }
+    pos += 1;
+
+    // Queue name length
+    if data.len() < pos + 2 {
+        return Err(ProtocolError::InsufficientData {
+            need: pos + 2,
+            have: data.len(),
+        });
+    }
+    let queue_len = u16::from_be_bytes([data[pos], data[pos + 1]]) as usize;
+    pos += 2;
+
+    // Queue name
+    if data.len() < pos + queue_len {
+        return Err(ProtocolError::InsufficientData {
+            need: pos + queue_len,
+            have: data.len(),
+        });
+    }
+    let queue = std::str::from_utf8(&data[pos..pos + queue_len])
+        .map_err(|_| ProtocolError::InvalidUtf8)?
+        .to_string();
+    pos += queue_len;
+
+    // Batch count
+    if data.len() < pos + 4 {
+        return Err(ProtocolError::InsufficientData {
+            need: pos + 4,
+            have: data.len(),
+        });
+    }
+    let count = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+    pos += 4;
+
+    // Payloads -- zero-copy slicing via Bytes::slice
+    let mut payloads = Vec::with_capacity(count);
+    for _ in 0..count {
+        if data.len() < pos + 4 {
+            return Err(ProtocolError::InsufficientData {
+                need: pos + 4,
+                have: data.len(),
+            });
+        }
+        let msg_len =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        pos += 4;
+
+        if msg_len > MAX_PAYLOAD_SIZE {
+            return Err(ProtocolError::PayloadTooLarge { size: msg_len });
+        }
+
+        if data.len() < pos + msg_len {
+            return Err(ProtocolError::InsufficientData {
+                need: pos + msg_len,
+                have: data.len(),
+            });
+        }
+        payloads.push(data.slice(pos..pos + msg_len));
         pos += msg_len;
     }
 
@@ -512,6 +599,28 @@ mod tests {
         let msg_len = u16::from_be_bytes([encoded[1], encoded[2]]) as usize;
         let msg = std::str::from_utf8(&encoded[3..3 + msg_len]).unwrap();
         assert_eq!(msg, "something went wrong");
+    }
+
+    #[test]
+    fn zero_copy_decode_push_batch_roundtrip() {
+        let payloads: Vec<&[u8]> = vec![b"hello", b"world", b"test"];
+        let encoded = encode_push_batch("my-queue", &payloads);
+        let data = Bytes::from(encoded);
+        let (queue, decoded) = decode_push_batch_zero_copy(data).unwrap();
+        assert_eq!(queue, "my-queue");
+        assert_eq!(decoded.len(), 3);
+        assert_eq!(&decoded[0][..], b"hello");
+        assert_eq!(&decoded[1][..], b"world");
+        assert_eq!(&decoded[2][..], b"test");
+    }
+
+    #[test]
+    fn zero_copy_decode_empty_batch() {
+        let encoded = encode_push_batch("q", &[]);
+        let data = Bytes::from(encoded);
+        let (queue, payloads) = decode_push_batch_zero_copy(data).unwrap();
+        assert_eq!(queue, "q");
+        assert!(payloads.is_empty());
     }
 
     #[test]
