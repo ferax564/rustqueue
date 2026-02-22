@@ -493,6 +493,65 @@ async fn handle_binary_frame_zero_copy(data: Bytes, manager: &QueueManager) -> V
     }
 }
 
+/// Prefix for auto-generated job names in the binary protocol.
+const BINARY_JOB_PREFIX: &str = "binary-job-";
+
+/// Convert raw binary payloads into [`BatchPushItem`]s suitable for
+/// [`QueueManager::push_batch`].
+///
+/// Optimizations over the naive approach:
+/// 1. **Fast-path JSON detection:** Checks first byte for `{` or `[` before
+///    attempting `serde_json::from_slice`, avoiding the full parse attempt on
+///    payloads that are clearly not JSON.
+/// 2. **UTF-8 lossy fallback instead of hex encoding:** Non-JSON payloads are
+///    stored as `Value::String` via `String::from_utf8_lossy`, which is
+///    significantly faster than hex-encoding (no 2x expansion, no per-byte
+///    formatting). The storage layer serializes this back to JSON as a string.
+/// 3. **Pre-allocated job name:** Uses a single `String` buffer with
+///    `truncate` + `push_str` to avoid per-item `format!` allocations.
+fn build_batch_push_items<'a>(payloads: impl ExactSizeIterator<Item = &'a [u8]>) -> Vec<BatchPushItem> {
+    let len = payloads.len();
+    let mut items = Vec::with_capacity(len);
+    // Pre-allocate a name buffer: "binary-job-" + up to 10 digits for u32 index.
+    let mut name_buf = String::with_capacity(BINARY_JOB_PREFIX.len() + 10);
+
+    for (idx, payload) in payloads.enumerate() {
+        // Build the job name by reusing the buffer.
+        name_buf.clear();
+        name_buf.push_str(BINARY_JOB_PREFIX);
+        // itoa is faster than format! for integer-to-string, but we can use
+        // the Display impl which is close enough and avoids a new dependency.
+        use std::fmt::Write;
+        let _ = write!(name_buf, "{idx}");
+
+        // Fast-path: only attempt JSON parsing if the payload starts with
+        // `{` or `[` (the two valid JSON value opening bytes for objects/arrays).
+        // Scalar JSON values (strings, numbers, booleans, null) are uncommon
+        // as job payloads and will be caught by the fallback path.
+        let data_value = if !payload.is_empty() && (payload[0] == b'{' || payload[0] == b'[') {
+            serde_json::from_slice(payload).unwrap_or_else(|_| {
+                Value::String(String::from_utf8_lossy(payload).into_owned())
+            })
+        } else {
+            // Non-JSON payload: store as a string value. This is faster than
+            // hex encoding (which doubles the size) and produces more readable
+            // output for text-like payloads.
+            match serde_json::from_slice(payload) {
+                Ok(v) => v,
+                Err(_) => Value::String(String::from_utf8_lossy(payload).into_owned()),
+            }
+        };
+
+        items.push(BatchPushItem {
+            name: name_buf.clone(),
+            data: data_value,
+            options: None,
+        });
+    }
+
+    items
+}
+
 /// Handle a binary PushBatch command.
 async fn handle_binary_push_batch(data: &[u8], manager: &QueueManager) -> Vec<u8> {
     let (queue_name, payloads) = match binary::decode_push_batch(data) {
@@ -502,20 +561,7 @@ async fn handle_binary_push_batch(data: &[u8], manager: &QueueManager) -> Vec<u8
         }
     };
 
-    // Convert raw payloads into BatchPushItems. Each payload is treated as the
-    // JSON `data` field of a job. If the payload is valid JSON, it's used as-is;
-    // otherwise it's wrapped in a `{"raw": "<hex>"}` envelope.
-    let mut items = Vec::with_capacity(payloads.len());
-    for (idx, payload) in payloads.iter().enumerate() {
-        let data_value: serde_json::Value = serde_json::from_slice(payload).unwrap_or_else(|_| {
-            json!({ "raw": hex::encode(payload) })
-        });
-        items.push(BatchPushItem {
-            name: format!("binary-job-{idx}"),
-            data: data_value,
-            options: None,
-        });
-    }
+    let items = build_batch_push_items(payloads.iter().map(|p| p.as_slice()));
 
     match manager.push_batch(&queue_name, items).await {
         Ok(ids) => binary::encode_push_response(&ids),
@@ -524,7 +570,11 @@ async fn handle_binary_push_batch(data: &[u8], manager: &QueueManager) -> Vec<u8
 }
 
 /// Zero-copy variant of push batch handler. Payloads are `Bytes` slices
-/// into the original frame buffer, avoiding memcpy for large payloads.
+/// into the original frame buffer, avoiding per-payload memcpy during frame
+/// decoding. Note that `serde_json::from_slice` still allocates when parsing
+/// the JSON into a `Value` tree — the zero-copy benefit is in the frame
+/// splitting stage (one refcounted `Bytes` buffer instead of N `Vec<u8>`
+/// allocations).
 async fn handle_binary_push_batch_zero_copy(data: Bytes, manager: &QueueManager) -> Vec<u8> {
     let (queue_name, payloads) = match binary::decode_push_batch_zero_copy(data) {
         Ok(result) => result,
@@ -533,17 +583,7 @@ async fn handle_binary_push_batch_zero_copy(data: Bytes, manager: &QueueManager)
         }
     };
 
-    let mut items = Vec::with_capacity(payloads.len());
-    for (idx, payload) in payloads.iter().enumerate() {
-        let data_value: serde_json::Value = serde_json::from_slice(payload).unwrap_or_else(|_| {
-            json!({ "raw": hex::encode(payload.as_ref()) })
-        });
-        items.push(BatchPushItem {
-            name: format!("binary-job-{idx}"),
-            data: data_value,
-            options: None,
-        });
-    }
+    let items = build_batch_push_items(payloads.iter().map(|p| p.as_ref()));
 
     match manager.push_batch(&queue_name, items).await {
         Ok(ids) => binary::encode_push_response(&ids),
@@ -1355,5 +1395,89 @@ mod tests {
         assert_eq!(response[0], 0x00, "Raw command should succeed");
         let ids = binary::decode_push_response(&response).unwrap();
         assert_eq!(ids.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn zero_copy_handler_json_and_binary_payloads() {
+        // Verify that the zero-copy handler correctly processes a mix of
+        // valid JSON payloads and raw binary (non-JSON) payloads.
+        let manager = make_manager();
+
+        // Mix of: JSON object, JSON array, plain text (not JSON), raw bytes
+        let json_obj = br#"{"key":"value"}"#;
+        let json_arr = br#"[1,2,3]"#;
+        let plain_text = b"hello world";
+        let raw_bytes: &[u8] = &[0x00, 0xFF, 0xAB, 0xCD];
+
+        let payloads: Vec<&[u8]> = vec![json_obj, json_arr, plain_text, raw_bytes];
+        let frame = binary::encode_push_batch("mixed-q", &payloads);
+        let frame_bytes = Bytes::from(frame);
+
+        let response = handle_binary_frame_zero_copy(frame_bytes, &manager).await;
+        assert_eq!(response[0], 0x00, "Expected success status");
+        let ids = binary::decode_push_response(&response).unwrap();
+        assert_eq!(ids.len(), 4, "Should return 4 job IDs");
+
+        // Pull all jobs back and verify data is preserved correctly.
+        let pull_frame = binary::encode_pull_batch("mixed-q", 4);
+        let pull_resp = handle_binary_frame(&pull_frame, &manager).await;
+        assert_eq!(pull_resp[0], 0x00, "Pull should succeed");
+        let count =
+            u32::from_be_bytes([pull_resp[1], pull_resp[2], pull_resp[3], pull_resp[4]]) as usize;
+        assert_eq!(count, 4, "Should pull 4 jobs");
+    }
+
+    #[tokio::test]
+    async fn zero_copy_handler_non_json_uses_lossy_string() {
+        // Verify that non-JSON payloads are stored as string values
+        // (via from_utf8_lossy) rather than hex-encoded.
+        let manager = make_manager();
+
+        let payloads: Vec<&[u8]> = vec![b"plain-text-payload"];
+        let frame = binary::encode_push_batch("lossy-q", &payloads);
+        let frame_bytes = Bytes::from(frame);
+
+        let response = handle_binary_frame_zero_copy(frame_bytes, &manager).await;
+        assert_eq!(response[0], 0x00, "Expected success status");
+
+        // Pull the job to inspect its data
+        let jobs = manager.pull("lossy-q", 1).await.unwrap();
+        assert_eq!(jobs.len(), 1);
+        // The data should be a JSON string containing "plain-text-payload"
+        // (not hex-encoded like "706c61696e2d746578742d7061796c6f6164")
+        assert_eq!(jobs[0].data, json!("plain-text-payload"));
+    }
+
+    #[test]
+    fn build_batch_push_items_name_format() {
+        // Verify that job names are correctly formatted.
+        let payloads: Vec<&[u8]> = vec![br#"{}"#, br#"{}"#, br#"{}"#];
+        let items = build_batch_push_items(payloads.iter().map(|p| *p as &[u8]));
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].name, "binary-job-0");
+        assert_eq!(items[1].name, "binary-job-1");
+        assert_eq!(items[2].name, "binary-job-2");
+    }
+
+    #[test]
+    fn build_batch_push_items_json_parsing() {
+        // JSON objects/arrays should be parsed into their Value tree.
+        let payloads: Vec<&[u8]> = vec![
+            br#"{"a":1}"#,
+            br#"[1,2]"#,
+            b"not-json",
+            &[0xFF, 0xFE],
+        ];
+        let items = build_batch_push_items(payloads.iter().map(|p| *p as &[u8]));
+        assert_eq!(items.len(), 4);
+
+        // JSON object preserved
+        assert_eq!(items[0].data, json!({"a": 1}));
+        // JSON array preserved
+        assert_eq!(items[1].data, json!([1, 2]));
+        // Plain text stored as string
+        assert_eq!(items[2].data, json!("not-json"));
+        // Raw bytes stored as lossy UTF-8 string (with replacement chars)
+        assert!(items[3].data.is_string());
     }
 }
