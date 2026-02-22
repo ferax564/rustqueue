@@ -2726,6 +2726,7 @@ dependencies = [
  "assert_cmd",
  "async-trait",
  "axum 0.8.8",
+ "bytes",
  "chrono",
  "clap",
  "config",
