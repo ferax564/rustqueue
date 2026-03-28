@@ -28,12 +28,12 @@ Systems:
 
 | System | Produce ops/s | Consume ops/s | End-to-end ops/s |
 |--------|---------------:|--------------:|-----------------:|
-| rustqueue_tcp | 40,504 | 26,716 | 18,810 |
-| redis_list | 9,586 | 10,306 | 5,014 |
-| rabbitmq | 42,471 | 5,067 | 4,228 |
-| bullmq | 5,238 | 4,385 | 1,853 |
-| celery | 2,997 | 1,305 | 897 |
-| rustqueue_http | 2,459 | 1,250 | 810 |
+| rustqueue_tcp | 47,129 | 38,048 | 22,685 |
+| redis_list | 9,337 | 9,511 | 4,951 |
+| rabbitmq | 47,588 | 5,367 | 4,686 |
+| bullmq | 7,559 | 6,690 | 1,978 |
+| celery | 3,168 | 1,589 | 893 |
+| rustqueue_http | 2,415 | 1,236 | 819 |
 
 ## Winners
 
