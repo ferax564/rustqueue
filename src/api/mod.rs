@@ -92,10 +92,7 @@ pub fn router(state: Arc<AppState>) -> axum::Router {
 }
 
 /// Middleware that records HTTP request metrics (count + latency by method/status class).
-async fn http_metrics_middleware(
-    request: axum::extract::Request,
-    next: Next,
-) -> Response {
+async fn http_metrics_middleware(request: axum::extract::Request, next: Next) -> Response {
     let method = request.method().to_string();
     let start = std::time::Instant::now();
 

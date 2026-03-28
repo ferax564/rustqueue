@@ -13,7 +13,10 @@ use serde_json::json;
 use uuid::Uuid;
 
 use rustqueue::engine::models::{Job, JobState, Schedule};
-use rustqueue::storage::{BufferedRedbConfig, BufferedRedbStorage, HybridConfig, HybridStorage, MemoryStorage, RedbStorage, StorageBackend};
+use rustqueue::storage::{
+    BufferedRedbConfig, BufferedRedbStorage, HybridConfig, HybridStorage, MemoryStorage,
+    RedbStorage, StorageBackend,
+};
 
 #[cfg(feature = "sqlite")]
 use rustqueue::storage::SqliteStorage;

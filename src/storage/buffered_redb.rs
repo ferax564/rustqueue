@@ -12,7 +12,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use tokio::sync::{oneshot, Mutex, Notify};
+use tokio::sync::{Mutex, Notify, oneshot};
 
 use crate::engine::models::{Job, JobId, QueueCounts, Schedule};
 use crate::storage::{CompleteJobOutcome, StorageBackend};
@@ -203,7 +203,8 @@ impl StorageBackend for BufferedRedbStorage {
         if should_notify {
             self.notify.notify_one();
         }
-        rx.await.map_err(|_| anyhow::anyhow!("flush task dropped"))?
+        rx.await
+            .map_err(|_| anyhow::anyhow!("flush task dropped"))?
     }
 
     // Batch inserts bypass the buffer (already batched)
@@ -232,17 +233,14 @@ impl StorageBackend for BufferedRedbStorage {
         let (tx, rx) = oneshot::channel();
         let should_notify = {
             let mut guard = self.completes.lock().await;
-            guard.push(PendingComplete {
-                id,
-                result,
-                tx,
-            });
+            guard.push(PendingComplete { id, result, tx });
             guard.len() >= self.max_batch
         };
         if should_notify {
             self.notify.notify_one();
         }
-        rx.await.map_err(|_| anyhow::anyhow!("flush task dropped"))?
+        rx.await
+            .map_err(|_| anyhow::anyhow!("flush task dropped"))?
     }
 
     // Batch completes bypass the buffer

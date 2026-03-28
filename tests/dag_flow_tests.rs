@@ -111,41 +111,64 @@ async fn test_child_blocked_until_parent_ack() {
     let client = Client::new();
 
     // Push parent (no deps → Waiting)
-    let parent_id = push_job(&client, &base, "dag", json!({
-        "name": "parent-job",
-        "data": {"step": "parent"}
-    }))
+    let parent_id = push_job(
+        &client,
+        &base,
+        "dag",
+        json!({
+            "name": "parent-job",
+            "data": {"step": "parent"}
+        }),
+    )
     .await;
 
     // Push child with depends_on parent
-    let child_id = push_job(&client, &base, "dag", json!({
-        "name": "child-job",
-        "data": {"step": "child"},
-        "depends_on": [parent_id]
-    }))
+    let child_id = push_job(
+        &client,
+        &base,
+        "dag",
+        json!({
+            "name": "child-job",
+            "data": {"step": "child"},
+            "depends_on": [parent_id]
+        }),
+    )
     .await;
 
     // Child should be Blocked
     let child = get_job(&client, &base, &child_id).await;
-    assert_eq!(child["job"]["state"], "blocked", "child should start as Blocked");
+    assert_eq!(
+        child["job"]["state"], "blocked",
+        "child should start as Blocked"
+    );
 
     // Pull should only get the parent (child is Blocked)
-    let pulled = pull_job(&client, &base, "dag").await.expect("should pull parent");
+    let pulled = pull_job(&client, &base, "dag")
+        .await
+        .expect("should pull parent");
     assert_eq!(pulled["id"], parent_id);
 
     // No more pullable jobs (child still Blocked)
     let empty = pull_job(&client, &base, "dag").await;
-    assert!(empty.is_none(), "child should not be pullable while Blocked");
+    assert!(
+        empty.is_none(),
+        "child should not be pullable while Blocked"
+    );
 
     // Ack parent → should promote child to Waiting
     ack_job(&client, &base, &parent_id).await;
 
     // Child should now be Waiting
     let child_after = get_job(&client, &base, &child_id).await;
-    assert_eq!(child_after["job"]["state"], "waiting", "child should be Waiting after parent ack");
+    assert_eq!(
+        child_after["job"]["state"], "waiting",
+        "child should be Waiting after parent ack"
+    );
 
     // Now we can pull the child
-    let pulled_child = pull_job(&client, &base, "dag").await.expect("should pull child now");
+    let pulled_child = pull_job(&client, &base, "dag")
+        .await
+        .expect("should pull child now");
     assert_eq!(pulled_child["id"], child_id);
 }
 
@@ -157,59 +180,98 @@ async fn test_chain_a_b_c() {
     let client = Client::new();
 
     // A (no deps)
-    let a_id = push_job(&client, &base, "chain", json!({
-        "name": "step-a",
-        "data": {},
-        "flow_id": "pipeline-1"
-    }))
+    let a_id = push_job(
+        &client,
+        &base,
+        "chain",
+        json!({
+            "name": "step-a",
+            "data": {},
+            "flow_id": "pipeline-1"
+        }),
+    )
     .await;
 
     // B depends on A
-    let b_id = push_job(&client, &base, "chain", json!({
-        "name": "step-b",
-        "data": {},
-        "depends_on": [a_id],
-        "flow_id": "pipeline-1"
-    }))
+    let b_id = push_job(
+        &client,
+        &base,
+        "chain",
+        json!({
+            "name": "step-b",
+            "data": {},
+            "depends_on": [a_id],
+            "flow_id": "pipeline-1"
+        }),
+    )
     .await;
 
     // C depends on B
-    let c_id = push_job(&client, &base, "chain", json!({
-        "name": "step-c",
-        "data": {},
-        "depends_on": [b_id],
-        "flow_id": "pipeline-1"
-    }))
+    let c_id = push_job(
+        &client,
+        &base,
+        "chain",
+        json!({
+            "name": "step-c",
+            "data": {},
+            "depends_on": [b_id],
+            "flow_id": "pipeline-1"
+        }),
+    )
     .await;
 
     // B and C should be Blocked
-    assert_eq!(get_job(&client, &base, &b_id).await["job"]["state"], "blocked");
-    assert_eq!(get_job(&client, &base, &c_id).await["job"]["state"], "blocked");
+    assert_eq!(
+        get_job(&client, &base, &b_id).await["job"]["state"],
+        "blocked"
+    );
+    assert_eq!(
+        get_job(&client, &base, &c_id).await["job"]["state"],
+        "blocked"
+    );
 
     // Pull A, ack it
-    let pulled_a = pull_job(&client, &base, "chain").await.expect("should pull A");
+    let pulled_a = pull_job(&client, &base, "chain")
+        .await
+        .expect("should pull A");
     assert_eq!(pulled_a["id"], a_id);
     ack_job(&client, &base, &a_id).await;
 
     // B should now be Waiting, C still Blocked
-    assert_eq!(get_job(&client, &base, &b_id).await["job"]["state"], "waiting");
-    assert_eq!(get_job(&client, &base, &c_id).await["job"]["state"], "blocked");
+    assert_eq!(
+        get_job(&client, &base, &b_id).await["job"]["state"],
+        "waiting"
+    );
+    assert_eq!(
+        get_job(&client, &base, &c_id).await["job"]["state"],
+        "blocked"
+    );
 
     // Pull B, ack it
-    let pulled_b = pull_job(&client, &base, "chain").await.expect("should pull B");
+    let pulled_b = pull_job(&client, &base, "chain")
+        .await
+        .expect("should pull B");
     assert_eq!(pulled_b["id"], b_id);
     ack_job(&client, &base, &b_id).await;
 
     // C should now be Waiting
-    assert_eq!(get_job(&client, &base, &c_id).await["job"]["state"], "waiting");
+    assert_eq!(
+        get_job(&client, &base, &c_id).await["job"]["state"],
+        "waiting"
+    );
 
     // Pull C, ack it
-    let pulled_c = pull_job(&client, &base, "chain").await.expect("should pull C");
+    let pulled_c = pull_job(&client, &base, "chain")
+        .await
+        .expect("should pull C");
     assert_eq!(pulled_c["id"], c_id);
     ack_job(&client, &base, &c_id).await;
 
     // All done — C should be Completed
-    assert_eq!(get_job(&client, &base, &c_id).await["job"]["state"], "completed");
+    assert_eq!(
+        get_job(&client, &base, &c_id).await["job"]["state"],
+        "completed"
+    );
 }
 
 // ── Test: cycle detection ───────────────────────────────────────────────────
@@ -220,18 +282,28 @@ async fn test_cycle_detection() {
     let client = Client::new();
 
     // Push A
-    let a_id = push_job(&client, &base, "cycle", json!({
-        "name": "node-a",
-        "data": {}
-    }))
+    let a_id = push_job(
+        &client,
+        &base,
+        "cycle",
+        json!({
+            "name": "node-a",
+            "data": {}
+        }),
+    )
     .await;
 
     // Push B depends on A
-    let b_id = push_job(&client, &base, "cycle", json!({
-        "name": "node-b",
-        "data": {},
-        "depends_on": [a_id]
-    }))
+    let b_id = push_job(
+        &client,
+        &base,
+        "cycle",
+        json!({
+            "name": "node-b",
+            "data": {},
+            "depends_on": [a_id]
+        }),
+    )
     .await;
 
     // Try to push C that depends on B, and also try to make A depend on C
@@ -254,8 +326,14 @@ async fn test_cycle_detection() {
     assert_ne!(resp.status(), 201, "should reject non-existent dep");
 
     // Verify A and B are still fine
-    assert_eq!(get_job(&client, &base, &a_id).await["job"]["state"], "waiting");
-    assert_eq!(get_job(&client, &base, &b_id).await["job"]["state"], "blocked");
+    assert_eq!(
+        get_job(&client, &base, &a_id).await["job"]["state"],
+        "waiting"
+    );
+    assert_eq!(
+        get_job(&client, &base, &b_id).await["job"]["state"],
+        "blocked"
+    );
 }
 
 // ── Test: max depth exceeded ────────────────────────────────────────────────
@@ -266,19 +344,29 @@ async fn test_max_depth_exceeded() {
     let client = Client::new();
 
     // Build a chain of depth 5 (server configured with max_dag_depth=5)
-    let mut prev_id = push_job(&client, &base, "deep", json!({
-        "name": "depth-0",
-        "data": {}
-    }))
+    let mut prev_id = push_job(
+        &client,
+        &base,
+        "deep",
+        json!({
+            "name": "depth-0",
+            "data": {}
+        }),
+    )
     .await;
 
     // Build chain up to depth 5 (indices 1..=5) — depth 5 should still work
     for i in 1..=5 {
-        prev_id = push_job(&client, &base, "deep", json!({
-            "name": format!("depth-{}", i),
-            "data": {},
-            "depends_on": [prev_id]
-        }))
+        prev_id = push_job(
+            &client,
+            &base,
+            "deep",
+            json!({
+                "name": format!("depth-{}", i),
+                "data": {},
+                "depends_on": [prev_id]
+            }),
+        )
         .await;
     }
 
@@ -294,7 +382,11 @@ async fn test_max_depth_exceeded() {
         .await
         .unwrap();
 
-    assert_ne!(resp.status(), 201, "should reject job exceeding max DAG depth");
+    assert_ne!(
+        resp.status(),
+        201,
+        "should reject job exceeding max DAG depth"
+    );
 }
 
 // ── Test: parent DLQ cascades to child ──────────────────────────────────────
@@ -305,26 +397,41 @@ async fn test_parent_dlq_cascades_to_child() {
     let client = Client::new();
 
     // Push parent with max_attempts=1 so it goes to DLQ on first fail
-    let parent_id = push_job(&client, &base, "cascade", json!({
-        "name": "parent",
-        "data": {},
-        "max_attempts": 1
-    }))
+    let parent_id = push_job(
+        &client,
+        &base,
+        "cascade",
+        json!({
+            "name": "parent",
+            "data": {},
+            "max_attempts": 1
+        }),
+    )
     .await;
 
     // Push child depending on parent
-    let child_id = push_job(&client, &base, "cascade", json!({
-        "name": "child",
-        "data": {},
-        "depends_on": [parent_id]
-    }))
+    let child_id = push_job(
+        &client,
+        &base,
+        "cascade",
+        json!({
+            "name": "child",
+            "data": {},
+            "depends_on": [parent_id]
+        }),
+    )
     .await;
 
     // Child should be Blocked
-    assert_eq!(get_job(&client, &base, &child_id).await["job"]["state"], "blocked");
+    assert_eq!(
+        get_job(&client, &base, &child_id).await["job"]["state"],
+        "blocked"
+    );
 
     // Pull parent to make it Active
-    let pulled = pull_job(&client, &base, "cascade").await.expect("should pull parent");
+    let pulled = pull_job(&client, &base, "cascade")
+        .await
+        .expect("should pull parent");
     assert_eq!(pulled["id"], parent_id);
 
     // Fail parent — with max_attempts=1, it should go to DLQ
@@ -355,21 +462,33 @@ async fn test_dep_already_completed() {
     let client = Client::new();
 
     // Push parent and complete it
-    let parent_id = push_job(&client, &base, "pre-done", json!({
-        "name": "parent",
-        "data": {}
-    }))
+    let parent_id = push_job(
+        &client,
+        &base,
+        "pre-done",
+        json!({
+            "name": "parent",
+            "data": {}
+        }),
+    )
     .await;
 
-    let _pulled = pull_job(&client, &base, "pre-done").await.expect("should pull parent");
+    let _pulled = pull_job(&client, &base, "pre-done")
+        .await
+        .expect("should pull parent");
     ack_job(&client, &base, &parent_id).await;
 
     // Now push child depending on already-completed parent
-    let child_id = push_job(&client, &base, "pre-done", json!({
-        "name": "child",
-        "data": {},
-        "depends_on": [parent_id]
-    }))
+    let child_id = push_job(
+        &client,
+        &base,
+        "pre-done",
+        json!({
+            "name": "child",
+            "data": {},
+            "depends_on": [parent_id]
+        }),
+    )
     .await;
 
     // Child should go directly to Waiting (not Blocked) since dep is already done
@@ -390,27 +509,42 @@ async fn test_flow_status_endpoint() {
     let flow_id = "test-flow-42";
 
     // Push 3 jobs in the same flow
-    let a_id = push_job(&client, &base, "flow-q", json!({
-        "name": "flow-a",
-        "data": {},
-        "flow_id": flow_id
-    }))
+    let a_id = push_job(
+        &client,
+        &base,
+        "flow-q",
+        json!({
+            "name": "flow-a",
+            "data": {},
+            "flow_id": flow_id
+        }),
+    )
     .await;
 
-    let _b_id = push_job(&client, &base, "flow-q", json!({
-        "name": "flow-b",
-        "data": {},
-        "depends_on": [a_id],
-        "flow_id": flow_id
-    }))
+    let _b_id = push_job(
+        &client,
+        &base,
+        "flow-q",
+        json!({
+            "name": "flow-b",
+            "data": {},
+            "depends_on": [a_id],
+            "flow_id": flow_id
+        }),
+    )
     .await;
 
-    let _c_id = push_job(&client, &base, "flow-q", json!({
-        "name": "flow-c",
-        "data": {},
-        "depends_on": [a_id],
-        "flow_id": flow_id
-    }))
+    let _c_id = push_job(
+        &client,
+        &base,
+        "flow-q",
+        json!({
+            "name": "flow-c",
+            "data": {},
+            "depends_on": [a_id],
+            "flow_id": flow_id
+        }),
+    )
     .await;
 
     // Get flow status
@@ -456,5 +590,9 @@ async fn test_nonexistent_dep_rejected() {
         .unwrap();
 
     // Should be rejected (400 or 409)
-    assert_ne!(resp.status(), 201, "should reject job with non-existent dependency");
+    assert_ne!(
+        resp.status(),
+        201,
+        "should reject job with non-existent dependency"
+    );
 }

@@ -3,15 +3,18 @@
 //! Includes both raw `RedbStorage` baselines and `BufferedRedbStorage` variants
 //! to measure write coalescing impact.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use serde_json::json;
 use tempfile::tempdir;
 
 use rustqueue::engine::queue::QueueManager;
-use rustqueue::storage::{BufferedRedbConfig, BufferedRedbStorage, HybridConfig, HybridStorage, RedbDurability, RedbStorage};
+use rustqueue::storage::{
+    BufferedRedbConfig, BufferedRedbStorage, HybridConfig, HybridStorage, RedbDurability,
+    RedbStorage,
+};
 
 /// Create a fresh `QueueManager` backed by a temporary redb database.
 ///

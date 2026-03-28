@@ -337,7 +337,10 @@ pub fn start_webhook_dispatcher(
                     manager.dispatch(&event).await;
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!(dropped = n, "Webhook dispatcher lagged, some events were missed");
+                    warn!(
+                        dropped = n,
+                        "Webhook dispatcher lagged, some events were missed"
+                    );
                 }
                 Err(broadcast::error::RecvError::Closed) => {
                     info!("Webhook dispatcher shutting down (channel closed)");

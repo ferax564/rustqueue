@@ -137,10 +137,7 @@ async fn memory_stability() {
     let pid = Pid::from_u32(std::process::id());
     let mut sys = System::new();
     sys.refresh_processes();
-    let rss_before = sys
-        .process(pid)
-        .map(|p| p.memory())
-        .unwrap_or(0);
+    let rss_before = sys.process(pid).map(|p| p.memory()).unwrap_or(0);
 
     // Run 10K push+pull+ack cycles
     for i in 0..10_000 {
@@ -156,10 +153,7 @@ async fn memory_stability() {
 
     // Measure final RSS
     sys.refresh_processes();
-    let rss_after = sys
-        .process(pid)
-        .map(|p| p.memory())
-        .unwrap_or(0);
+    let rss_after = sys.process(pid).map(|p| p.memory()).unwrap_or(0);
 
     let growth_mb = (rss_after as f64 - rss_before as f64) / (1024.0 * 1024.0);
     eprintln!(

@@ -76,13 +76,15 @@ where
         // as the first byte of valid JSON (which starts with `{`, `[`, `"`, or digits).
         if matches!(
             BinaryCommand::try_from(first_byte),
-            Ok(BinaryCommand::PushBatch | BinaryCommand::PullBatch | BinaryCommand::AckBatch | BinaryCommand::ChannelFrame)
+            Ok(BinaryCommand::PushBatch
+                | BinaryCommand::PullBatch
+                | BinaryCommand::AckBatch
+                | BinaryCommand::ChannelFrame)
         ) {
             if !authenticated {
                 // Binary protocol requires pre-authentication on this connection.
-                let err = binary::encode_error_response(
-                    "Authentication required before binary commands",
-                );
+                let err =
+                    binary::encode_error_response("Authentication required before binary commands");
                 if writer.write_all(&err).await.is_err() {
                     break;
                 }
@@ -91,9 +93,9 @@ where
             }
 
             match read_and_handle_binary_frame(&mut reader, &mut writer, &manager).await {
-                Ok(true) => continue,  // frame handled, continue loop
-                Ok(false) => break,    // write error, close connection
-                Err(_) => break,       // read/decode error, close connection
+                Ok(true) => continue, // frame handled, continue loop
+                Ok(false) => break,   // write error, close connection
+                Err(_) => break,      // read/decode error, close connection
             }
         }
 
@@ -273,9 +275,8 @@ where
     // Prepend the command byte to form the full frame for decoding.
     // Use BytesMut for efficient buffer construction, then freeze into
     // Bytes for zero-copy payload slicing in decode.
-    let mut full_frame = BytesMut::with_capacity(
-        (1 + frame_data.len()).max(BINARY_RECV_BUF_CAPACITY),
-    );
+    let mut full_frame =
+        BytesMut::with_capacity((1 + frame_data.len()).max(BINARY_RECV_BUF_CAPACITY));
     full_frame.extend_from_slice(&cmd_byte);
     full_frame.extend_from_slice(&frame_data);
     let frame_bytes = full_frame.freeze();
@@ -440,7 +441,10 @@ pub async fn handle_binary_frame(data: &[u8], manager: &QueueManager) -> Vec<u8>
     let cmd = match BinaryCommand::try_from(data[0]) {
         Ok(cmd) => cmd,
         Err(_) => {
-            return binary::encode_error_response(&format!("Invalid command byte: {:#04x}", data[0]));
+            return binary::encode_error_response(&format!(
+                "Invalid command byte: {:#04x}",
+                data[0]
+            ));
         }
     };
 
@@ -472,7 +476,10 @@ async fn handle_binary_frame_zero_copy(data: Bytes, manager: &QueueManager) -> V
     let cmd = match BinaryCommand::try_from(data[0]) {
         Ok(cmd) => cmd,
         Err(_) => {
-            return binary::encode_error_response(&format!("Invalid command byte: {:#04x}", data[0]));
+            return binary::encode_error_response(&format!(
+                "Invalid command byte: {:#04x}",
+                data[0]
+            ));
         }
     };
 
@@ -509,7 +516,9 @@ const BINARY_JOB_PREFIX: &str = "binary-job-";
 ///    formatting). The storage layer serializes this back to JSON as a string.
 /// 3. **Pre-allocated job name:** Uses a single `String` buffer with
 ///    `truncate` + `push_str` to avoid per-item `format!` allocations.
-fn build_batch_push_items<'a>(payloads: impl ExactSizeIterator<Item = &'a [u8]>) -> Vec<BatchPushItem> {
+fn build_batch_push_items<'a>(
+    payloads: impl ExactSizeIterator<Item = &'a [u8]>,
+) -> Vec<BatchPushItem> {
     let len = payloads.len();
     let mut items = Vec::with_capacity(len);
     // Pre-allocate a name buffer: "binary-job-" + up to 10 digits for u32 index.
@@ -529,9 +538,8 @@ fn build_batch_push_items<'a>(payloads: impl ExactSizeIterator<Item = &'a [u8]>)
         // Scalar JSON values (strings, numbers, booleans, null) are uncommon
         // as job payloads and will be caught by the fallback path.
         let data_value = if !payload.is_empty() && (payload[0] == b'{' || payload[0] == b'[') {
-            serde_json::from_slice(payload).unwrap_or_else(|_| {
-                Value::String(String::from_utf8_lossy(payload).into_owned())
-            })
+            serde_json::from_slice(payload)
+                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(payload).into_owned()))
         } else {
             // Non-JSON payload: store as a string value. This is faster than
             // hex encoding (which doubles the size) and produces more readable
@@ -1269,7 +1277,8 @@ mod tests {
         let pull_frame = binary::encode_pull_batch("pull-test", 1);
         let pull_resp = handle_binary_frame(&pull_frame, &manager).await;
         assert_eq!(pull_resp[0], 0x00, "pull should succeed");
-        let count = u32::from_be_bytes([pull_resp[1], pull_resp[2], pull_resp[3], pull_resp[4]]) as usize;
+        let count =
+            u32::from_be_bytes([pull_resp[1], pull_resp[2], pull_resp[3], pull_resp[4]]) as usize;
         assert_eq!(count, 1, "should pull 1 job");
     }
 
@@ -1462,12 +1471,7 @@ mod tests {
     #[test]
     fn build_batch_push_items_json_parsing() {
         // JSON objects/arrays should be parsed into their Value tree.
-        let payloads: Vec<&[u8]> = vec![
-            br#"{"a":1}"#,
-            br#"[1,2]"#,
-            b"not-json",
-            &[0xFF, 0xFE],
-        ];
+        let payloads: Vec<&[u8]> = vec![br#"{"a":1}"#, br#"[1,2]"#, b"not-json", &[0xFF, 0xFE]];
         let items = build_batch_push_items(payloads.iter().map(|p| *p as &[u8]));
         assert_eq!(items.len(), 4);
 

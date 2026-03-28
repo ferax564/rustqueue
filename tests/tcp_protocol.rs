@@ -336,11 +336,7 @@ async fn test_binary_push_batch_over_tcp() {
     let (mut read_half, mut write_half) = stream.into_split();
 
     // Encode a binary push batch with 3 JSON payloads
-    let payloads: Vec<&[u8]> = vec![
-        br#"{"task":"a"}"#,
-        br#"{"task":"b"}"#,
-        br#"{"task":"c"}"#,
-    ];
+    let payloads: Vec<&[u8]> = vec![br#"{"task":"a"}"#, br#"{"task":"b"}"#, br#"{"task":"c"}"#];
     let frame = binary::encode_push_batch("binary-q", &payloads);
     write_half.write_all(&frame).await.unwrap();
 
@@ -392,11 +388,7 @@ async fn test_binary_push_then_json_pull() {
 
     // Second connection: JSON pull
     let (mut reader, mut writer) = connect_tcp(port).await;
-    send_cmd(
-        &mut writer,
-        json!({"cmd": "pull", "queue": "mixed-q"}),
-    )
-    .await;
+    send_cmd(&mut writer, json!({"cmd": "pull", "queue": "mixed-q"})).await;
     let resp = read_response(&mut reader).await;
     assert!(resp["ok"].as_bool().unwrap(), "pull failed: {resp}");
     let job = &resp["job"];

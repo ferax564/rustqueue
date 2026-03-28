@@ -268,17 +268,17 @@ impl HybridStorage {
             }
 
             if upsert_count > 0 || delete_count > 0 {
-                debug!(upserts = upsert_count, deletes = delete_count, "Flushed jobs to disk");
+                debug!(
+                    upserts = upsert_count,
+                    deletes = delete_count,
+                    "Flushed jobs to disk"
+                );
             }
         }
 
         // Drain dirty schedules
         let dirty_names: Vec<String> = {
-            let names: Vec<String> = state
-                .dirty_schedules
-                .iter()
-                .map(|e| e.clone())
-                .collect();
+            let names: Vec<String> = state.dirty_schedules.iter().map(|e| e.clone()).collect();
             for name in &names {
                 state.dirty_schedules.remove(name);
             }

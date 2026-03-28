@@ -112,10 +112,7 @@ pub fn decode_push_batch(data: &[u8]) -> Result<(String, Vec<Vec<u8>>), Protocol
 
     // Command byte
     if data.is_empty() {
-        return Err(ProtocolError::InsufficientData {
-            need: 1,
-            have: 0,
-        });
+        return Err(ProtocolError::InsufficientData { need: 1, have: 0 });
     }
     let cmd = BinaryCommand::try_from(data[pos])?;
     if cmd != BinaryCommand::PushBatch {
@@ -152,7 +149,8 @@ pub fn decode_push_batch(data: &[u8]) -> Result<(String, Vec<Vec<u8>>), Protocol
             have: data.len(),
         });
     }
-    let count = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+    let count =
+        u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
     pos += 4;
 
     // Payloads
@@ -194,10 +192,7 @@ pub fn decode_push_batch_zero_copy(data: Bytes) -> Result<(String, Vec<Bytes>), 
 
     // Command byte
     if data.is_empty() {
-        return Err(ProtocolError::InsufficientData {
-            need: 1,
-            have: 0,
-        });
+        return Err(ProtocolError::InsufficientData { need: 1, have: 0 });
     }
     let cmd = BinaryCommand::try_from(data[pos])?;
     if cmd != BinaryCommand::PushBatch {
@@ -234,7 +229,8 @@ pub fn decode_push_batch_zero_copy(data: Bytes) -> Result<(String, Vec<Bytes>), 
             have: data.len(),
         });
     }
-    let count = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+    let count =
+        u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
     pos += 4;
 
     // Payloads -- zero-copy slicing via Bytes::slice
@@ -326,10 +322,7 @@ pub fn decode_pull_batch(data: &[u8]) -> Result<(String, u32), ProtocolError> {
 
     // Command byte
     if data.is_empty() {
-        return Err(ProtocolError::InsufficientData {
-            need: 1,
-            have: 0,
-        });
+        return Err(ProtocolError::InsufficientData { need: 1, have: 0 });
     }
     let cmd = BinaryCommand::try_from(data[pos])?;
     if cmd != BinaryCommand::PullBatch {
@@ -416,10 +409,7 @@ pub fn decode_ack_batch(data: &[u8]) -> Result<Vec<uuid::Uuid>, ProtocolError> {
 
     // Command byte
     if data.is_empty() {
-        return Err(ProtocolError::InsufficientData {
-            need: 1,
-            have: 0,
-        });
+        return Err(ProtocolError::InsufficientData { need: 1, have: 0 });
     }
     let cmd = BinaryCommand::try_from(data[pos])?;
     if cmd != BinaryCommand::AckBatch {
@@ -447,9 +437,7 @@ pub fn decode_ack_batch(data: &[u8]) -> Result<Vec<uuid::Uuid>, ProtocolError> {
                 have: data.len(),
             });
         }
-        let bytes: [u8; 16] = data[pos..pos + 16]
-            .try_into()
-            .expect("slice length is 16");
+        let bytes: [u8; 16] = data[pos..pos + 16].try_into().expect("slice length is 16");
         ids.push(uuid::Uuid::from_bytes(bytes));
         pos += 16;
     }
@@ -529,10 +517,7 @@ pub fn decode_push_response(data: &[u8]) -> Result<Vec<uuid::Uuid>, ProtocolErro
 
     // Status byte
     if data.is_empty() {
-        return Err(ProtocolError::InsufficientData {
-            need: 1,
-            have: 0,
-        });
+        return Err(ProtocolError::InsufficientData { need: 1, have: 0 });
     }
     let _status = data[pos];
     pos += 1;
@@ -557,9 +542,7 @@ pub fn decode_push_response(data: &[u8]) -> Result<Vec<uuid::Uuid>, ProtocolErro
                 have: data.len(),
             });
         }
-        let bytes: [u8; 16] = data[pos..pos + 16]
-            .try_into()
-            .expect("slice length is 16");
+        let bytes: [u8; 16] = data[pos..pos + 16].try_into().expect("slice length is 16");
         ids.push(uuid::Uuid::from_bytes(bytes));
         pos += 16;
     }

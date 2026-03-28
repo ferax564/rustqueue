@@ -36,8 +36,8 @@ pub enum PushJobBody {
 
 impl utoipa::PartialSchema for PushJobBody {
     fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        use utoipa::openapi::schema::{ArrayBuilder, OneOfBuilder, Schema};
         use utoipa::openapi::Ref;
+        use utoipa::openapi::schema::{ArrayBuilder, OneOfBuilder, Schema};
         Schema::OneOf(
             OneOfBuilder::new()
                 .item(Ref::from_schema_name("PushJobRequest"))
@@ -79,8 +79,8 @@ pub enum PushResponse {
 
 impl utoipa::PartialSchema for PushResponse {
     fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        use utoipa::openapi::schema::{OneOfBuilder, Schema};
         use utoipa::openapi::Ref;
+        use utoipa::openapi::schema::{OneOfBuilder, Schema};
         Schema::OneOf(
             OneOfBuilder::new()
                 .item(Ref::from_schema_name("PushSingleResponse"))
@@ -123,8 +123,8 @@ pub enum PullResponse {
 
 impl utoipa::PartialSchema for PullResponse {
     fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        use utoipa::openapi::schema::{OneOfBuilder, Schema};
         use utoipa::openapi::Ref;
+        use utoipa::openapi::schema::{OneOfBuilder, Schema};
         Schema::OneOf(
             OneOfBuilder::new()
                 .item(Ref::from_schema_name("PullSingleResponse"))

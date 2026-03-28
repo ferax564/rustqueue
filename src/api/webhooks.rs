@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use axum::Json;
+use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
-use axum::Router;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -75,7 +75,11 @@ async fn create_webhook(
     }
 
     let webhook = mgr.register(input);
-    (StatusCode::CREATED, Json(WebhookResponse { ok: true, webhook })).into_response()
+    (
+        StatusCode::CREATED,
+        Json(WebhookResponse { ok: true, webhook }),
+    )
+        .into_response()
 }
 
 #[utoipa::path(

@@ -723,6 +723,10 @@ async fn test_per_queue_rate_limit_does_not_affect_other_queues() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), 201, "unlimited queue job {i} should be accepted");
+        assert_eq!(
+            resp.status(),
+            201,
+            "unlimited queue job {i} should be accepted"
+        );
     }
 }

@@ -90,10 +90,7 @@ async fn test_openapi_json_returns_valid_spec() {
         paths.get("/api/v1/schedules").is_some(),
         "missing schedules path"
     );
-    assert!(
-        paths.get("/api/v1/health").is_some(),
-        "missing health path"
-    );
+    assert!(paths.get("/api/v1/health").is_some(), "missing health path");
     assert!(
         paths.get("/api/v1/events").is_some(),
         "missing websocket events path"
@@ -108,14 +105,8 @@ async fn test_openapi_json_returns_valid_spec() {
         .pointer("/components/schemas")
         .expect("missing schemas");
     assert!(schemas.get("Job").is_some(), "missing Job schema");
-    assert!(
-        schemas.get("JobState").is_some(),
-        "missing JobState schema"
-    );
-    assert!(
-        schemas.get("Schedule").is_some(),
-        "missing Schedule schema"
-    );
+    assert!(schemas.get("JobState").is_some(), "missing JobState schema");
+    assert!(schemas.get("Schedule").is_some(), "missing Schedule schema");
     assert!(
         schemas.get("QueueCounts").is_some(),
         "missing QueueCounts schema"

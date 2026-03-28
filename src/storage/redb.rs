@@ -352,7 +352,12 @@ impl StorageBackend for RedbStorage {
                 let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
 
                 jobs.insert(key, value.as_slice())?;
-                insert_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &job)?;
+                insert_job_indexes(
+                    &mut queue_index,
+                    &mut state_index,
+                    &mut unique_key_index,
+                    &job,
+                )?;
             }
             write_txn.commit()?;
             Ok(id)
@@ -376,7 +381,12 @@ impl StorageBackend for RedbStorage {
                     let key = id.as_bytes().as_slice();
                     let value = serde_json::to_vec(job).context("failed to serialize job")?;
                     jobs_table.insert(key, value.as_slice())?;
-                    insert_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, job)?;
+                    insert_job_indexes(
+                        &mut queue_index,
+                        &mut state_index,
+                        &mut unique_key_index,
+                        job,
+                    )?;
                     ids.push(id);
                 }
                 ids
@@ -428,11 +438,21 @@ impl StorageBackend for RedbStorage {
                     .transpose()?;
 
                 if let Some(previous) = previous.as_ref() {
-                    remove_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, previous)?;
+                    remove_job_indexes(
+                        &mut queue_index,
+                        &mut state_index,
+                        &mut unique_key_index,
+                        previous,
+                    )?;
                 }
 
                 jobs.insert(key, value.as_slice())?;
-                insert_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &job)?;
+                insert_job_indexes(
+                    &mut queue_index,
+                    &mut state_index,
+                    &mut unique_key_index,
+                    &job,
+                )?;
             }
             write_txn.commit()?;
             Ok(())
@@ -461,7 +481,12 @@ impl StorageBackend for RedbStorage {
 
                 jobs.remove(key)?;
                 if let Some(previous) = previous.as_ref() {
-                    remove_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, previous)?;
+                    remove_job_indexes(
+                        &mut queue_index,
+                        &mut state_index,
+                        &mut unique_key_index,
+                        previous,
+                    )?;
                 }
             }
             write_txn.commit()?;
@@ -483,7 +508,14 @@ impl StorageBackend for RedbStorage {
                 let mut queue_index = write_txn.open_table(JOBS_QUEUE_STATE_PRIORITY_INDEX)?;
                 let mut state_index = write_txn.open_table(JOBS_STATE_UPDATED_INDEX)?;
                 let mut unique_key_index = write_txn.open_table(JOBS_UNIQUE_KEY_INDEX)?;
-                complete_job_in_tables(&mut jobs, &mut queue_index, &mut state_index, &mut unique_key_index, id, result)?
+                complete_job_in_tables(
+                    &mut jobs,
+                    &mut queue_index,
+                    &mut state_index,
+                    &mut unique_key_index,
+                    id,
+                    result,
+                )?
             };
             write_txn.commit()?;
             Ok(outcome)
@@ -594,8 +626,18 @@ impl StorageBackend for RedbStorage {
                     let value = serde_json::to_vec(&job)?;
                     jobs_table.insert(key, value.as_slice())?;
 
-                    remove_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &previous)?;
-                    insert_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &job)?;
+                    remove_job_indexes(
+                        &mut queue_index,
+                        &mut state_index,
+                        &mut unique_key_index,
+                        &previous,
+                    )?;
+                    insert_job_indexes(
+                        &mut queue_index,
+                        &mut state_index,
+                        &mut unique_key_index,
+                        &job,
+                    )?;
                     activated.push(job);
                 }
 
@@ -730,9 +772,19 @@ impl StorageBackend for RedbStorage {
                     .transpose()?
                     .unwrap_or(job);
 
-                remove_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &previous)?;
+                remove_job_indexes(
+                    &mut queue_index,
+                    &mut state_index,
+                    &mut unique_key_index,
+                    &previous,
+                )?;
                 jobs_table.insert(key, value.as_slice())?;
-                insert_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &updated)?;
+                insert_job_indexes(
+                    &mut queue_index,
+                    &mut state_index,
+                    &mut unique_key_index,
+                    &updated,
+                )?;
             }
             write_txn.commit()?;
             Ok(())
@@ -871,8 +923,7 @@ impl StorageBackend for RedbStorage {
                     let (index_key, index_value) = entry?;
                     let key_bytes = index_key.value();
                     if key_bytes.len() >= 9 {
-                        let updated_micros =
-                            decode_i64_lex(key_bytes[1..9].try_into().unwrap());
+                        let updated_micros = decode_i64_lex(key_bytes[1..9].try_into().unwrap());
                         if updated_micros >= cutoff_micros {
                             break;
                         }
@@ -885,10 +936,17 @@ impl StorageBackend for RedbStorage {
                 for id in &to_remove_ids {
                     let job = {
                         let stored = jobs_table.get(id.as_bytes().as_slice())?;
-                        stored.map(|s| serde_json::from_slice::<Job>(s.value())).transpose()?
+                        stored
+                            .map(|s| serde_json::from_slice::<Job>(s.value()))
+                            .transpose()?
                     };
                     if let Some(job) = job {
-                        remove_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &job)?;
+                        remove_job_indexes(
+                            &mut queue_index,
+                            &mut state_index,
+                            &mut unique_key_index,
+                            &job,
+                        )?;
                         jobs_table.remove(id.as_bytes().as_slice())?;
                     }
                 }
@@ -925,8 +983,7 @@ impl StorageBackend for RedbStorage {
                     let (index_key, index_value) = entry?;
                     let key_bytes = index_key.value();
                     if key_bytes.len() >= 9 {
-                        let updated_micros =
-                            decode_i64_lex(key_bytes[1..9].try_into().unwrap());
+                        let updated_micros = decode_i64_lex(key_bytes[1..9].try_into().unwrap());
                         if updated_micros >= cutoff_micros {
                             break;
                         }
@@ -939,10 +996,17 @@ impl StorageBackend for RedbStorage {
                 for id in &to_remove_ids {
                     let job = {
                         let stored = jobs_table.get(id.as_bytes().as_slice())?;
-                        stored.map(|s| serde_json::from_slice::<Job>(s.value())).transpose()?
+                        stored
+                            .map(|s| serde_json::from_slice::<Job>(s.value()))
+                            .transpose()?
                     };
                     if let Some(job) = job {
-                        remove_job_indexes(&mut queue_index, &mut state_index, &mut unique_key_index, &job)?;
+                        remove_job_indexes(
+                            &mut queue_index,
+                            &mut state_index,
+                            &mut unique_key_index,
+                            &job,
+                        )?;
                         jobs_table.remove(id.as_bytes().as_slice())?;
                     }
                 }
@@ -1059,12 +1123,9 @@ impl StorageBackend for RedbStorage {
                 if key_bytes.len() < 4 {
                     continue;
                 }
-                let queue_len = u32::from_be_bytes([
-                    key_bytes[0],
-                    key_bytes[1],
-                    key_bytes[2],
-                    key_bytes[3],
-                ]) as usize;
+                let queue_len =
+                    u32::from_be_bytes([key_bytes[0], key_bytes[1], key_bytes[2], key_bytes[3]])
+                        as usize;
                 if key_bytes.len() < 4 + queue_len {
                     continue;
                 }

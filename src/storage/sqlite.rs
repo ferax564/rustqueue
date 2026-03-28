@@ -494,9 +494,8 @@ impl StorageBackend for SqliteStorage {
     async fn get_jobs_by_flow_id(&self, flow_id: &str) -> Result<Vec<Job>> {
         let conn = self.conn.lock().unwrap();
 
-        let mut stmt = conn.prepare(
-            "SELECT data FROM jobs WHERE json_extract(data, '$.flow_id') = ?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT data FROM jobs WHERE json_extract(data, '$.flow_id') = ?1")?;
 
         let mut result = Vec::new();
         let mut rows = stmt.query([flow_id])?;
