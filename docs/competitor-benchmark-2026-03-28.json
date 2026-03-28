@@ -1,0 +1,164 @@
+{
+  "date": "2026-03-28",
+  "operations_per_test": 5000,
+  "repeats": 3,
+  "rustqueue_redb_durability": "immediate",
+  "rustqueue_remove_on_complete": false,
+  "rustqueue_tcp_batch_size": 50,
+  "rustqueue_write_coalescing": false,
+  "rustqueue_hybrid": true,
+  "raw_runs": [
+    [
+      {
+        "system": "rustqueue_http",
+        "produce_ops_s": 2516.3594821518177,
+        "consume_ops_s": 1279.154734538669,
+        "end_to_end_ops_s": 839.6833747603994
+      },
+      {
+        "system": "rustqueue_tcp",
+        "produce_ops_s": 238933.8726140644,
+        "consume_ops_s": 59617.73086403612,
+        "end_to_end_ops_s": 46212.55355898206
+      },
+      {
+        "system": "redis_list",
+        "produce_ops_s": 9339.741750577448,
+        "consume_ops_s": 8742.633062623832,
+        "end_to_end_ops_s": 3965.1208145876244
+      },
+      {
+        "system": "rabbitmq",
+        "produce_ops_s": 41656.09366664823,
+        "consume_ops_s": 5067.375186710542,
+        "end_to_end_ops_s": 4227.674504226465
+      },
+      {
+        "system": "bullmq",
+        "produce_ops_s": 5238.068923034696,
+        "consume_ops_s": 4385.234678386021,
+        "end_to_end_ops_s": 1344.324425516783
+      },
+      {
+        "system": "celery",
+        "produce_ops_s": 2694.8815983889904,
+        "consume_ops_s": 1269.6031890129698,
+        "end_to_end_ops_s": 897.1969592086267
+      }
+    ],
+    [
+      {
+        "system": "rustqueue_http",
+        "produce_ops_s": 2458.5189464373825,
+        "consume_ops_s": 1249.5766406105574,
+        "end_to_end_ops_s": 758.6517020233686
+      },
+      {
+        "system": "rustqueue_tcp",
+        "produce_ops_s": 38359.40654404205,
+        "consume_ops_s": 22035.8762805058,
+        "end_to_end_ops_s": 17690.812324255938
+      },
+      {
+        "system": "redis_list",
+        "produce_ops_s": 10035.95380371219,
+        "consume_ops_s": 10472.852802110327,
+        "end_to_end_ops_s": 5119.8818179135405
+      },
+      {
+        "system": "rabbitmq",
+        "produce_ops_s": 42471.35117443357,
+        "consume_ops_s": 5392.679410785626,
+        "end_to_end_ops_s": 5103.289513252359
+      },
+      {
+        "system": "bullmq",
+        "produce_ops_s": 7184.124808363471,
+        "consume_ops_s": 6698.732382124502,
+        "end_to_end_ops_s": 1991.8976241651849
+      },
+      {
+        "system": "celery",
+        "produce_ops_s": 2996.5042025324115,
+        "consume_ops_s": 1577.9105354969888,
+        "end_to_end_ops_s": 919.8494825316708
+      }
+    ],
+    [
+      {
+        "system": "rustqueue_http",
+        "produce_ops_s": 2419.795573193916,
+        "consume_ops_s": 1176.511316284714,
+        "end_to_end_ops_s": 809.5748471668381
+      },
+      {
+        "system": "rustqueue_tcp",
+        "produce_ops_s": 40504.36028703451,
+        "consume_ops_s": 26716.382797909828,
+        "end_to_end_ops_s": 18810.372529900957
+      },
+      {
+        "system": "redis_list",
+        "produce_ops_s": 9585.643774237107,
+        "consume_ops_s": 10305.814745457357,
+        "end_to_end_ops_s": 5013.5654550087
+      },
+      {
+        "system": "rabbitmq",
+        "produce_ops_s": 48312.95181292037,
+        "consume_ops_s": 4641.967739466292,
+        "end_to_end_ops_s": 2809.501668525901
+      },
+      {
+        "system": "bullmq",
+        "produce_ops_s": 3611.8500103434353,
+        "consume_ops_s": 3339.1608167557706,
+        "end_to_end_ops_s": 1852.9943889758565
+      },
+      {
+        "system": "celery",
+        "produce_ops_s": 3132.3780541153146,
+        "consume_ops_s": 1305.0024552449975,
+        "end_to_end_ops_s": 867.0858795600467
+      }
+    ]
+  ],
+  "results": [
+    {
+      "system": "rustqueue_http",
+      "produce_ops_s": 2458.5189464373825,
+      "consume_ops_s": 1249.5766406105574,
+      "end_to_end_ops_s": 809.5748471668381
+    },
+    {
+      "system": "rustqueue_tcp",
+      "produce_ops_s": 40504.36028703451,
+      "consume_ops_s": 26716.382797909828,
+      "end_to_end_ops_s": 18810.372529900957
+    },
+    {
+      "system": "redis_list",
+      "produce_ops_s": 9585.643774237107,
+      "consume_ops_s": 10305.814745457357,
+      "end_to_end_ops_s": 5013.5654550087
+    },
+    {
+      "system": "rabbitmq",
+      "produce_ops_s": 42471.35117443357,
+      "consume_ops_s": 5067.375186710542,
+      "end_to_end_ops_s": 4227.674504226465
+    },
+    {
+      "system": "bullmq",
+      "produce_ops_s": 5238.068923034696,
+      "consume_ops_s": 4385.234678386021,
+      "end_to_end_ops_s": 1852.9943889758565
+    },
+    {
+      "system": "celery",
+      "produce_ops_s": 2996.5042025324115,
+      "consume_ops_s": 1305.0024552449975,
+      "end_to_end_ops_s": 897.1969592086267
+    }
+  ]
+}

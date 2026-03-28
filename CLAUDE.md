@@ -83,15 +83,15 @@ src/
 
 ## Performance
 
-**RustQueue beats RabbitMQ** on produce (1.2x), consume (5.3x), and end-to-end (5.1x) throughput with hybrid TCP backend (batch_size=50). Key numbers (February 7, 2026):
+Benchmark results (March 28, 2026, hybrid TCP, batch_size=50):
 
 | Metric | ops/s |
 |--------|------:|
-| Hybrid TCP produce (batch_size=50) | **43,494** |
-| Hybrid TCP consume (batch_size=50) | **14,195** |
-| Hybrid TCP end-to-end (batch_size=50) | **14,681** |
-| Hybrid TCP produce (batch_size=1) | **23,382** |
-| Hybrid TCP consume (batch_size=1) | **10,987** |
+| Hybrid TCP produce | **40,504** |
+| Hybrid TCP consume | **26,716** |
+| Hybrid TCP end-to-end | **18,810** |
+
+RabbitMQ slightly wins produce (42,471 vs 40,504). RustQueue wins consume (5.3x) and end-to-end (4.5x).
 
 The default redb backend has ~348 push/sec sequential throughput (fsync-dominated). Multiple performance tiers:
 

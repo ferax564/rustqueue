@@ -59,14 +59,15 @@ async fn main() -> anyhow::Result<()> {
 
 ## Performance
 
-Benchmarked against production RabbitMQ, Redis, and BullMQ (hybrid TCP, batch_size=50):
+Benchmarked against RabbitMQ, Redis, BullMQ, and Celery (hybrid TCP, batch_size=50, March 2026):
 
 | System | Produce ops/s | Consume ops/s | End-to-end ops/s |
 |--------|------------:|------------:|-----------------:|
-| **RustQueue** | **43,494** | **14,195** | **14,681** |
-| RabbitMQ | 35,975 | 2,675 | 2,902 |
-| Redis | 5,460 | 4,673 | 2,346 |
-| BullMQ | 4,761 | 5,130 | 845 |
+| RabbitMQ | 42,471 | 5,067 | 4,228 |
+| **RustQueue TCP** | **40,504** | **26,716** | **18,810** |
+| Redis | 9,586 | 10,306 | 5,014 |
+| BullMQ | 5,238 | 4,385 | 1,853 |
+| Celery | 2,997 | 1,305 | 897 |
 
 6.8 MB binary. 10ms startup. ~15 MB idle memory.
 

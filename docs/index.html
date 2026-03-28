@@ -320,8 +320,8 @@
       </div>
       <div class="metrics-strip">
         <div class="metric-item">
-          <span class="metric-val" data-count="43494" data-suffix="" data-decimals="0">0</span>
-          <span class="metric-label">jobs/sec produce</span>
+          <span class="metric-val" data-count="18810" data-suffix="" data-decimals="0">0</span>
+          <span class="metric-label">jobs/sec end-to-end</span>
         </div>
         <div class="metric-item">
           <span class="metric-val" data-count="6.8" data-suffix=" MB" data-decimals="1">0</span>
@@ -415,31 +415,31 @@
   <section id="benchmarks">
     <div class="wrapper">
       <div class="section-label reveal">Performance</div>
-      <h2 class="section-title reveal">Beats RabbitMQ on<br>every metric</h2>
-      <p class="section-sub reveal">Hybrid TCP backend with batch_size=50. Real benchmarks against production RabbitMQ, Redis LPUSH/RPOP, and BullMQ.</p>
+      <h2 class="section-title reveal">Fastest end-to-end<br>throughput</h2>
+      <p class="section-sub reveal">Hybrid TCP backend with batch_size=50. Fresh benchmarks against RabbitMQ, Redis, BullMQ, and Celery (March 2026).</p>
       <div class="bench-grid">
         <div class="bench-card reveal">
           <h3>Produce throughput <code>ops/sec</code></h3>
           <div class="bar-chart">
             <div class="bar-row">
-              <span class="bar-label">RustQueue</span>
-              <div class="bar-track"><div class="bar-fill rq" style="--w:1"></div></div>
-              <span class="bar-val">43,494</span>
+              <span class="bar-label">RabbitMQ</span>
+              <div class="bar-track"><div class="bar-fill rabbit" style="--w:1"></div></div>
+              <span class="bar-val">42,471</span>
             </div>
             <div class="bar-row">
-              <span class="bar-label">RabbitMQ</span>
-              <div class="bar-track"><div class="bar-fill rabbit" style="--w:0.827"></div></div>
-              <span class="bar-val">35,975</span>
+              <span class="bar-label">RustQueue</span>
+              <div class="bar-track"><div class="bar-fill rq" style="--w:0.954"></div></div>
+              <span class="bar-val">40,504</span>
             </div>
             <div class="bar-row">
               <span class="bar-label">Redis</span>
-              <div class="bar-track"><div class="bar-fill redis" style="--w:0.126"></div></div>
-              <span class="bar-val">5,460</span>
+              <div class="bar-track"><div class="bar-fill redis" style="--w:0.226"></div></div>
+              <span class="bar-val">9,586</span>
             </div>
             <div class="bar-row">
               <span class="bar-label">BullMQ</span>
-              <div class="bar-track"><div class="bar-fill bull" style="--w:0.109"></div></div>
-              <span class="bar-val">4,761</span>
+              <div class="bar-track"><div class="bar-fill bull" style="--w:0.123"></div></div>
+              <span class="bar-val">5,238</span>
             </div>
           </div>
           <h3 style="margin-top:32px">Consume throughput <code>ops/sec</code></h3>
@@ -447,22 +447,22 @@
             <div class="bar-row">
               <span class="bar-label">RustQueue</span>
               <div class="bar-track"><div class="bar-fill rq" style="--w:1"></div></div>
-              <span class="bar-val">14,195</span>
-            </div>
-            <div class="bar-row">
-              <span class="bar-label">RabbitMQ</span>
-              <div class="bar-track"><div class="bar-fill rabbit" style="--w:0.188"></div></div>
-              <span class="bar-val">2,675</span>
+              <span class="bar-val">26,716</span>
             </div>
             <div class="bar-row">
               <span class="bar-label">Redis</span>
-              <div class="bar-track"><div class="bar-fill redis" style="--w:0.329"></div></div>
-              <span class="bar-val">4,673</span>
+              <div class="bar-track"><div class="bar-fill redis" style="--w:0.386"></div></div>
+              <span class="bar-val">10,306</span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">RabbitMQ</span>
+              <div class="bar-track"><div class="bar-fill rabbit" style="--w:0.190"></div></div>
+              <span class="bar-val">5,067</span>
             </div>
             <div class="bar-row">
               <span class="bar-label">BullMQ</span>
-              <div class="bar-track"><div class="bar-fill bull" style="--w:0.361"></div></div>
-              <span class="bar-val">5,130</span>
+              <div class="bar-track"><div class="bar-fill bull" style="--w:0.164"></div></div>
+              <span class="bar-val">4,385</span>
             </div>
           </div>
         </div>
