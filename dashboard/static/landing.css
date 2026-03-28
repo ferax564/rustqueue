@@ -569,3 +569,105 @@ body::before {
         flex-direction: column;
     }
 }
+
+/* ── Hero code block ────────────────────────────────────────────────── */
+.hero-code {
+    margin: 2rem 0;
+    background: var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 1.5rem 2rem;
+    overflow-x: auto;
+}
+
+.hero-code pre {
+    margin: 0;
+}
+
+.hero-code code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.95rem;
+    line-height: 1.7;
+    color: #e2e8f0;
+}
+
+.hero-code .kw { color: #c792ea; }
+.hero-code .str { color: #c3e88d; }
+.hero-code .comment { color: #637777; font-style: italic; }
+
+/* ── Growth path ────────────────────────────────────────────────────── */
+.how-it-works {
+    padding: 6rem 0;
+}
+
+.growth-path {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 2rem;
+    margin-top: 3rem;
+}
+
+.growth-step {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 2rem;
+}
+
+.step-num {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 1.1rem;
+    margin-bottom: 1rem;
+}
+
+.code-sm {
+    background: var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    margin-top: 1rem;
+}
+
+.code-sm code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: #e2e8f0;
+}
+
+/* ── Compare list ───────────────────────────────────────────────────── */
+.compare-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.compare-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 0.9rem;
+}
+
+.compare-list li:last-child {
+    border-bottom: none;
+}
+
+.compare-list .muted {
+    color: var(--muted);
+}
+
+.compare-list code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.8rem;
+    color: var(--muted);
+}

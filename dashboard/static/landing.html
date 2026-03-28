@@ -3,8 +3,8 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="RustQueue is a high-performance job scheduler that runs anywhere: single binary, zero external dependencies, built-in observability.">
-    <title>RustQueue | Queueing Without the Ops Tax</title>
+    <meta name="description" content="RustQueue: background jobs without infrastructure. Add persistent job processing to any Rust app with zero external dependencies.">
+    <title>RustQueue | Background Jobs Without Infrastructure</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Manrope:wght@400;500;700;800&family=Syne:wght@500;700;800&display=swap" rel="stylesheet">
@@ -24,9 +24,9 @@
             <span class="logo-text">RustQueue</span>
         </a>
         <div class="nav-links">
+            <a href="#how-it-works">How It Works</a>
             <a href="#features">Features</a>
-            <a href="#use-cases">Use Cases</a>
-            <a href="#launch">Launch</a>
+            <a href="#get-started">Get Started</a>
         </div>
         <a class="btn btn-ghost" href="/dashboard">Open Dashboard</a>
     </nav>
@@ -35,150 +35,128 @@
 <main>
     <section class="hero container">
         <div class="hero-copy reveal">
-            <p class="eyebrow">Single binary. Zero dependencies. Faster than RabbitMQ.</p>
-            <h1>Queueing Infrastructure Without the <span>Ops Tax</span></h1>
+            <p class="eyebrow">No Redis. No RabbitMQ. No external services.</p>
+            <h1>Background Jobs <span>Without Infrastructure</span></h1>
             <p class="lead">
-                RustQueue is a fast, language-agnostic job scheduler that beats RabbitMQ
-                on produce, consume, and end-to-end throughput. Retries, DLQ, SDKs, and observability built in.
+                Add persistent, crash-safe background job processing to any Rust application.
+                Three lines of code. Zero operational overhead.
             </p>
+            <div class="hero-code">
+                <pre><code><span class="kw">let</span> rq = RustQueue::redb(<span class="str">"./jobs.db"</span>)?.build()?;
+rq.push(<span class="str">"emails"</span>, <span class="str">"send-welcome"</span>, json!({<span class="str">"to"</span>: <span class="str">"a@b.com"</span>}), None).<span class="kw">await</span>?;
+
+<span class="comment">// That's it. The job is persisted. It survives crashes.</span></code></pre>
+            </div>
             <div class="hero-cta">
-                <a class="btn btn-primary" href="#launch">Get Started</a>
-                <a class="btn btn-ghost" href="/dashboard">See Live Dashboard</a>
+                <a class="btn btn-primary" href="#get-started">Get Started</a>
+                <a class="btn btn-ghost" href="https://github.com/ferax564/rustqueue">View Source</a>
             </div>
-            <div class="command-block" role="region" aria-label="Quick install command">
-                <span class="mono mono-label">Quick install</span>
-                <code class="mono">cargo install rustqueue</code>
-            </div>
-            <ul class="signal-list">
-                <li>REST + TCP dual protocol</li>
-                <li>Node.js, Python, and Go SDKs</li>
-                <li>15+ Prometheus metrics + Grafana dashboard</li>
-                <li>Docker one-command deployment</li>
-            </ul>
         </div>
 
         <div class="hero-side">
-            <article class="panel panel-queue reveal">
-                <h2>Queue Snapshot</h2>
+            <article class="panel panel-stats reveal">
+                <h2>Single Binary</h2>
                 <div class="kpis">
                     <div>
-                        <span class="mono">throughput</span>
-                        <strong>43,494/s</strong>
+                        <span class="mono">binary</span>
+                        <strong>6.8 MB</strong>
                     </div>
                     <div>
-                        <span class="mono">active</span>
-                        <strong>36</strong>
+                        <span class="mono">startup</span>
+                        <strong>10 ms</strong>
                     </div>
                     <div>
-                        <span class="mono">backends</span>
-                        <strong>5</strong>
+                        <span class="mono">idle RAM</span>
+                        <strong>15 MB</strong>
                     </div>
                 </div>
             </article>
-            <article class="panel panel-events reveal">
-                <h2>Event Stream</h2>
-                <ul>
-                    <li><span class="dot ok"></span><code>job.pushed</code> <small>emails</small></li>
-                    <li><span class="dot ok"></span><code>job.completed</code> <small>billing</small></li>
-                    <li><span class="dot warn"></span><code>job.failed</code> <small>exports</small></li>
+            <article class="panel panel-compare reveal">
+                <h2>Setup Comparison</h2>
+                <ul class="compare-list">
+                    <li><strong>RustQueue</strong> <code>cargo add rustqueue</code></li>
+                    <li><span class="muted">BullMQ</span> <code>Install Redis + npm i bullmq</code></li>
+                    <li><span class="muted">Celery</span> <code>Install Redis/RabbitMQ + pip install celery</code></li>
                 </ul>
+            </article>
+        </div>
+    </section>
+
+    <section id="how-it-works" class="how-it-works container">
+        <div class="section-head reveal">
+            <p class="eyebrow">How it works</p>
+            <h2>Start Embedded. Grow Into a Server.</h2>
+        </div>
+        <div class="growth-path">
+            <article class="growth-step reveal">
+                <div class="step-num">1</div>
+                <h3>Import the Library</h3>
+                <p>Add <code>rustqueue</code> to your Cargo.toml. Use it directly in your app — no server process, no network, no config file.</p>
+                <pre class="code-sm"><code>let rq = RustQueue::redb("./jobs.db")?.build()?;
+rq.push("emails", "welcome", data, None).await?;</code></pre>
+            </article>
+            <article class="growth-step reveal">
+                <div class="step-num">2</div>
+                <h3>Run as a Server</h3>
+                <p>When you need language-agnostic access, run the same engine as a standalone server. Same data file, same guarantees.</p>
+                <pre class="code-sm"><code>rustqueue serve --storage ./jobs.db</code></pre>
+            </article>
+            <article class="growth-step reveal">
+                <div class="step-num">3</div>
+                <h3>Scale With SDKs</h3>
+                <p>Connect workers in any language. Node.js, Python, and Go SDKs included — zero runtime dependencies each.</p>
+                <pre class="code-sm"><code>const rq = new RustQueueClient("http://localhost:6790");
+await rq.push("emails", "welcome", { to: "user@a.com" });</code></pre>
             </article>
         </div>
     </section>
 
     <section id="features" class="features container">
         <div class="section-head reveal">
-            <p class="eyebrow">Core capabilities</p>
-            <h2>Designed for Production, Not Demos</h2>
+            <p class="eyebrow">Batteries included</p>
+            <h2>Everything You Need, Nothing You Don't</h2>
         </div>
         <div class="feature-grid">
             <article class="card reveal">
-                <h3>Zero-Dependency Runtime</h3>
-                <p>No Redis, RabbitMQ, or external broker required. Embedded ACID storage included.</p>
+                <h3>Crash-Safe Storage</h3>
+                <p>ACID-compliant embedded database. Jobs persist automatically. Safe to kill -9 at any time.</p>
             </article>
             <article class="card reveal">
                 <h3>Retries + Backoff + DLQ</h3>
-                <p>Handle failure with fixed, linear, or exponential retries and inspect dead-letter jobs.</p>
-            </article>
-            <article class="card reveal">
-                <h3>43,000+ Jobs/sec</h3>
-                <p>Beats RabbitMQ on produce, consume, and end-to-end. TCP pipelining + hybrid storage for maximum throughput.</p>
-            </article>
-            <article class="card reveal">
-                <h3>Client SDKs</h3>
-                <p>Node.js, Python, and Go SDKs with zero runtime dependencies. Also embeddable as a Rust library.</p>
-            </article>
-            <article class="card reveal">
-                <h3>Full Observability</h3>
-                <p>15+ Prometheus metrics, latency histograms, per-queue gauges, pre-built Grafana dashboard, and WebSocket events.</p>
-            </article>
-            <article class="card reveal">
-                <h3>5 Storage Backends</h3>
-                <p>redb, SQLite, PostgreSQL, hybrid memory+disk, or in-memory. Swap via config.</p>
-            </article>
-            <article class="card reveal">
-                <h3>Security Built In</h3>
-                <p>Bearer token auth, rate-limited lockouts, TLS encryption, and input validation.</p>
+                <p>Fixed, linear, or exponential backoff. Failed jobs land in a dead-letter queue for inspection.</p>
             </article>
             <article class="card reveal">
                 <h3>Cron + Interval Scheduling</h3>
-                <p>Built-in schedule engine with cron expressions and interval jobs. Full CRUD with pause/resume.</p>
+                <p>Built-in schedule engine. Cron expressions and fixed intervals with pause/resume.</p>
             </article>
             <article class="card reveal">
                 <h3>DAG Workflows</h3>
-                <p>Job dependencies with cycle detection, cascade failure, and flow status tracking. Build multi-step pipelines.</p>
+                <p>Job dependencies with cycle detection and cascade failure. Multi-step pipelines built in.</p>
             </article>
             <article class="card reveal">
-                <h3>Webhooks</h3>
-                <p>HMAC-signed HTTP callbacks on job events. Filter by queue and event type with automatic retries.</p>
+                <h3>Webhooks + WebSocket</h3>
+                <p>HMAC-signed callbacks on job events. Real-time WebSocket stream for live monitoring.</p>
             </article>
             <article class="card reveal">
-                <h3>Docker Deployment</h3>
-                <p>One-command with docker-compose. Includes Prometheus + Grafana monitoring stack.</p>
+                <h3>Observability</h3>
+                <p>15+ Prometheus metrics, per-queue gauges, latency histograms. Pre-built Grafana dashboard.</p>
             </article>
         </div>
     </section>
 
-    <section id="use-cases" class="use-cases container">
-        <div class="section-head reveal">
-            <p class="eyebrow">Where it fits</p>
-            <h2>Built for Teams Shipping Asynchronous Workloads</h2>
-        </div>
-        <div class="lane">
-            <article class="lane-item reveal">
-                <h3>SaaS Background Jobs</h3>
-                <p>Emails, webhooks, report generation, billing retries, and media processing.</p>
-            </article>
-            <article class="lane-item reveal">
-                <h3>AI Task Pipelines</h3>
-                <p>Long-running inference and agent work with progress events and retries.</p>
-            </article>
-            <article class="lane-item reveal">
-                <h3>Edge and On-Prem</h3>
-                <p>Minimal dependencies for constrained environments and regulated workloads.</p>
-            </article>
-            <article class="lane-item reveal">
-                <h3>Monitoring-First Operations</h3>
-                <p>Grafana dashboards, Prometheus metrics, and real-time WebSocket events for operational visibility.</p>
-            </article>
-        </div>
-    </section>
-
-    <section id="launch" class="launch container reveal">
+    <section id="get-started" class="launch container reveal">
         <div>
-            <p class="eyebrow">Launch in minutes</p>
-            <h2>From install to first job in under five minutes</h2>
+            <p class="eyebrow">Get started</p>
+            <h2>Your First Background Job in Two Minutes</h2>
         </div>
-        <pre class="code"><code># Option 1: Binary
+        <pre class="code"><code># As a library in your Rust project
+cargo add rustqueue tokio serde_json anyhow
+
+# Or as a standalone server
 cargo install rustqueue && rustqueue serve
 
-# Option 2: Docker with monitoring
-docker compose -f docker-compose.monitoring.yml up -d
-
-# Push your first job
-curl -X POST http://localhost:6790/api/v1/queues/emails/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"name":"send-welcome","data":{"to":"user@example.com"}}'</code></pre>
+# Or with Docker
+docker compose up -d</code></pre>
         <div class="launch-actions">
             <a class="btn btn-primary" href="/dashboard">Open Dashboard</a>
             <a class="btn btn-ghost" href="https://github.com/ferax564/rustqueue">View Source</a>
@@ -187,7 +165,7 @@ curl -X POST http://localhost:6790/api/v1/queues/emails/jobs \
 </main>
 
 <footer class="footer container">
-    <p>RustQueue · High-performance distributed job scheduler</p>
+    <p>RustQueue &middot; Background jobs without infrastructure</p>
     <p class="mono">MIT OR Apache-2.0</p>
 </footer>
 </body>
