@@ -1,7 +1,24 @@
-//! RustQueue — A high-performance distributed job scheduler.
+//! # RustQueue — Background jobs without infrastructure
 //!
-//! RustQueue is a zero-dependency, single-binary job queue and task scheduler
-//! that can be used as a standalone server or embedded as a library.
+//! Add persistent, crash-safe background job processing to any Rust application.
+//! No Redis. No RabbitMQ. No external services.
+//!
+//! ```no_run
+//! use rustqueue::RustQueue;
+//! use serde_json::json;
+//!
+//! # async fn example() -> anyhow::Result<()> {
+//! let rq = RustQueue::redb("./jobs.db")?.build()?;
+//! let id = rq.push("emails", "send-welcome", json!({"to": "a@b.com"}), None).await?;
+//! let jobs = rq.pull("emails", 1).await?;
+//! rq.ack(jobs[0].id, None).await?;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Jobs persist to an embedded ACID database. They survive crashes and restarts.
+//! When you outgrow embedded mode, run the same engine as a standalone server
+//! with `rustqueue serve`.
 
 pub mod api;
 pub mod auth;
