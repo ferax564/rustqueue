@@ -90,7 +90,7 @@ async fn test_server_cli_help() {
     cmd.arg("--help");
     cmd.assert()
         .success()
-        .stdout(predicates::str::contains("job scheduler"));
+        .stdout(predicates::str::contains("Background jobs without infrastructure"));
 }
 
 #[tokio::test]
