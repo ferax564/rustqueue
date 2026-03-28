@@ -1,4 +1,4 @@
-"""HTTP client for the RustQueue job scheduler.
+"""HTTP client for RustQueue — background jobs without infrastructure.
 
 Uses only Python standard library (``urllib.request``, ``json``,
 ``urllib.parse``) so there are zero external dependencies.

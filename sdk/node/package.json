@@ -42,8 +42,8 @@
     "rustqueue",
     "job-queue",
     "task-queue",
-    "distributed",
-    "scheduler",
+    "background-jobs",
+    "embedded",
     "worker"
   ],
   "repository": {

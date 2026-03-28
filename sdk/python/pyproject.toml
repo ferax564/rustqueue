@@ -9,7 +9,7 @@ description = "Python SDK for RustQueue — background jobs without infrastructu
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.8"
-keywords = ["queue", "job-scheduler", "rustqueue"]
+keywords = ["queue", "background-jobs", "rustqueue"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
