@@ -89,8 +89,9 @@ async fn hybrid_dirty_flush() {
         }
 
         // Wait long enough for the background flush to persist all dirty entries.
-        // With 100ms interval + 10 max_dirty, multiple flushes should have fired.
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // 50 jobs / 10 max_dirty = 5 flush cycles needed at 100ms each = 500ms minimum.
+        // Windows CI runners are slow, so give 3x headroom.
+        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
 
         // Drop everything — hybrid, inner, mgr — releasing the redb file lock.
         drop(mgr);
@@ -98,7 +99,7 @@ async fn hybrid_dirty_flush() {
 
     // Give tokio time to clean up the aborted flush task and release the file lock.
     // Windows needs more time due to exclusive file locking semantics.
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
     // Phase 2: open a *new* RedbStorage pointing at the same file to verify persistence.
     let verify_storage = RedbStorage::new(&db_path).expect("reopen redb for verification");
