@@ -429,7 +429,7 @@ impl StorageBackend for HybridStorage {
             self.mark_dirty(id, DirtyKind::Upsert);
         }
 
-        Ok(CompleteJobOutcome::Completed(completed))
+        Ok(CompleteJobOutcome::Completed(Box::new(completed)))
     }
 
     async fn complete_jobs_batch(

@@ -59,7 +59,7 @@ pub trait StorageBackend: Send + Sync + 'static {
             self.update_job(&job).await?;
         }
 
-        Ok(CompleteJobOutcome::Completed(job))
+        Ok(CompleteJobOutcome::Completed(Box::new(job)))
     }
 
     /// Complete multiple jobs in one call.
@@ -139,7 +139,7 @@ pub trait StorageBackend: Send + Sync + 'static {
 
 #[derive(Debug, Clone)]
 pub enum CompleteJobOutcome {
-    Completed(Job),
+    Completed(Box<Job>),
     InvalidState(JobState),
     NotFound,
 }

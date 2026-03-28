@@ -34,22 +34,17 @@ const JOBS_UNIQUE_KEY_INDEX: TableDefinition<&[u8], &[u8]> =
 const SCHEDULES_TABLE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("schedules");
 
 /// Durability level for redb write transactions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RedbDurability {
     /// Do not persist commits unless followed by a higher durability commit.
     ///
     /// This yields the highest throughput but weak crash durability.
     None,
     /// Commit returns only after data is persisted to disk.
+    #[default]
     Immediate,
     /// Commit queues persistence and returns earlier for higher throughput.
     Eventual,
-}
-
-impl Default for RedbDurability {
-    fn default() -> Self {
-        Self::Immediate
-    }
 }
 
 fn state_code(state: JobState) -> u8 {
@@ -227,7 +222,7 @@ fn complete_job_in_tables(
         insert_job_indexes(queue_index, state_index, unique_key_index, &job)?;
     }
 
-    Ok(CompleteJobOutcome::Completed(job))
+    Ok(CompleteJobOutcome::Completed(Box::new(job)))
 }
 
 /// Embedded storage backend using redb — a pure-Rust, ACID, embedded key-value store.

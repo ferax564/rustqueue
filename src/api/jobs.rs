@@ -30,7 +30,7 @@ pub struct PushJobRequest {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum PushJobBody {
-    Single(PushJobRequest),
+    Single(Box<PushJobRequest>),
     Batch(Vec<PushJobRequest>),
 }
 
