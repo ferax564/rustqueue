@@ -96,8 +96,9 @@ async fn hybrid_dirty_flush() {
         drop(mgr);
     }
 
-    // Give tokio a moment to clean up the aborted flush task and release the Arc.
-    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    // Give tokio time to clean up the aborted flush task and release the file lock.
+    // Windows needs more time due to exclusive file locking semantics.
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Phase 2: open a *new* RedbStorage pointing at the same file to verify persistence.
     let verify_storage = RedbStorage::new(&db_path).expect("reopen redb for verification");
