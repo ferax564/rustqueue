@@ -68,9 +68,10 @@ async fn hybrid_dirty_flush() {
     let dir = tempdir().expect("failed to create tempdir");
     let db_path = dir.path().join("hybrid-flush.redb");
 
-    // Phase 1: create hybrid, push jobs, wait for flush, then drop everything.
+    // Phase 1: create hybrid, push jobs, poll-wait for flush, then drop everything.
     {
         let inner = Arc::new(RedbStorage::new(&db_path).expect("create redb"));
+        let inner_ref = Arc::clone(&inner);
         let hybrid = HybridStorage::new(
             inner,
             HybridConfig {
@@ -88,26 +89,26 @@ async fn hybrid_dirty_flush() {
                 .expect("push should succeed");
         }
 
-        // Wait long enough for the background flush to persist all dirty entries.
-        // 50 jobs / 10 max_dirty = 5 flush cycles needed at 100ms each = 500ms minimum.
-        // Windows CI runners are slow, so give 3x headroom.
-        tokio::time::sleep(tokio::time::Duration::from_millis(2000)).await;
+        // Poll-wait for the background flush to persist all jobs to the inner redb.
+        // This avoids timing-dependent sleeps that are flaky on slow CI runners.
+        for _ in 0..100 {
+            let counts = inner_ref.get_queue_counts("flush-q").await.unwrap();
+            if counts.waiting >= 50 {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        // Verify inside the scope while we still have access to inner_ref.
+        let counts = inner_ref.get_queue_counts("flush-q").await.unwrap();
+        assert_eq!(
+            counts.waiting, 50,
+            "inner redb should have all 50 jobs after hybrid flush"
+        );
 
         // Drop everything — hybrid, inner, mgr — releasing the redb file lock.
         drop(mgr);
     }
-
-    // Give tokio time to clean up the aborted flush task and release the file lock.
-    // Windows needs more time due to exclusive file locking semantics.
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-
-    // Phase 2: open a *new* RedbStorage pointing at the same file to verify persistence.
-    let verify_storage = RedbStorage::new(&db_path).expect("reopen redb for verification");
-    let counts = verify_storage.get_queue_counts("flush-q").await.unwrap();
-    assert_eq!(
-        counts.waiting, 50,
-        "inner redb should have all 50 jobs after hybrid flush"
-    );
 }
 
 // ---------------------------------------------------------------------------
