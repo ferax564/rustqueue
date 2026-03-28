@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-RustQueue is a high-performance distributed job scheduler written in Rust. Zero external dependencies, single-binary deployment.
+RustQueue provides background jobs without infrastructure. It's an embeddable job queue written in Rust — use as a library (`RustQueue::redb("./jobs.db")?.build()?`) or as a standalone server. Zero external dependencies, single-binary deployment.
 
 ## Quick Commands
 
@@ -26,6 +26,7 @@ src/
 ├── main.rs           # Binary: CLI (serve/status/push/inspect/schedules), server startup, scheduler spawn
 ├── lib.rs            # Library root: re-exports RustQueue, QueueManager, Job, etc.
 ├── builder.rs        # RustQueue builder for zero-config embeddable library usage
+├── axum_integration.rs # RqState extractor for embedding RustQueue in Axum apps
 ├── api/              # HTTP REST API (axum)
 │   ├── mod.rs        # AppState, router composition (public vs protected routes)
 │   ├── auth.rs       # Bearer token auth middleware (HTTP + config)
@@ -56,6 +57,12 @@ src/
 ├── protocol/         # TCP protocol: newline-delimited JSON
 ├── config/           # Configuration loading: TOML + env + CLI
 └── dashboard/        # Embedded web dashboard (rust-embed)
+
+examples/
+├── basic.rs              # Simplest push/pull/ack (in-memory)
+├── persistent.rs         # File-backed queue surviving restarts
+├── worker.rs             # Long-running worker loop
+└── axum_background_jobs.rs # Axum web app with background job queue
 ```
 
 ## Key Design Decisions
@@ -66,6 +73,7 @@ src/
 - **UUID v7 for job IDs**: Time-sortable, globally unique, no coordination needed.
 - **Feature flags**: Optional backends and integrations behind Cargo features (`sqlite`, `postgres`, `otel`, `cli`, `tls`). Only `cli` is default.
 - **Embeddable library**: `RustQueue::memory().build()`, `RustQueue::redb(path).build()`, or `RustQueue::hybrid(path).build()` for zero-config use without a server.
+- **Axum integration**: `RqState` extractor in `src/axum_integration.rs` — implements `FromRequestParts<Arc<RustQueue>>` with `Deref<Target=RustQueue>` so handlers call `.push()`, `.pull()`, `.ack()` directly.
 - **Input validation**: Max lengths enforced on queue names (256), job names (1024), data payload (1MB), unique keys (1024), error messages (10KB).
 - **Queue pause/resume**: Paused queues reject new pushes with 503. HTTP + TCP endpoints.
 - **Auth rate limiting**: 5 failed auth attempts = 5-minute lockout per IP via in-memory DashMap tracker.
@@ -119,6 +127,7 @@ Reference: `docs/competitor-benchmark-2026-02-07.md`
 | `postgres` | `sqlx` (with pg) | PostgreSQL storage backend |
 | `otel` | `opentelemetry`, `opentelemetry-otlp`, `opentelemetry_sdk`, `tracing-opentelemetry` | OpenTelemetry tracing export |
 | `tls` | `rustls`, `tokio-rustls`, `rustls-pemfile` | TLS encryption for TCP protocol |
+| `axum-integration` | (none — axum already a dep) | `RqState` Axum extractor for embedding in web apps |
 
 ## Testing Strategy
 
@@ -127,7 +136,7 @@ Reference: `docs/competitor-benchmark-2026-02-07.md`
 - **Generic backend harness**: `tests/storage_backend_tests.rs` — `backend_tests!` macro generates 19 canonical tests per storage backend (memory, redb, buffered_redb, hybrid; + sqlite with feature).
 - **Property tests**: State machine transitions, serialization roundtrips.
 - **Benchmarks**: `benches/throughput.rs` measures jobs/sec for push, pull, ack operations.
-- **Current counts**: ~314 tests (default features), ~341 tests (with `sqlite`).
+- **Current counts**: ~315 tests (default features), ~342 tests (with `sqlite`).
 
 ## Configuration Priority
 
