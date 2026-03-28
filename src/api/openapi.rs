@@ -15,7 +15,7 @@ use crate::api::AppState;
 #[openapi(
     info(
         title = "RustQueue API",
-        version = "0.12.0",
+        version = "0.2.0",
         description = "Background jobs without infrastructure — embeddable job queue with zero external dependencies.",
         license(name = "MIT OR Apache-2.0"),
     ),

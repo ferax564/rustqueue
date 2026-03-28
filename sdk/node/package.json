@@ -1,6 +1,6 @@
 {
   "name": "@rustqueue/client",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Official Node.js SDK for RustQueue — background jobs without infrastructure",
   "license": "MIT",
   "type": "module",
