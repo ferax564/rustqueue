@@ -2,12 +2,12 @@
 name = "rustqueue"
 version = "0.1.0"
 edition = "2024"
-description = "A high-performance distributed job scheduler — zero dependencies, single binary"
+description = "Background jobs without infrastructure — embeddable job queue with zero external dependencies"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ferax564/rustqueue"
 homepage = "https://rustqueue.dev"
-keywords = ["job-queue", "scheduler", "distributed", "async", "task"]
-categories = ["asynchronous", "web-programming"]
+keywords = ["job-queue", "background-jobs", "embedded", "async", "task-queue"]
+categories = ["asynchronous", "web-programming", "database-implementations"]
 rust-version = "1.85"
 
 [[bin]]
