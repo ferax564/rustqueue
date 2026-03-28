@@ -111,6 +111,7 @@ sysinfo = "0.30"
 [features]
 default = ["cli"]
 cli = []
+axum-integration = []
 tls = ["rustls", "tokio-rustls", "rustls-pemfile"]
 otel = ["opentelemetry", "opentelemetry-otlp", "opentelemetry_sdk", "tracing-opentelemetry"]
 sqlite = ["rusqlite"]

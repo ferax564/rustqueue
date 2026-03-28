@@ -12,6 +12,7 @@ pub mod engine;
 pub mod metrics_registry;
 pub mod protocol;
 pub mod storage;
+pub mod axum_integration;
 
 // Re-export core types for library consumers
 pub use builder::RustQueue;
