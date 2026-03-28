@@ -104,7 +104,7 @@ async fn test_landing_page_root_returns_html() {
 
     let body = resp.text().await.unwrap();
     assert!(
-        body.contains("Queueing Infrastructure Without the") && body.contains("Ops Tax"),
+        body.contains("Background Jobs") && body.contains("Without Infrastructure"),
         "expected landing page hero fragments, got: {body}"
     );
 }
@@ -139,7 +139,7 @@ async fn test_landing_page_accessible_when_auth_enabled() {
 
     let body = resp.text().await.unwrap();
     assert!(
-        body.contains("Queueing Infrastructure Without the") && body.contains("Ops Tax"),
+        body.contains("Background Jobs") && body.contains("Without Infrastructure"),
         "expected landing page content"
     );
 }

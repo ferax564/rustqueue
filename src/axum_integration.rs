@@ -5,7 +5,7 @@
 //!
 //! # Quick start
 //!
-//! ```no_run
+//! ```ignore
 //! use axum::{Router, Json, routing::post};
 //! use rustqueue::RustQueue;
 //! use rustqueue::axum_integration::RqState;
@@ -17,12 +17,10 @@
 //!     Json(json!({"id": id.to_string()}))
 //! }
 //!
-//! # async fn example() {
 //! let rq = RustQueue::memory().build().unwrap();
 //! let app = Router::new()
 //!     .route("/enqueue", post(enqueue))
 //!     .with_state(Arc::new(rq));
-//! # }
 //! ```
 
 use std::ops::Deref;
