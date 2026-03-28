@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RustQueue | High-Performance Distributed Job Scheduler</title>
+  <meta name="description" content="RustQueue is a high-performance distributed job queue written in Rust. Zero dependencies, single binary, multiple storage backends. Beats RabbitMQ on throughput." />
+  <meta property="og:title" content="RustQueue — The Job Scheduler That Runs Anywhere" />
+  <meta property="og:description" content="Zero dependencies. Single binary. 43,000+ jobs/sec. Beats RabbitMQ on produce, consume, and end-to-end throughput." />
+  <meta property="og:type" content="website" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #000000;
+      --bg-1: #0a0a0f;
+      --bg-2: #0d1117;
+      --bg-3: #161b22;
+      --border: rgba(48, 54, 61, 0.8);
+      --border-glow: rgba(249, 115, 22, 0.25);
+      --orange: #f97316;
+      --orange-dim: rgba(249, 115, 22, 0.08);
+      --orange-mid: rgba(249, 115, 22, 0.15);
+      --cyan: #00d4aa;
+      --cyan-dim: rgba(0, 212, 170, 0.08);
+      --purple: #8b5cf6;
+      --purple-dim: rgba(139, 92, 246, 0.08);
+      --text: #f0f6fc;
+      --text-muted: #8b949e;
+      --text-dim: #484f58;
+      --green: #3fb950;
+      --red: #f85149;
+      --yellow: #e3b341;
+      --radius: 12px;
+      --radius-lg: 20px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: "Inter", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      overflow-x: hidden;
+    }
+
+    ::selection { background: rgba(249, 115, 22, 0.2); }
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 3px; }
+
+    .grid-bg {
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      background-image:
+        linear-gradient(rgba(249,115,22,0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(249,115,22,0.05) 1px, transparent 1px);
+      background-size: 60px 60px;
+    }
+
+    .glow-orb { position: fixed; border-radius: 50%; pointer-events: none; z-index: 0; filter: blur(100px); opacity: 1; }
+    .glow-orb-1 { width: 700px; height: 700px; top: -250px; left: -150px; background: radial-gradient(circle, rgba(249,115,22,0.35) 0%, transparent 70%); animation: drift1 20s ease-in-out infinite alternate; }
+    .glow-orb-2 { width: 600px; height: 600px; top: 15%; right: -200px; background: radial-gradient(circle, rgba(139,92,246,0.25) 0%, transparent 70%); animation: drift2 25s ease-in-out infinite alternate; }
+    .glow-orb-3 { width: 500px; height: 500px; bottom: 15%; left: 25%; background: radial-gradient(circle, rgba(0,212,170,0.18) 0%, transparent 70%); animation: drift3 18s ease-in-out infinite alternate; }
+
+    @keyframes drift1 { from { transform: translate(0,0); } to { transform: translate(60px, 80px); } }
+    @keyframes drift2 { from { transform: translate(0,0); } to { transform: translate(-50px, 60px); } }
+    @keyframes drift3 { from { transform: translate(0,0); } to { transform: translate(40px, -60px); } }
+    @keyframes fadeInUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes slideDown { from { opacity: 0; transform: translateY(-16px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.5; transform: scale(0.8); } }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+    .wrapper { position: relative; z-index: 1; max-width: 1160px; margin: 0 auto; padding: 0 24px; }
+
+    /* Nav */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      padding: 0 24px; height: 64px;
+      display: flex; align-items: center; justify-content: space-between;
+      background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(20px);
+      border-bottom: 1px solid var(--border);
+      animation: slideDown 0.6s ease both;
+    }
+    .nav-inner { max-width: 1160px; margin: 0 auto; width: 100%; display: flex; align-items: center; justify-content: space-between; }
+    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--text); font-weight: 700; font-size: 1.05rem; letter-spacing: -0.01em; }
+    .brand-icon {
+      width: 32px; height: 32px; border-radius: 8px;
+      background: linear-gradient(135deg, var(--orange), #ff6b00);
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 0 20px rgba(249,115,22,0.4), inset 0 1px 0 rgba(255,255,255,0.1);
+      font-size: 16px; position: relative; overflow: hidden;
+    }
+    .brand-icon::after { content: ''; position: absolute; inset: 0; background: linear-gradient(135deg, transparent 40%, rgba(255,255,255,0.15)); }
+    .brand-icon svg { position: relative; z-index: 1; }
+    .nav-links { display: flex; align-items: center; gap: 4px; }
+    .nav-links a { text-decoration: none; color: var(--text-muted); font-size: 0.9rem; padding: 7px 14px; border-radius: 8px; transition: color 0.2s, background 0.2s; }
+    .nav-links a:hover { color: var(--text); background: var(--bg-3); }
+    .nav-cta {
+      display: flex; align-items: center; gap: 6px; text-decoration: none;
+      color: var(--bg); background: var(--orange); font-size: 0.88rem; font-weight: 600;
+      padding: 7px 16px; border-radius: 8px;
+      transition: opacity 0.2s, box-shadow 0.2s, transform 0.2s;
+    }
+    .nav-cta:hover { opacity: 0.9; transform: translateY(-1px); box-shadow: 0 8px 20px rgba(249,115,22,0.3); }
+
+    /* Hero */
+    .hero { padding: 160px 0 100px; text-align: center; position: relative; }
+    .hero-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--orange-dim); border: 1px solid var(--border-glow);
+      color: var(--orange); font-size: 0.78rem; font-weight: 600;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 6px 14px; border-radius: 999px; margin-bottom: 28px;
+      animation: fadeInUp 0.7s ease 0.1s both;
+    }
+    .badge-dot { width: 6px; height: 6px; background: var(--orange); border-radius: 50%; animation: pulse 2s ease infinite; }
+    .hero h1 { font-size: clamp(2.8rem, 6vw, 5.2rem); font-weight: 700; line-height: 1.04; letter-spacing: -0.04em; margin-bottom: 24px; animation: fadeInUp 0.7s ease 0.2s both; }
+    .grad { background: linear-gradient(135deg, var(--orange) 0%, #ff6b00 50%, var(--yellow) 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; }
+    .hero-sub { color: var(--text-muted); font-size: 1.15rem; max-width: 58ch; margin: 0 auto 36px; line-height: 1.7; animation: fadeInUp 0.7s ease 0.3s both; }
+    .hero-cta { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; animation: fadeInUp 0.7s ease 0.4s both; margin-bottom: 28px; }
+    .btn-primary {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--orange); color: var(--bg); text-decoration: none;
+      font-weight: 600; font-size: 0.95rem; padding: 13px 24px; border-radius: 10px;
+      transition: transform 0.2s, box-shadow 0.2s, opacity 0.2s;
+      box-shadow: 0 0 0 1px rgba(249,115,22,0.4), 0 8px 30px rgba(249,115,22,0.2);
+    }
+    .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 0 0 1px rgba(249,115,22,0.6), 0 16px 40px rgba(249,115,22,0.3); opacity: 0.95; }
+    .btn-secondary {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: transparent; color: var(--text); text-decoration: none;
+      font-weight: 500; font-size: 0.95rem; padding: 13px 24px; border-radius: 10px;
+      border: 1px solid var(--border); transition: transform 0.2s, border-color 0.2s, background 0.2s;
+    }
+    .btn-secondary:hover { transform: translateY(-2px); border-color: var(--orange); background: var(--orange-dim); }
+
+    /* Metrics strip */
+    .metrics-strip {
+      display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px;
+      background: var(--border); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); overflow: hidden;
+      animation: fadeInUp 0.7s ease 0.5s both;
+    }
+    .metric-item { background: var(--bg-1); padding: 24px 16px; text-align: center; transition: background 0.2s; }
+    .metric-item:hover { background: var(--bg-2); }
+    .metric-val { display: block; font-size: 1.6rem; font-weight: 700; letter-spacing: -0.03em; color: var(--orange); font-variant-numeric: tabular-nums; }
+    .metric-label { display: block; font-size: 0.78rem; color: var(--text-muted); margin-top: 4px; }
+
+    /* Sections */
+    section { padding: 100px 0; }
+    .section-label { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--orange); margin-bottom: 16px; }
+    .section-label::before { content: ''; width: 20px; height: 1px; background: var(--orange); }
+    .section-title { font-size: clamp(1.8rem, 3vw, 2.6rem); font-weight: 700; letter-spacing: -0.03em; margin-bottom: 16px; line-height: 1.15; }
+    .section-sub { color: var(--text-muted); font-size: 1.05rem; max-width: 60ch; margin-bottom: 48px; line-height: 1.7; }
+
+    /* Demo terminal */
+    .demo-section { background: var(--bg-1); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .demo-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: center; }
+    .demo-text .section-sub { margin-bottom: 24px; }
+    .demo-stat-list { display: flex; flex-direction: column; gap: 12px; }
+    .demo-stat { display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius); }
+    .demo-stat-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
+    .demo-stat-icon.orange { background: var(--orange-dim); }
+    .demo-stat-icon.purple { background: var(--purple-dim); }
+    .demo-stat-icon.cyan { background: var(--cyan-dim); }
+    .demo-stat-text strong { display: block; font-size: 0.9rem; font-weight: 600; }
+    .demo-stat-text span { font-size: 0.82rem; color: var(--text-muted); }
+    .terminal { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; box-shadow: 0 0 0 1px rgba(249,115,22,0.05), 0 40px 80px rgba(0,0,0,0.6); }
+    .terminal-header { background: var(--bg-3); padding: 12px 16px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+    .dot { width: 12px; height: 12px; border-radius: 50%; }
+    .dot-r { background: #ff5f57; } .dot-y { background: #ffbd2e; } .dot-g { background: #28ca41; }
+    .terminal-title { margin-left: 8px; font-family: "JetBrains Mono", monospace; font-size: 0.78rem; color: var(--text-dim); }
+    .terminal-body { padding: 20px 24px; font-family: "JetBrains Mono", monospace; font-size: 0.82rem; line-height: 1.7; min-height: 340px; overflow-x: auto; }
+    .t-line { display: flex; gap: 8px; white-space: nowrap; }
+    .t-prompt { color: var(--orange); user-select: none; }
+    .t-cmd { color: var(--text); }
+    .t-comment { color: var(--text-dim); }
+    .t-output { color: var(--text-muted); padding-left: 16px; }
+    .t-success { color: var(--green); }
+    .t-info { color: var(--orange); }
+    .t-blank { height: 8px; }
+    .cursor { display: inline-block; width: 7px; height: 1em; background: var(--orange); border-radius: 1px; vertical-align: text-bottom; margin-left: 2px; animation: blink 1.1s step-end infinite; }
+
+    /* Benchmark */
+    .bench-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; }
+    .bench-card { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 28px; transition: border-color 0.3s; }
+    .bench-card:hover { border-color: var(--border-glow); }
+    .bench-card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 20px; color: var(--text-muted); }
+    .bench-card h3 code { font-family: "JetBrains Mono", monospace; color: var(--orange); background: var(--orange-dim); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; }
+    .bar-chart { margin-top: 16px; }
+    .bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+    .bar-label { font-size: 0.82rem; color: var(--text-muted); width: 100px; flex-shrink: 0; }
+    .bar-track { flex: 1; height: 8px; background: var(--bg-3); border-radius: 4px; overflow: hidden; }
+    .bar-fill { height: 100%; border-radius: 4px; transform-origin: left; transform: scaleX(0); transition: transform 1s ease 0.3s; }
+    .bar-fill.rq { background: linear-gradient(90deg, var(--orange), #ff9500); }
+    .bar-fill.rabbit { background: linear-gradient(90deg, #4a90d9, #6ab0ff); }
+    .bar-fill.redis { background: linear-gradient(90deg, #dc382d, #ff6b6b); }
+    .bar-fill.bull { background: linear-gradient(90deg, #68a063, #8bc34a); }
+    .bar-fill.animated { transform: scaleX(var(--w, 1)); }
+    .bar-val { font-size: 0.8rem; font-family: "JetBrains Mono", monospace; color: var(--text-muted); width: 90px; text-align: right; flex-shrink: 0; }
+    .insight-card { background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 28px; display: flex; flex-direction: column; justify-content: center; }
+    .insight-card h3 { font-size: 1.05rem; margin-bottom: 12px; }
+    .insight-card p { color: var(--text-muted); font-size: 0.95rem; line-height: 1.7; }
+    .insight-card .highlight { color: var(--orange); font-weight: 600; }
+
+    /* Features */
+    .feature-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .feature-card {
+      background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius-lg);
+      padding: 28px; transition: border-color 0.3s, transform 0.3s, background 0.3s;
+      cursor: default; opacity: 0; transform: translateY(24px);
+    }
+    .feature-card.visible { opacity: 1; transform: translateY(0); transition: opacity 0.5s ease, transform 0.5s ease, border-color 0.3s, background 0.3s; }
+    .feature-card:hover { border-color: var(--border-glow); background: var(--bg-2); transform: translateY(-4px) !important; }
+    .feature-icon { width: 44px; height: 44px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 22px; margin-bottom: 18px; }
+    .feature-icon.orange { background: var(--orange-dim); box-shadow: 0 0 20px rgba(249,115,22,0.1); }
+    .feature-icon.purple { background: var(--purple-dim); box-shadow: 0 0 20px rgba(139,92,246,0.1); }
+    .feature-icon.cyan { background: var(--cyan-dim); }
+    .feature-icon.green { background: rgba(63,185,80,0.08); }
+    .feature-icon.blue { background: rgba(0,153,255,0.08); }
+    .feature-icon.pink { background: rgba(236,72,153,0.08); }
+    .feature-card h3 { font-size: 1rem; font-weight: 600; margin-bottom: 8px; }
+    .feature-card p { color: var(--text-muted); font-size: 0.88rem; line-height: 1.65; }
+    .feature-tag { display: inline-block; margin-top: 14px; font-family: "JetBrains Mono", monospace; font-size: 0.72rem; color: var(--orange); background: var(--orange-dim); padding: 3px 8px; border-radius: 4px; }
+
+    /* Quick Start */
+    .quickstart-layout { display: grid; grid-template-columns: 1fr 1.5fr; gap: 48px; align-items: start; }
+    .steps-list { display: flex; flex-direction: column; gap: 0; }
+    .step { display: flex; gap: 16px; padding: 20px 0; border-bottom: 1px solid var(--border); cursor: pointer; transition: opacity 0.2s; }
+    .step:last-child { border-bottom: none; }
+    .step:hover { opacity: 0.8; }
+    .step-num { width: 28px; height: 28px; border-radius: 50%; background: var(--bg-3); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; color: var(--text-muted); flex-shrink: 0; transition: background 0.2s, border-color 0.2s, color 0.2s; }
+    .step.active .step-num { background: var(--orange); border-color: var(--orange); color: var(--bg); }
+    .step-content h4 { font-size: 0.95rem; margin-bottom: 4px; }
+    .step-content p { font-size: 0.85rem; color: var(--text-muted); line-height: 1.5; }
+    .code-window { background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; box-shadow: 0 0 0 1px rgba(249,115,22,0.04), 0 40px 80px rgba(0,0,0,0.5); position: sticky; top: 80px; }
+    .code-window-header { background: var(--bg-3); padding: 12px 20px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+    .code-window-title { margin-left: 8px; font-family: "JetBrains Mono", monospace; font-size: 0.78rem; color: var(--text-dim); }
+    .code-window-body { position: relative; height: 380px; overflow: hidden; }
+    .code-pane-qs { display: none; position: absolute; inset: 0; padding: 24px; font-family: "JetBrains Mono", monospace; font-size: 0.83rem; line-height: 1.75; white-space: pre; overflow-x: auto; overflow-y: auto; }
+    .code-pane-qs.active { display: block; }
+    .ln { color: var(--text-dim); user-select: none; display: inline-block; width: 28px; text-align: right; margin-right: 16px; }
+    .c-key { color: var(--purple); } .c-str { color: var(--yellow); } .c-num { color: var(--orange); }
+    .c-cmt { color: var(--text-dim); } .c-fn { color: var(--cyan); } .c-kw { color: var(--red); } .c-ok { color: var(--green); }
+
+    /* CTA Banner */
+    .cta-banner { margin: 0; padding: 100px 0; text-align: center; background: var(--bg-1); border-top: 1px solid var(--border); }
+    .cta-banner h2 { font-size: clamp(2rem, 4vw, 3.2rem); font-weight: 700; letter-spacing: -0.03em; margin-bottom: 16px; }
+    .cta-banner p { color: var(--text-muted); font-size: 1.05rem; max-width: 50ch; margin: 0 auto 36px; }
+
+    /* Footer */
+    footer { background: var(--bg); border-top: 1px solid var(--border); padding: 40px 24px; text-align: center; color: var(--text-muted); font-size: 0.88rem; }
+    footer a { color: var(--orange); text-decoration: none; }
+    footer a:hover { opacity: 0.8; }
+    .footer-inner { max-width: 1160px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+    .footer-brand { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--text); }
+    .footer-links { display: flex; gap: 24px; }
+
+    /* Reveal */
+    .reveal { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease, transform 0.6s ease; }
+    .reveal.visible { opacity: 1; transform: translateY(0); }
+
+    /* Responsive */
+    @media (max-width: 900px) {
+      .demo-layout, .bench-grid, .quickstart-layout { grid-template-columns: 1fr; }
+      .feature-grid { grid-template-columns: 1fr 1fr; }
+      .metrics-strip { grid-template-columns: repeat(3, 1fr); }
+      .nav-links { display: none; }
+    }
+    @media (max-width: 600px) {
+      .feature-grid { grid-template-columns: 1fr; }
+      .metrics-strip { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="grid-bg"></div>
+  <div class="glow-orb glow-orb-1"></div>
+  <div class="glow-orb glow-orb-2"></div>
+  <div class="glow-orb glow-orb-3"></div>
+
+  <!-- Nav -->
+  <nav>
+    <div class="nav-inner">
+      <a class="brand" href="#">
+        <div class="brand-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+        </div>
+        RustQueue
+      </a>
+      <div class="nav-links">
+        <a href="#demo">Demo</a>
+        <a href="#benchmarks">Benchmarks</a>
+        <a href="#features">Features</a>
+        <a href="#quickstart">Quick Start</a>
+        <a class="nav-cta" href="https://github.com/ferax564/rustqueue">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+          GitHub
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="wrapper">
+      <div class="hero-badge"><span class="badge-dot"></span> Open Source &bull; MIT / Apache-2.0</div>
+      <h1>The job scheduler that<br><span class="grad">runs anywhere</span></h1>
+      <p class="hero-sub">A high-performance distributed job queue written in Rust. Zero external dependencies. Single binary. From a Raspberry Pi to a 100-node cluster.</p>
+      <div class="hero-cta">
+        <a class="btn-primary" href="https://github.com/ferax564/rustqueue">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+          Star on GitHub
+        </a>
+        <a class="btn-secondary" href="#quickstart">Quick Start</a>
+      </div>
+      <div class="metrics-strip">
+        <div class="metric-item">
+          <span class="metric-val" data-count="43494" data-suffix="" data-decimals="0">0</span>
+          <span class="metric-label">jobs/sec produce</span>
+        </div>
+        <div class="metric-item">
+          <span class="metric-val" data-count="6.8" data-suffix=" MB" data-decimals="1">0</span>
+          <span class="metric-label">binary size</span>
+        </div>
+        <div class="metric-item">
+          <span class="metric-val" data-count="10" data-suffix=" ms" data-decimals="0">0</span>
+          <span class="metric-label">startup time</span>
+        </div>
+        <div class="metric-item">
+          <span class="metric-val" data-count="314" data-suffix="+" data-decimals="0">0</span>
+          <span class="metric-label">tests passing</span>
+        </div>
+        <div class="metric-item">
+          <span class="metric-val" data-count="15" data-suffix=" MB" data-decimals="0">0</span>
+          <span class="metric-label">memory (idle)</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Demo -->
+  <section id="demo" class="demo-section">
+    <div class="wrapper">
+      <div class="demo-layout">
+        <div class="demo-text">
+          <div class="section-label reveal">See It Work</div>
+          <h2 class="section-title reveal">Download. Run.<br>Push jobs.</h2>
+          <p class="section-sub reveal">No Redis. No PostgreSQL. No message broker. Just one binary. Start the server and push your first job in under 30 seconds.</p>
+          <div class="demo-stat-list reveal">
+            <div class="demo-stat">
+              <div class="demo-stat-icon orange">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+              </div>
+              <div class="demo-stat-text">
+                <strong>Dual protocol</strong>
+                <span>HTTP REST (port 6790) + TCP (port 6789)</span>
+              </div>
+            </div>
+            <div class="demo-stat">
+              <div class="demo-stat-icon purple">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 12h4M14 12h4"/></svg>
+              </div>
+              <div class="demo-stat-text">
+                <strong>5 storage backends</strong>
+                <span>redb, hybrid, memory, SQLite, PostgreSQL</span>
+              </div>
+            </div>
+            <div class="demo-stat">
+              <div class="demo-stat-icon cyan">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#00d4aa" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              </div>
+              <div class="demo-stat-text">
+                <strong>Crash-only design</strong>
+                <span>All state persisted before acknowledging writes</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="terminal reveal" style="transition-delay:0.2s">
+          <div class="terminal-header">
+            <span class="dot dot-r"></span>
+            <span class="dot dot-y"></span>
+            <span class="dot dot-g"></span>
+            <span class="terminal-title">rustqueue &mdash; terminal</span>
+          </div>
+          <div class="terminal-body">
+            <div class="t-line"><span class="t-prompt">$</span> <span class="t-cmd">rustqueue serve</span></div>
+            <div class="t-line"><span class="t-output t-success">INFO  HTTP listening on 0.0.0.0:6790</span></div>
+            <div class="t-line"><span class="t-output t-success">INFO  TCP  listening on 0.0.0.0:6789</span></div>
+            <div class="t-line"><span class="t-output t-info">INFO  Storage: redb (./data)</span></div>
+            <div class="t-line"><span class="t-output">INFO  Scheduler started (tick: 1000ms)</span></div>
+            <div class="t-blank"></div>
+            <div class="t-line"><span class="t-prompt">$</span> <span class="t-cmd">curl -X POST localhost:6790/api/v1/queues/emails/jobs \</span></div>
+            <div class="t-line"><span class="t-output">  -H "Content-Type: application/json" \</span></div>
+            <div class="t-line"><span class="t-output">  -d '{"name":"send-welcome","data":{"to":"alice@co.com"}}'</span></div>
+            <div class="t-blank"></div>
+            <div class="t-line"><span class="t-output t-success">{"ok":true,"id":"019474a1-b2c3-7def-8901-234567890abc"}</span></div>
+            <div class="t-blank"></div>
+            <div class="t-line"><span class="t-prompt">$</span> <span class="t-cmd">rustqueue status</span></div>
+            <div class="t-line"><span class="t-output">Queues: 1  |  Jobs: 1 waiting  |  Workers: 0</span></div>
+            <div class="t-line"><span class="t-output">  emails: 1 waiting, 0 active, 0 completed</span></div>
+            <div class="t-line"><span class="t-prompt">$</span> <span class="cursor"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Benchmarks -->
+  <section id="benchmarks">
+    <div class="wrapper">
+      <div class="section-label reveal">Performance</div>
+      <h2 class="section-title reveal">Beats RabbitMQ on<br>every metric</h2>
+      <p class="section-sub reveal">Hybrid TCP backend with batch_size=50. Real benchmarks against production RabbitMQ, Redis LPUSH/RPOP, and BullMQ.</p>
+      <div class="bench-grid">
+        <div class="bench-card reveal">
+          <h3>Produce throughput <code>ops/sec</code></h3>
+          <div class="bar-chart">
+            <div class="bar-row">
+              <span class="bar-label">RustQueue</span>
+              <div class="bar-track"><div class="bar-fill rq" style="--w:1"></div></div>
+              <span class="bar-val">43,494</span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">RabbitMQ</span>
+              <div class="bar-track"><div class="bar-fill rabbit" style="--w:0.827"></div></div>
+              <span class="bar-val">35,975</span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">Redis</span>
+              <div class="bar-track"><div class="bar-fill redis" style="--w:0.126"></div></div>
+              <span class="bar-val">5,460</span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">BullMQ</span>
+              <div class="bar-track"><div class="bar-fill bull" style="--w:0.109"></div></div>
+              <span class="bar-val">4,761</span>
+            </div>
+          </div>
+          <h3 style="margin-top:32px">Consume throughput <code>ops/sec</code></h3>
+          <div class="bar-chart">
+            <div class="bar-row">
+              <span class="bar-label">RustQueue</span>
+              <div class="bar-track"><div class="bar-fill rq" style="--w:1"></div></div>
+              <span class="bar-val">14,195</span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">RabbitMQ</span>
+              <div class="bar-track"><div class="bar-fill rabbit" style="--w:0.188"></div></div>
+              <span class="bar-val">2,675</span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">Redis</span>
+              <div class="bar-track"><div class="bar-fill redis" style="--w:0.329"></div></div>
+              <span class="bar-val">4,673</span>
+            </div>
+            <div class="bar-row">
+              <span class="bar-label">BullMQ</span>
+              <div class="bar-track"><div class="bar-fill bull" style="--w:0.361"></div></div>
+              <span class="bar-val">5,130</span>
+            </div>
+          </div>
+        </div>
+        <div class="insight-card reveal" style="transition-delay:0.15s">
+          <h3>Why it's fast</h3>
+          <p>
+            <span class="highlight">Hybrid storage</span> keeps jobs in DashMap memory with periodic redb snapshots.<br><br>
+            <span class="highlight">TCP pipelining</span> reads all buffered commands before processing, single flush per batch.<br><br>
+            <span class="highlight">Per-queue BTreeSet index</span> enables O(log N) dequeue instead of scanning all jobs.<br><br>
+            <span class="highlight">Write coalescing</span> batches individual push/ack into group flushes for 60x throughput boost.<br><br>
+            <span class="highlight">Zero-copy binary protocol</span> avoids allocation for payload validation.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section id="features" class="features-section">
+    <div class="wrapper">
+      <div class="section-label reveal">Features</div>
+      <h2 class="section-title reveal">Everything you need.<br>Nothing you don't.</h2>
+      <p class="section-sub reveal">Production-ready job processing with a complete feature set. No external services required.</p>
+      <div class="feature-grid">
+        <div class="feature-card" style="--delay:0s">
+          <div class="feature-icon orange">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#f97316" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+          </div>
+          <h3>DAG Workflows</h3>
+          <p>Job dependencies with <code style="color:var(--orange)">depends_on</code>, BFS cycle detection, cascade DLQ failure, and flow status tracking. Build complex pipelines.</p>
+          <span class="feature-tag">depends_on &bull; cycle detection &bull; cascade</span>
+        </div>
+        <div class="feature-card" style="--delay:0.07s">
+          <div class="feature-icon purple">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          </div>
+          <h3>Cron & Interval Scheduling</h3>
+          <p>Full schedule engine with cron expressions and interval-based execution. Pause, resume, and set max execution limits.</p>
+          <span class="feature-tag">cron &bull; interval &bull; max_executions</span>
+        </div>
+        <div class="feature-card" style="--delay:0.14s">
+          <div class="feature-icon cyan">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#00d4aa" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <h3>Webhooks & Events</h3>
+          <p>HMAC-SHA256 signed HTTP callbacks with event/queue filtering. Real-time WebSocket stream for live monitoring.</p>
+          <span class="feature-tag">HMAC-SHA256 &bull; WebSocket &bull; retry delivery</span>
+        </div>
+        <div class="feature-card" style="--delay:0.21s">
+          <div class="feature-icon green">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#3fb950" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 12h4M14 12h4"/></svg>
+          </div>
+          <h3>5 Storage Backends</h3>
+          <p>redb (ACID default), hybrid memory+disk, in-memory, SQLite, PostgreSQL. Swap via config without changing code.</p>
+          <span class="feature-tag">redb &bull; hybrid &bull; SQLite &bull; Postgres</span>
+        </div>
+        <div class="feature-card" style="--delay:0.28s">
+          <div class="feature-icon blue">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#0099ff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/></svg>
+          </div>
+          <h3>Embeddable Library</h3>
+          <p>Use as a standalone server or embed in your Rust application. <code style="color:var(--orange)">RustQueue::memory().build()</code> for zero-config usage.</p>
+          <span class="feature-tag">zero-config &bull; library &bull; no server needed</span>
+        </div>
+        <div class="feature-card" style="--delay:0.35s">
+          <div class="feature-icon pink">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ec4899" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+          </div>
+          <h3>Client SDKs</h3>
+          <p>Official Node.js (TypeScript), Python, and Go SDKs. HTTP + TCP transports. Zero runtime dependencies.</p>
+          <span class="feature-tag">TypeScript &bull; Python &bull; Go &bull; zero deps</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Quick Start -->
+  <section id="quickstart">
+    <div class="wrapper">
+      <div class="reveal">
+        <div class="section-label">Quick Start</div>
+        <h2 class="section-title">Running in 60 seconds</h2>
+        <p class="section-sub">Download the binary, start the server, push your first job. No configuration required.</p>
+      </div>
+      <div class="quickstart-layout">
+        <div class="steps-list">
+          <div class="step active" data-step="install">
+            <div class="step-num">1</div>
+            <div class="step-content">
+              <h4>Install</h4>
+              <p>One command via cargo install, or build from source.</p>
+            </div>
+          </div>
+          <div class="step" data-step="serve">
+            <div class="step-num">2</div>
+            <div class="step-content">
+              <h4>Start the server</h4>
+              <p>Zero config needed. Starts HTTP + TCP listeners with redb storage.</p>
+            </div>
+          </div>
+          <div class="step" data-step="push">
+            <div class="step-num">3</div>
+            <div class="step-content">
+              <h4>Push and process jobs</h4>
+              <p>Push via HTTP, TCP, or CLI. Pull, process, acknowledge.</p>
+            </div>
+          </div>
+          <div class="step" data-step="sdk">
+            <div class="step-num">4</div>
+            <div class="step-content">
+              <h4>Use a client SDK</h4>
+              <p>TypeScript, Python, or Go. Zero runtime dependencies.</p>
+            </div>
+          </div>
+        </div>
+        <div class="code-window reveal" style="transition-delay:0.2s">
+          <div class="code-window-header">
+            <span class="dot dot-r"></span>
+            <span class="dot dot-y"></span>
+            <span class="dot dot-g"></span>
+            <span class="code-window-title" id="code-window-filename">install.sh</span>
+          </div>
+          <div class="code-window-body">
+            <div class="code-pane-qs active" id="qs-install">
+<span class="ln">1</span><span class="c-cmt"># Install via cargo</span>
+<span class="ln">2</span><span style="color:var(--text)">cargo install rustqueue</span>
+<span class="ln">3</span>
+<span class="ln">4</span><span class="c-cmt"># Or build from source</span>
+<span class="ln">5</span><span style="color:var(--text)">git clone https://github.com/ferax564/rustqueue.git</span>
+<span class="ln">6</span><span style="color:var(--text)">cd rustqueue</span>
+<span class="ln">7</span><span style="color:var(--text)">cargo build --release</span>
+<span class="ln">8</span>
+<span class="ln">9</span><span class="c-cmt"># Or run with Docker</span>
+<span class="ln">10</span><span style="color:var(--text)">docker compose up -d</span>
+            </div>
+            <div class="code-pane-qs" id="qs-serve">
+<span class="ln">1</span><span class="c-cmt"># Start with defaults (redb storage, ports 6790/6789)</span>
+<span class="ln">2</span><span style="color:var(--text)">rustqueue serve</span>
+<span class="ln">3</span>
+<span class="ln">4</span><span class="c-cmt"># Or with custom config</span>
+<span class="ln">5</span><span style="color:var(--text)">rustqueue serve --config rustqueue.toml</span>
+<span class="ln">6</span>
+<span class="ln">7</span><span class="c-cmt"># Or with environment variables</span>
+<span class="ln">8</span><span style="color:var(--text)">RUSTQUEUE_STORAGE_BACKEND=hybrid rustqueue serve</span>
+<span class="ln">9</span>
+<span class="ln">10</span><span class="c-ok">INFO  HTTP listening on 0.0.0.0:6790</span>
+<span class="ln">11</span><span class="c-ok">INFO  TCP  listening on 0.0.0.0:6789</span>
+            </div>
+            <div class="code-pane-qs" id="qs-push">
+<span class="ln">1</span><span class="c-cmt"># Push a job via HTTP</span>
+<span class="ln">2</span><span style="color:var(--text)">curl -X POST localhost:6790/api/v1/queues/emails/jobs \</span>
+<span class="ln">3</span><span style="color:var(--text)">  -H "Content-Type: application/json" \</span>
+<span class="ln">4</span><span style="color:var(--text)">  -d '{"name":"send-welcome","data":{"to":"a@b.com"}}'</span>
+<span class="ln">5</span>
+<span class="ln">6</span><span class="c-cmt"># Pull, process, acknowledge</span>
+<span class="ln">7</span><span style="color:var(--text)">curl localhost:6790/api/v1/queues/emails/jobs</span>
+<span class="ln">8</span><span style="color:var(--text)">curl -X POST localhost:6790/api/v1/jobs/{id}/ack</span>
+<span class="ln">9</span>
+<span class="ln">10</span><span class="c-cmt"># Or use the CLI</span>
+<span class="ln">11</span><span style="color:var(--text)">rustqueue push --queue emails --name send-welcome</span>
+            </div>
+            <div class="code-pane-qs" id="qs-sdk">
+<span class="ln">1</span><span class="c-cmt">// TypeScript SDK</span>
+<span class="ln">2</span><span class="c-kw">import</span><span style="color:var(--text)"> { RustQueueClient } </span><span class="c-kw">from</span><span class="c-str"> "@rustqueue/client"</span>
+<span class="ln">3</span>
+<span class="ln">4</span><span class="c-kw">const</span><span style="color:var(--text)"> client = </span><span class="c-kw">new</span><span class="c-fn"> RustQueueClient</span><span style="color:var(--text)">({</span>
+<span class="ln">5</span><span style="color:var(--text)">  baseUrl: </span><span class="c-str">"http://localhost:6790"</span>
+<span class="ln">6</span><span style="color:var(--text)">})</span>
+<span class="ln">7</span>
+<span class="ln">8</span><span class="c-kw">const</span><span style="color:var(--text)"> id = </span><span class="c-kw">await</span><span style="color:var(--text)"> client.</span><span class="c-fn">push</span><span style="color:var(--text)">(</span><span class="c-str">"emails"</span><span style="color:var(--text)">, </span><span class="c-str">"send-welcome"</span><span style="color:var(--text)">,</span>
+<span class="ln">9</span><span style="color:var(--text)">  { to: </span><span class="c-str">"alice@co.com"</span><span style="color:var(--text)"> })</span>
+<span class="ln">10</span>
+<span class="ln">11</span><span class="c-kw">const</span><span style="color:var(--text)"> jobs = </span><span class="c-kw">await</span><span style="color:var(--text)"> client.</span><span class="c-fn">pull</span><span style="color:var(--text)">(</span><span class="c-str">"emails"</span><span style="color:var(--text)">)</span>
+<span class="ln">12</span><span class="c-kw">await</span><span style="color:var(--text)"> client.</span><span class="c-fn">ack</span><span style="color:var(--text)">(jobs[0].id)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA Banner -->
+  <div class="cta-banner">
+    <div class="wrapper">
+      <div class="reveal">
+        <h2>Replace your message broker<br>with a <span class="grad">single binary</span></h2>
+        <p>Open source, zero dependencies, production-ready. Works with any language via HTTP, TCP, or official SDKs.</p>
+        <div class="hero-cta" style="margin-bottom:0">
+          <a class="btn-primary" href="https://github.com/ferax564/rustqueue">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+            Star on GitHub
+          </a>
+          <a class="btn-secondary" href="#quickstart">Read the docs</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer>
+    <div class="footer-inner">
+      <div class="footer-brand">
+        <div class="brand-icon" style="width:24px;height:24px;border-radius:6px">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+        </div>
+        RustQueue
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/ferax564/rustqueue">GitHub</a>
+        <a href="https://github.com/ferax564/rustqueue#api">API Docs</a>
+        <a href="https://github.com/ferax564/rustqueue/blob/main/ROADMAP.md">Roadmap</a>
+      </div>
+      <span>MIT / Apache-2.0</span>
+    </div>
+  </footer>
+
+  <script>
+    // Intersection Observer for reveal animations
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          e.target.classList.add('visible');
+          e.target.querySelectorAll('.bar-fill').forEach(b => b.classList.add('animated'));
+          observer.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.12 });
+
+    document.querySelectorAll('.reveal, .feature-card').forEach(el => observer.observe(el));
+
+    document.querySelectorAll('.feature-card').forEach((card, i) => {
+      card.style.transitionDelay = (i * 0.07) + 's';
+    });
+
+    const barObserver = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          e.target.querySelectorAll('.bar-fill').forEach(b => b.classList.add('animated'));
+          barObserver.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.3 });
+
+    document.querySelectorAll('.bench-card').forEach(el => barObserver.observe(el));
+
+    // Animated counter
+    function animateCounter(el) {
+      const target = parseFloat(el.dataset.count);
+      const suffix = el.dataset.suffix || '';
+      const decimals = parseInt(el.dataset.decimals || 0);
+      const duration = 1600;
+      const start = performance.now();
+
+      function update(now) {
+        const elapsed = now - start;
+        const progress = Math.min(elapsed / duration, 1);
+        const eased = 1 - Math.pow(1 - progress, 3);
+        const current = target * eased;
+        el.textContent = (target > 1000 ? Math.round(current).toLocaleString() : current.toFixed(decimals)) + suffix;
+        if (progress < 1) requestAnimationFrame(update);
+      }
+
+      requestAnimationFrame(update);
+    }
+
+    const counterObserver = new IntersectionObserver((entries) => {
+      entries.forEach(e => {
+        if (e.isIntersecting) {
+          e.target.querySelectorAll('[data-count]').forEach(animateCounter);
+          counterObserver.unobserve(e.target);
+        }
+      });
+    }, { threshold: 0.5 });
+
+    document.querySelectorAll('.metrics-strip').forEach(el => counterObserver.observe(el));
+
+    // Quickstart steps
+    const stepFiles = {
+      'install': 'install.sh',
+      'serve': 'rustqueue.sh',
+      'push': 'push-job.sh',
+      'sdk': 'client.ts'
+    };
+
+    document.querySelectorAll('.step').forEach(step => {
+      step.addEventListener('click', () => {
+        document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+        document.querySelectorAll('.code-pane-qs').forEach(p => p.classList.remove('active'));
+        step.classList.add('active');
+        const key = step.dataset.step;
+        document.getElementById('qs-' + key).classList.add('active');
+        document.getElementById('code-window-filename').textContent = stepFiles[key];
+      });
+    });
+
+    // Nav active scroll highlight
+    const sections = document.querySelectorAll('section[id], div[id]');
+    const navLinks = document.querySelectorAll('.nav-links a');
+
+    window.addEventListener('scroll', () => {
+      let current = '';
+      sections.forEach(s => {
+        if (window.scrollY >= s.offsetTop - 100) current = s.id;
+      });
+      navLinks.forEach(a => {
+        a.style.color = a.getAttribute('href') === '#' + current ? 'var(--orange)' : '';
+      });
+    }, { passive: true });
+  </script>
+</body>
+</html>
