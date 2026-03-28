@@ -24,7 +24,7 @@ fn load_key(path: &str) -> anyhow::Result<rustls::pki_types::PrivateKeyDer<'stat
 #[command(
     name = "rustqueue",
     version,
-    about = "A high-performance distributed job scheduler"
+    about = "Background jobs without infrastructure"
 )]
 struct Cli {
     #[command(subcommand)]

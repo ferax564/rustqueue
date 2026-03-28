@@ -16,7 +16,7 @@ use crate::api::AppState;
     info(
         title = "RustQueue API",
         version = "0.12.0",
-        description = "High-performance distributed job scheduler — zero dependencies, single binary.",
+        description = "Background jobs without infrastructure — embeddable job queue with zero external dependencies.",
         license(name = "MIT OR Apache-2.0"),
     ),
     paths(

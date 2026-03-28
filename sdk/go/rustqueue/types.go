@@ -1,4 +1,4 @@
-// Package rustqueue provides Go clients for the RustQueue distributed job scheduler.
+// Package rustqueue provides Go clients for RustQueue — background jobs without infrastructure.
 //
 // Both HTTP and TCP clients are available. The HTTP client is simpler and suitable
 // for most use cases. The TCP client provides lower overhead for high-throughput

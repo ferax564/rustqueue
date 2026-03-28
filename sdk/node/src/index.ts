@@ -1,8 +1,8 @@
 /**
  * @rustqueue/client — Official Node.js SDK for RustQueue.
  *
- * Provides both HTTP and TCP clients for interacting with the RustQueue
- * distributed job scheduler. Zero external runtime dependencies.
+ * Provides both HTTP and TCP clients for RustQueue — background jobs
+ * without infrastructure. Zero external runtime dependencies.
  *
  * ## Quick Start
  *

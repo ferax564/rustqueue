@@ -1,7 +1,7 @@
 {
   "name": "@rustqueue/client",
   "version": "0.1.0",
-  "description": "Official Node.js SDK for RustQueue — high-performance distributed job scheduler",
+  "description": "Official Node.js SDK for RustQueue — background jobs without infrastructure",
   "license": "MIT",
   "type": "module",
   "main": "./dist/cjs/index.js",

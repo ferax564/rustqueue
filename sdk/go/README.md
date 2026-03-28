@@ -1,6 +1,6 @@
 # RustQueue Go SDK
 
-Official Go client for [RustQueue](https://github.com/rustqueue/rustqueue), a high-performance distributed job scheduler.
+Official Go client for [RustQueue](https://github.com/rustqueue/rustqueue) — background jobs without infrastructure.
 
 Provides both HTTP and TCP clients. Zero external dependencies -- only Go standard library.
 
