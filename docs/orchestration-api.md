@@ -1,6 +1,6 @@
 # RustQueue Orchestration API
 
-This document describes the RustQueue API surface relevant to workflow orchestration systems (e.g., ForgePipe). It covers the full job lifecycle, metadata handling, DAG flows, and integration patterns.
+This document describes the RustQueue API surface relevant to workflow orchestration systems. It covers the full job lifecycle, metadata handling, DAG flows, and integration patterns.
 
 ## Overview
 
@@ -23,7 +23,7 @@ The `metadata` field on jobs carries orchestration context through the full life
 - **Optional**: Omit it entirely for backward compatibility (zero overhead when unused)
 - **Size-limited**: Maximum 64 KB per job
 
-### Example: ForgePipe Workflow Metadata
+### Example: Workflow Platform Workflow Metadata
 
 ```json
 {
@@ -32,13 +32,13 @@ The `metadata` field on jobs carries orchestration context through the full life
   "data": {"repo": "acme/app", "branch": "main"},
   "options": {
     "metadata": {
-      "workflow_id": "forgepipe-run-001",
+      "workflow_id": "workflow-platform-run-001",
       "step_id": "build",
-      "artifact_ref": "s3://forgepipe-artifacts/run-001/build.tar.gz",
+      "artifact_ref": "s3://workflow-platform-artifacts/run-001/build.tar.gz",
       "parent_step": null,
       "labels": {"env": "staging", "team": "platform"}
     },
-    "flow_id": "forgepipe-run-001"
+    "flow_id": "workflow-platform-run-001"
   }
 }
 ```
@@ -209,7 +209,7 @@ Follow-up jobs can be declared in `metadata.follow_ups`:
         "queue": "image-process",
         "name": "render-pages",
         "data": {"doc_id": "d-1"},
-        "flow_id": "forgepipe-run-001"
+        "flow_id": "workflow-platform-run-001"
       }
     ]
   }
@@ -280,7 +280,7 @@ RustQueue can operate with:
 - externally installed global recorder (`MetricsRegistry::install_external_recorder`)
 - externally created Prometheus recorder (`MetricsRegistry::install_external_prometheus_recorder`)
 
-This enables platforms like ForgePipe to unify metrics under one recorder and scrape endpoint.
+This enables platforms like Workflow Platform to unify metrics under one recorder and scrape endpoint.
 
 ## Backward Compatibility
 

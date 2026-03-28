@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-RustQueue is a high-performance distributed job scheduler written in Rust. Zero external dependencies, single-binary deployment. See `PRD.md` for full product requirements.
+RustQueue is a high-performance distributed job scheduler written in Rust. Zero external dependencies, single-binary deployment.
 
 ## Quick Commands
 
@@ -98,22 +98,9 @@ The default redb backend has ~348 push/sec sequential throughput (fsync-dominate
 - **HybridStorage** (in-memory + disk snapshots): DashMap hot path + periodic redb flush. Per-queue BTreeSet waiting index for O(log N) dequeue. Trade-off: up to `snapshot_interval` of data loss on crash.
 - **BufferedRedbStorage** (write coalescing): **~22,222 jobs/sec at 100 concurrent callers** (60.6x improvement). Enable with `write_coalescing_enabled = true`.
 
-v0.12 TCP optimizations:
+Key optimizations: TCP_NODELAY, write buffering with explicit flush, TCP pipelining (batch all commands before flush), per-queue BTreeSet waiting index for O(log N) dequeue, zero-allocation payload size estimation, stack-allocated index keys.
 
-1. **TCP_NODELAY**: Disables Nagle's algorithm on accepted connections.
-2. **BufWriter + flush**: Application-level write buffering with explicit flush for fewer syscalls.
-3. **TCP pipelining**: Reads all buffered commands before processing, single flush per batch.
-4. **Clone reduction**: Avoids unnecessary `cmd.clone()` in push handlers.
-5. **estimate_json_size()**: Walks Value tree without allocation for fast payload validation.
-6. **Stack-allocated index key**: `state_updated_key()` returns `[u8; 25]` instead of `Vec<u8>`.
-7. **Eventual durability for hybrid**: Inner redb forced to `Eventual` mode (safe since hybrid accepts data loss).
-8. **Per-queue BTreeSet waiting index**: HybridStorage dequeue uses BTreeSet index — O(log N) per job instead of O(total_jobs) scan. 37.6x consume throughput improvement.
-
-References:
-
-- `docs/performance-analysis.md`
-- `docs/competitor-benchmark-2026-02-07.md`
-- `docs/competitor-benchmark-2026-02-06.md`
+Reference: `docs/competitor-benchmark-2026-02-07.md`
 
 ## Conventions
 
@@ -140,7 +127,7 @@ References:
 - **Generic backend harness**: `tests/storage_backend_tests.rs` — `backend_tests!` macro generates 19 canonical tests per storage backend (memory, redb, buffered_redb, hybrid; + sqlite with feature).
 - **Property tests**: State machine transitions, serialization roundtrips.
 - **Benchmarks**: `benches/throughput.rs` measures jobs/sec for push, pull, ack operations.
-- **Current counts**: ~249 tests (default features), ~268 tests (with `sqlite`).
+- **Current counts**: ~314 tests (default features), ~341 tests (with `sqlite`).
 
 ## Configuration Priority
 
