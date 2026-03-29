@@ -38,6 +38,10 @@ pub fn landing_routes() -> Router<Arc<AppState>> {
             "/blog/background-jobs-without-redis",
             axum::routing::get(blog_post_1),
         )
+        .route(
+            "/blog/crash-safe-email-queue",
+            axum::routing::get(blog_post_2),
+        )
         .route("/examples", axum::routing::get(examples_page))
 }
 
@@ -57,6 +61,10 @@ async fn landing() -> impl IntoResponse {
 
 async fn blog_post_1() -> impl IntoResponse {
     serve_embedded("blog-background-jobs-without-redis.html")
+}
+
+async fn blog_post_2() -> impl IntoResponse {
+    serve_embedded("blog-crash-safe-email-queue.html")
 }
 
 async fn examples_page() -> impl IntoResponse {

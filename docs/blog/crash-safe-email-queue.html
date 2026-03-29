@@ -1,0 +1,1035 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Build a crash-safe email notification queue in Rust with priority, retry, and zero infrastructure. Kill the process mid-send — emails resume on restart.">
+    <meta property="og:title" content="Building a Crash-Safe Email Queue in Rust">
+    <meta property="og:description" content="Priority, retry, crash recovery — all without Redis. A practical walkthrough with RustQueue.">
+    <meta property="og:type" content="article">
+    <title>Building a Crash-Safe Email Queue in Rust | RustQueue</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Manrope:wght@400;500;700;800&family=Syne:wght@500;700;800&display=swap" rel="stylesheet">
+    <style>
+:root {
+    --bg: #f4f1e8;
+    --surface: #fffdf8;
+    --ink: #11242a;
+    --muted: #52666d;
+    --line: #d5ddd9;
+    --accent: #0f9681;
+    --accent-strong: #0a6b5e;
+    --accent-alt: #e87337;
+    --accent-alt-strong: #b55321;
+    --shadow: 0 22px 44px rgba(17, 36, 42, 0.12);
+    --radius-lg: 24px;
+    --radius-md: 16px;
+    --radius-sm: 12px;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Manrope", "Segoe UI", sans-serif;
+    line-height: 1.45;
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image: linear-gradient(rgba(17, 36, 42, 0.03) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(17, 36, 42, 0.03) 1px, transparent 1px);
+    background-size: 38px 38px;
+    mask-image: radial-gradient(circle at center, rgba(0, 0, 0, 0.55), transparent 72%);
+}
+
+.scene {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+}
+
+.orb {
+    position: absolute;
+    filter: blur(36px);
+    border-radius: 50%;
+    opacity: 0.8;
+    animation: drift 18s ease-in-out infinite;
+}
+
+.orb-a {
+    width: 260px;
+    height: 260px;
+    top: 4%;
+    left: -30px;
+    background: rgba(15, 150, 129, 0.3);
+}
+
+.orb-b {
+    width: 300px;
+    height: 300px;
+    top: 14%;
+    right: -60px;
+    background: rgba(232, 115, 55, 0.25);
+    animation-delay: -6s;
+}
+
+.orb-c {
+    width: 220px;
+    height: 220px;
+    bottom: 10%;
+    left: 44%;
+    background: rgba(15, 150, 129, 0.16);
+    animation-delay: -11s;
+}
+
+.container {
+    width: min(1120px, 92vw);
+    margin-inline: auto;
+}
+
+.nav-shell {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    padding-top: 1rem;
+}
+
+.nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid rgba(17, 36, 42, 0.1);
+    background: rgba(255, 253, 248, 0.82);
+    backdrop-filter: blur(8px);
+    border-radius: 999px;
+}
+
+.logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.65rem;
+    text-decoration: none;
+    color: inherit;
+}
+
+.logo-mark {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    background: linear-gradient(140deg, var(--accent), var(--accent-alt));
+    box-shadow: 0 0 0 4px rgba(15, 150, 129, 0.15);
+}
+
+.logo-text {
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+    font-size: 1.18rem;
+    font-weight: 800;
+    letter-spacing: 0.01em;
+}
+
+.nav-links {
+    display: inline-flex;
+    align-items: center;
+    gap: 1.1rem;
+}
+
+.nav-links a {
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 0.95rem;
+}
+
+.nav-links a:hover {
+    color: var(--ink);
+}
+
+.btn {
+    border-radius: 999px;
+    padding: 0.7rem 1.15rem;
+    text-decoration: none;
+    font-weight: 800;
+    letter-spacing: 0.01em;
+    transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease, color 180ms ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-primary {
+    color: #f8fffd;
+    background: linear-gradient(120deg, var(--accent), var(--accent-alt));
+    box-shadow: 0 12px 24px rgba(17, 36, 42, 0.18);
+}
+
+.btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 16px 28px rgba(17, 36, 42, 0.22);
+}
+
+.btn-ghost {
+    color: var(--ink);
+    background: rgba(255, 253, 248, 0.9);
+    border: 1px solid rgba(17, 36, 42, 0.12);
+}
+
+.btn-ghost:hover {
+    transform: translateY(-1px);
+    border-color: rgba(17, 36, 42, 0.3);
+}
+
+.hero {
+    margin-top: 3.2rem;
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    gap: 2rem;
+    align-items: start;
+}
+
+.eyebrow {
+    margin: 0 0 0.65rem;
+    font-size: 0.76rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--accent-strong);
+}
+
+.hero h1,
+.section-head h2,
+.launch h2 {
+    margin: 0;
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+    line-height: 1;
+}
+
+.hero h1 {
+    font-size: clamp(2.4rem, 6vw, 4.7rem);
+    max-width: 12ch;
+}
+
+.hero h1 span {
+    color: var(--accent-alt-strong);
+}
+
+.lead {
+    margin: 1rem 0 0;
+    color: var(--muted);
+    font-size: clamp(1rem, 1.9vw, 1.2rem);
+    max-width: 58ch;
+}
+
+.hero-cta {
+    margin-top: 1.35rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.7rem;
+}
+
+.command-block {
+    margin-top: 1.4rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 0.9rem 1rem;
+    box-shadow: 0 6px 14px rgba(17, 36, 42, 0.05);
+}
+
+.mono {
+    font-family: "JetBrains Mono", "Consolas", monospace;
+}
+
+.mono-label {
+    display: block;
+    color: var(--muted);
+    font-size: 0.78rem;
+    margin-bottom: 0.4rem;
+}
+
+.signal-list {
+    margin: 1rem 0 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 0.35rem;
+    color: var(--muted);
+}
+
+.signal-list li::before {
+    content: "\25CF";
+    color: var(--accent);
+    margin-right: 0.5rem;
+    font-size: 0.8rem;
+}
+
+.hero-side {
+    display: grid;
+    gap: 1rem;
+}
+
+.panel {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 1rem;
+    box-shadow: var(--shadow);
+}
+
+.panel h2 {
+    margin: 0 0 0.8rem;
+    font-size: 0.96rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+}
+
+.kpis {
+    display: grid;
+    gap: 0.7rem;
+}
+
+.kpis div {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(15, 150, 129, 0.08);
+    padding: 0.55rem 0.7rem;
+    border-radius: 10px;
+}
+
+.kpis strong {
+    font-size: 1.15rem;
+}
+
+.panel-events ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 0.5rem;
+}
+
+.panel-events li {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-size: 0.9rem;
+    color: var(--muted);
+}
+
+.panel-events small {
+    margin-left: auto;
+    opacity: 0.85;
+}
+
+.dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+}
+
+.dot.ok {
+    background: #17a371;
+}
+
+.dot.warn {
+    background: #d96a2f;
+}
+
+.features,
+.use-cases,
+.launch {
+    margin-top: 5.8rem;
+}
+
+.section-head h2 {
+    margin-top: 0.25rem;
+    font-size: clamp(1.8rem, 3.2vw, 2.7rem);
+    max-width: 18ch;
+}
+
+.feature-grid {
+    margin-top: 1.4rem;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.9rem;
+}
+
+.card {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line);
+    padding: 1rem;
+    background: linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(247, 243, 236, 0.85));
+    transition: transform 180ms ease, border-color 180ms ease;
+}
+
+.card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(15, 150, 129, 0.5);
+}
+
+.card h3 {
+    margin: 0;
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+    font-size: 1.2rem;
+}
+
+.card p {
+    margin: 0.6rem 0 0;
+    color: var(--muted);
+}
+
+.lane {
+    margin-top: 1.4rem;
+    display: grid;
+    gap: 0.8rem;
+}
+
+.lane-item {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line);
+    background: rgba(255, 253, 248, 0.9);
+    padding: 1rem 1rem 1rem 1.2rem;
+    position: relative;
+}
+
+.lane-item::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 16px;
+    bottom: 16px;
+    width: 4px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, var(--accent), var(--accent-alt));
+}
+
+.lane-item h3 {
+    margin: 0;
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+}
+
+.lane-item p {
+    margin: 0.45rem 0 0;
+    color: var(--muted);
+}
+
+.launch {
+    border-radius: var(--radius-lg);
+    background: linear-gradient(155deg, #102b33, #0e4038);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #e6fffa;
+    padding: 1.6rem;
+}
+
+.launch .eyebrow {
+    color: #86f3d8;
+}
+
+.launch h2 {
+    max-width: 16ch;
+    font-size: clamp(1.8rem, 3.6vw, 2.8rem);
+}
+
+.code {
+    margin: 1rem 0 0;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: rgba(6, 20, 24, 0.65);
+    padding: 1rem;
+    overflow-x: auto;
+}
+
+.code code {
+    margin: 0;
+    font-family: "JetBrains Mono", "Consolas", monospace;
+    color: #d0fff1;
+    font-size: 0.86rem;
+    line-height: 1.55;
+}
+
+.launch-actions {
+    margin-top: 1.1rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.footer {
+    margin: 3.4rem auto 1.9rem;
+    border-top: 1px solid var(--line);
+    padding-top: 1rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+.reveal {
+    opacity: 0;
+    transform: translateY(20px);
+    animation: reveal 860ms cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+}
+
+.hero-copy.reveal {
+    animation-delay: 90ms;
+}
+
+.panel-queue.reveal {
+    animation-delay: 230ms;
+}
+
+.panel-events.reveal {
+    animation-delay: 360ms;
+}
+
+.feature-grid .card:nth-child(1) { animation-delay: 100ms; }
+.feature-grid .card:nth-child(2) { animation-delay: 180ms; }
+.feature-grid .card:nth-child(3) { animation-delay: 260ms; }
+.feature-grid .card:nth-child(4) { animation-delay: 340ms; }
+.feature-grid .card:nth-child(5) { animation-delay: 420ms; }
+.feature-grid .card:nth-child(6) { animation-delay: 500ms; }
+.feature-grid .card:nth-child(7) { animation-delay: 580ms; }
+.feature-grid .card:nth-child(8) { animation-delay: 660ms; }
+.feature-grid .card:nth-child(9) { animation-delay: 740ms; }
+
+.lane .lane-item:nth-child(1) { animation-delay: 120ms; }
+.lane .lane-item:nth-child(2) { animation-delay: 220ms; }
+.lane .lane-item:nth-child(3) { animation-delay: 320ms; }
+.lane .lane-item:nth-child(4) { animation-delay: 420ms; }
+
+@keyframes reveal {
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes drift {
+    0%, 100% {
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+        transform: translate3d(0, -14px, 0) scale(1.06);
+    }
+}
+
+@media (max-width: 980px) {
+    .nav {
+        border-radius: 18px;
+        flex-wrap: wrap;
+    }
+
+    .nav-links {
+        width: 100%;
+        order: 3;
+        justify-content: flex-start;
+        overflow-x: auto;
+        padding-top: 0.2rem;
+    }
+
+    .hero {
+        grid-template-columns: 1fr;
+    }
+
+    .feature-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 640px) {
+    .container {
+        width: min(1120px, 94vw);
+    }
+
+    .hero {
+        margin-top: 2.2rem;
+    }
+
+    .feature-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .hero h1 {
+        font-size: clamp(2.1rem, 10vw, 2.9rem);
+    }
+
+    .section-head h2,
+    .launch h2 {
+        font-size: clamp(1.6rem, 9vw, 2.1rem);
+    }
+
+    .footer {
+        flex-direction: column;
+    }
+}
+
+/* -- Hero code block -- */
+.hero-code {
+    margin: 2rem 0;
+    background: var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 1.5rem 2rem;
+    overflow-x: auto;
+}
+
+.hero-code pre {
+    margin: 0;
+}
+
+.hero-code code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.95rem;
+    line-height: 1.7;
+    color: #e2e8f0;
+}
+
+.hero-code .kw { color: #c792ea; }
+.hero-code .str { color: #c3e88d; }
+.hero-code .comment { color: #637777; font-style: italic; }
+
+/* -- Growth path -- */
+.how-it-works {
+    padding: 6rem 0;
+}
+
+.growth-path {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 2rem;
+    margin-top: 3rem;
+}
+
+.growth-step {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 2rem;
+}
+
+.step-num {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 1.1rem;
+    margin-bottom: 1rem;
+}
+
+.code-sm {
+    background: var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    margin-top: 1rem;
+}
+
+.code-sm code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: #e2e8f0;
+}
+
+/* -- Compare list -- */
+.compare-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.compare-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 0.9rem;
+}
+
+.compare-list li:last-child {
+    border-bottom: none;
+}
+
+.compare-list .muted {
+    color: var(--muted);
+}
+
+.compare-list code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.8rem;
+    color: var(--muted);
+}
+
+/* -- Blog-specific styles -- */
+.blog-header { margin-top: 2rem; margin-bottom: 3rem; }
+.blog-header h1 {
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+    font-size: clamp(2rem, 5vw, 3.2rem);
+    line-height: 1.1;
+    max-width: 20ch;
+}
+.blog-meta {
+    margin-top: 0.75rem;
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+.blog-body { max-width: 72ch; }
+.blog-body h2 {
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+    font-size: 1.6rem;
+    margin: 2.5rem 0 0.75rem;
+    line-height: 1.15;
+}
+.blog-body h3 {
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+    font-size: 1.2rem;
+    margin: 2rem 0 0.5rem;
+}
+.blog-body p { color: var(--muted); margin: 0.75rem 0; font-size: 1.05rem; line-height: 1.7; }
+.blog-body p strong { color: var(--ink); }
+.blog-body blockquote {
+    border-left: 4px solid var(--accent);
+    margin: 1.5rem 0;
+    padding: 0.75rem 1.25rem;
+    background: rgba(15, 150, 129, 0.06);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.blog-body blockquote p { font-style: italic; margin: 0; }
+.blog-body ul, .blog-body ol { color: var(--muted); font-size: 1.05rem; line-height: 1.7; padding-left: 1.5rem; }
+.blog-body li { margin: 0.35rem 0; }
+.blog-body li strong { color: var(--ink); }
+.blog-code {
+    background: var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 1.25rem 1.5rem;
+    overflow-x: auto;
+    margin: 1.25rem 0;
+}
+.blog-code pre { margin: 0; }
+.blog-code code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.88rem;
+    line-height: 1.65;
+    color: #e2e8f0;
+}
+.blog-code .kw { color: #c792ea; }
+.blog-code .str { color: #c3e88d; }
+.blog-code .cm { color: #637777; font-style: italic; }
+.blog-code .fn { color: #82aaff; }
+.blog-code .mac { color: #89ddff; }
+.blog-code .num { color: #f78c6c; }
+.blog-code-label {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.72rem;
+    color: #637777;
+    display: block;
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+.blog-table { width: 100%; border-collapse: collapse; margin: 1.25rem 0; font-size: 0.92rem; }
+.blog-table th, .blog-table td { padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--line); text-align: left; }
+.blog-table th { font-weight: 700; color: var(--ink); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.blog-table td { color: var(--muted); }
+.blog-table td strong { color: var(--ink); }
+.blog-output {
+    background: #1a1a2e;
+    border-radius: var(--radius-sm);
+    padding: 1rem 1.25rem;
+    margin: 1.25rem 0;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    color: #a8b2d1;
+    overflow-x: auto;
+}
+.blog-output .out-api { color: #82aaff; }
+.blog-output .out-worker { color: #c3e88d; }
+.blog-output .out-fail { color: #f07178; }
+.blog-output .out-dim { color: #637777; }
+.blog-cta {
+    margin: 3rem 0 2rem;
+    padding: 2rem;
+    border-radius: var(--radius-lg);
+    background: linear-gradient(155deg, #102b33, #0e4038);
+    color: #e6fffa;
+    border: 1px solid rgba(255,255,255,0.2);
+}
+.blog-cta h2 { color: #e6fffa; margin: 0 0 0.5rem; font-family: "Syne", sans-serif; font-size: 1.6rem; }
+.blog-cta p { color: #86f3d8; margin: 0 0 1rem; }
+.blog-cta code { font-family: "JetBrains Mono", monospace; background: rgba(6,20,24,0.65); padding: 0.6rem 1rem; border-radius: var(--radius-sm); display: block; color: #d0fff1; font-size: 0.88rem; border: 1px solid rgba(255,255,255,0.15); }
+.diagram {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 1.5rem 0;
+    flex-wrap: wrap;
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+}
+.diagram-box {
+    background: var(--surface);
+    border: 2px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 0.5rem 0.75rem;
+    color: var(--ink);
+    font-weight: 600;
+}
+.diagram-box.accent {
+    border-color: var(--accent);
+    background: rgba(15, 150, 129, 0.08);
+}
+.diagram-arrow { color: var(--muted); font-size: 1.2rem; }
+    </style>
+</head>
+<body>
+<div class="scene" aria-hidden="true">
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+    <div class="orb orb-c"></div>
+</div>
+
+<header class="nav-shell">
+    <nav class="container nav">
+        <a href="https://ferax564.github.io/rustqueue/" class="logo" aria-label="RustQueue home">
+            <span class="logo-mark"></span>
+            <span class="logo-text">RustQueue</span>
+        </a>
+        <div class="nav-links">
+            <a href="https://ferax564.github.io/rustqueue/">Home</a>
+            <a href="https://ferax564.github.io/rustqueue/blog/background-jobs-without-redis.html">Blog</a>
+            <a href="https://github.com/ferax564/rustqueue">GitHub</a>
+        </div>
+    </nav>
+</header>
+
+<main class="container">
+    <article class="blog-header">
+        <p class="eyebrow">Tutorial</p>
+        <h1>Building a Crash-Safe Email Queue in Rust</h1>
+        <p class="blog-meta">March 29, 2026 &middot; RustQueue v0.2.0</p>
+    </article>
+
+    <div class="blog-body">
+
+        <p><strong>Every web app sends emails.</strong> Welcome messages, password resets, order confirmations. And every developer learns the same lesson the hard way: don't send emails inside your HTTP handler.</p>
+
+        <p>The handler blocks. The SMTP server is slow. It times out. The user sees a spinner. Or worse &mdash; the process crashes after charging the customer but before sending the receipt.</p>
+
+        <p>The standard solution is a job queue. Push the email to a queue, return immediately, process it in the background. But the standard job queue requires Redis, a separate worker process, Docker Compose entries, monitoring, and 30 minutes of setup.</p>
+
+        <p>What if you could have the queue without any of that?</p>
+
+        <h2>The Setup: One Line</h2>
+
+        <div class="blog-code"><pre><code><span class="kw">let</span> rq = RustQueue::redb(<span class="str">"/tmp/emails.db"</span>)?.build()?;</code></pre></div>
+
+        <p>That's your queue. It's an embedded ACID database. No server to run, no connection to manage, no Docker container. The <code>.db</code> file <em>is</em> the queue. It survives process crashes, power failures, and <code>kill -9</code>.</p>
+
+        <h2>The App: Three Endpoints</h2>
+
+        <p>We're building a small Axum web app with two job-producing endpoints and a stats endpoint. The full code is <a href="https://github.com/ferax564/rustqueue/blob/main/examples/email_notifications.rs" style="color: var(--accent-strong); font-weight: 600;">in the repo</a> &mdash; here are the interesting parts.</p>
+
+        <h3>Signup: queue a welcome email</h3>
+
+        <div class="blog-code"><pre><code><span class="kw">async fn</span> <span class="fn">signup</span>(rq: RqState, Json(body): Json&lt;serde_json::Value&gt;) -> Json&lt;serde_json::Value&gt; {
+    <span class="kw">let</span> email = body[<span class="str">"email"</span>].as_str().unwrap_or(<span class="str">"unknown"</span>);
+    <span class="kw">let</span> name = body[<span class="str">"name"</span>].as_str().unwrap_or(<span class="str">"User"</span>);
+
+    <span class="kw">let</span> id = rq.push(
+        <span class="str">"emails"</span>, <span class="str">"welcome-email"</span>,
+        <span class="mac">json!</span>({ <span class="str">"to"</span>: email, <span class="str">"subject"</span>: <span class="fn">format!</span>(<span class="str">"Welcome, {}!"</span>, name),
+               <span class="str">"template"</span>: <span class="str">"welcome"</span> }),
+        None,
+    ).<span class="kw">await</span>.unwrap();
+
+    Json(<span class="mac">json!</span>({<span class="str">"queued"</span>: <span class="kw">true</span>, <span class="str">"job_id"</span>: id.to_string()}))
+}</code></pre></div>
+
+        <p>The handler returns instantly. The email job is persisted to disk. If the process crashes right now, the job is still there when it restarts.</p>
+
+        <h3>Password reset: same queue, higher priority</h3>
+
+        <div class="blog-code"><pre><code><span class="kw">async fn</span> <span class="fn">reset_password</span>(rq: RqState, Json(body): Json&lt;serde_json::Value&gt;)
+    -> Json&lt;serde_json::Value&gt;
+{
+    <span class="kw">let</span> id = rq.push(
+        <span class="str">"emails"</span>, <span class="str">"password-reset"</span>,
+        <span class="mac">json!</span>({ <span class="str">"to"</span>: email, <span class="str">"subject"</span>: <span class="str">"Reset your password"</span> }),
+        Some(JobOptions {
+            priority: Some(<span class="num">10</span>),       <span class="cm">// Jump ahead of welcome emails</span>
+            max_attempts: Some(<span class="num">5</span>),    <span class="cm">// More retries — this one matters</span>
+            ..Default::default()
+        }),
+    ).<span class="kw">await</span>.unwrap();
+    <span class="cm">// ...</span>
+}</code></pre></div>
+
+        <p>Same queue, different <code>JobOptions</code>. Password resets get <strong>priority 10</strong> (default is 0), so they jump ahead of any waiting welcome emails. They also get 5 retry attempts instead of the default 3 &mdash; because a user who can't reset their password is a user who leaves.</p>
+
+        <h2>The Worker: Pull, Send, Ack</h2>
+
+        <div class="blog-code"><pre><code><span class="kw">async fn</span> <span class="fn">email_worker</span>(rq: Arc&lt;RustQueue&gt;) {
+    <span class="kw">loop</span> {
+        <span class="kw">let</span> jobs = rq.pull(<span class="str">"emails"</span>, <span class="num">5</span>).<span class="kw">await</span>.unwrap();
+        <span class="kw">for</span> job <span class="kw">in</span> &amp;jobs {
+            <span class="kw">match</span> <span class="fn">send_email</span>(&amp;job.data).<span class="kw">await</span> {
+                Ok(()) => rq.ack(job.id, None).<span class="kw">await</span>.unwrap(),
+                Err(e) => {
+                    println!(<span class="str">"Failed: {e} — will retry"</span>);
+                    rq.fail(job.id, &amp;e).<span class="kw">await</span>.unwrap();
+                }
+            }
+        }
+        <span class="kw">if</span> jobs.is_empty() {
+            tokio::time::sleep(Duration::from_millis(<span class="num">200</span>)).<span class="kw">await</span>;
+        }
+    }
+}</code></pre></div>
+
+        <p>The worker runs in the same process, spawned as a tokio task. It pulls up to 5 jobs at a time, sends the email, and either acks (success) or fails (retry). That's the entire worker. No framework, no trait implementations, no macros.</p>
+
+        <p>When <code>fail()</code> is called, RustQueue automatically schedules the job for retry with exponential backoff. After exhausting all attempts, the job lands in a dead-letter queue for inspection.</p>
+
+        <h2>What Happens in Practice</h2>
+
+        <p>Here's actual output from running the example. The simulated email sender fails ~20% of the time to demonstrate retry behavior:</p>
+
+        <div class="blog-output">
+<span class="out-api">[api]</span> Queued welcome email to user1@test.com
+<span class="out-api">[api]</span> Queued welcome email to user2@test.com
+<span class="out-api">[api]</span> Queued welcome email to user3@test.com
+<span class="out-api">[api]</span> Queued password reset to urgent@test.com <span class="out-dim">(priority=10)</span>
+<span class="out-worker">[worker]</span> Processing: welcome-email &rarr; user1@test.com <span class="out-dim">(attempt 0/3)</span>
+<span class="out-worker">[worker]</span> Sent: "Welcome, User1!" &rarr; user1@test.com
+<span class="out-worker">[worker]</span> Processing: password-reset &rarr; urgent@test.com <span class="out-dim">(attempt 0/5)</span>
+<span class="out-worker">[worker]</span> Sent: "Reset your password" &rarr; urgent@test.com
+<span class="out-worker">[worker]</span> Processing: welcome-email &rarr; user2@test.com <span class="out-dim">(attempt 0/3)</span>
+<span class="out-fail">[worker]</span> <span class="out-fail">Failed: SMTP timeout sending to user2@test.com &mdash; will retry</span>
+<span class="out-worker">[worker]</span> Processing: welcome-email &rarr; user3@test.com <span class="out-dim">(attempt 0/3)</span>
+<span class="out-worker">[worker]</span> Sent: "Welcome, User3!" &rarr; user3@test.com
+        </div>
+
+        <p>Notice: the password reset was queued <em>last</em> but processed <em>second</em> &mdash; right after the job that was already being sent. Priority works.</p>
+
+        <p>The failed email to user2 is automatically scheduled for retry with exponential backoff. No code needed &mdash; <code>fail()</code> handles everything.</p>
+
+        <h2>The Crash Test</h2>
+
+        <p>This is the part that matters. We queued 15 emails, let the worker process some, then killed the process with <code>kill -9</code>:</p>
+
+        <div class="blog-output">
+<span class="out-dim">--- Stats before crash ---</span>
+{ "completed": 6, "delayed": 2, "waiting": 0 }
+
+<span class="out-fail">--- CRASH (kill -9) ---</span>
+
+<span class="out-dim">--- Restarting from same database ---</span>
+
+<span class="out-dim">--- Stats after restart ---</span>
+{ "completed": 6, "delayed": 2, "waiting": 0 }
+        </div>
+
+        <p><strong>Zero data loss.</strong> All 6 completed emails are still recorded. The 2 failed emails are still in delayed state, waiting for their retry backoff. The database file survived the crash intact.</p>
+
+        <p>After restart, we queued 5 more emails. They processed alongside the recovered state &mdash; new and old jobs coexisting on the same queue.</p>
+
+        <h2>The Comparison</h2>
+
+        <p>Here's what this same feature looks like with common alternatives:</p>
+
+        <table class="blog-table">
+            <thead>
+                <tr><th></th><th>RustQueue</th><th>tokio::spawn</th><th>Redis + BullMQ</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>Setup</td><td><strong>cargo add</strong></td><td>Already there</td><td>Docker + npm</td></tr>
+                <tr><td>Crash recovery</td><td><strong>Yes (ACID)</strong></td><td>No</td><td>Yes</td></tr>
+                <tr><td>Priority</td><td><strong>Built in</strong></td><td>Manual</td><td>Yes</td></tr>
+                <tr><td>Retry + backoff</td><td><strong>Built in</strong></td><td>Manual</td><td>Yes</td></tr>
+                <tr><td>External services</td><td><strong>None</strong></td><td>None</td><td>Redis server</td></tr>
+                <tr><td>Deployment</td><td><strong>Single binary</strong></td><td>Single binary</td><td>2+ services</td></tr>
+                <tr><td>DLQ inspection</td><td><strong>Built in</strong></td><td>No</td><td>Yes</td></tr>
+            </tbody>
+        </table>
+
+        <p><code>tokio::spawn</code> is fine until the process crashes and your emails vanish. Redis gives you everything but costs you infrastructure. RustQueue gives you everything with nothing to run.</p>
+
+        <blockquote>
+            <p>Think of it this way: tokio::spawn is a sticky note. Redis is a filing cabinet in another building. RustQueue is a notebook on your desk.</p>
+        </blockquote>
+
+        <h2>Try It</h2>
+
+        <div class="blog-code"><pre><code><span class="cm"># Clone and run</span>
+git clone https://github.com/ferax564/rustqueue.git
+<span class="kw">cd</span> rustqueue
+cargo run --example email_notifications
+
+<span class="cm"># In another terminal</span>
+curl -X POST http://localhost:3000/signup \
+  -H <span class="str">'Content-Type: application/json'</span> \
+  -d <span class="str">'{"email":"you@example.com","name":"You"}'</span>
+
+curl http://localhost:3000/stats</code></pre></div>
+
+        <p>Kill it with Ctrl+C, restart it, check <code>/stats</code>. Your jobs are still there.</p>
+
+        <h2>What's Next</h2>
+
+        <p>This example is intentionally simple. RustQueue also supports:</p>
+
+        <ul>
+            <li><strong>Cron scheduling</strong> &mdash; send daily digest emails on a schedule</li>
+            <li><strong>DAG workflows</strong> &mdash; chain jobs with dependencies (charge &rarr; send receipt &rarr; update CRM)</li>
+            <li><strong>Progress tracking</strong> &mdash; report 0&ndash;100% progress on long-running jobs</li>
+            <li><strong>WebSocket events</strong> &mdash; stream job lifecycle events to your frontend</li>
+            <li><strong>Webhooks</strong> &mdash; HMAC-signed HTTP callbacks on job completion/failure</li>
+        </ul>
+
+        <p>When you outgrow embedded mode, run the same engine as a standalone server with SDKs for Node.js, Python, and Go.</p>
+
+        <div class="blog-cta">
+            <h2>Add It to Your Project</h2>
+            <p>Persistent, crash-safe background jobs in one line:</p>
+            <code>cargo add rustqueue</code>
+        </div>
+
+        <p>The full example is at <a href="https://github.com/ferax564/rustqueue/blob/main/examples/email_notifications.rs" style="color: var(--accent-strong); font-weight: 700;">examples/email_notifications.rs</a>. Star us on <a href="https://github.com/ferax564/rustqueue" style="color: var(--accent-strong); font-weight: 700;">GitHub</a> if this is useful.</p>
+
+    </div>
+</article>
+</main>
+
+<footer class="footer container">
+    <p>RustQueue &middot; Background jobs without infrastructure</p>
+    <p class="mono">MIT OR Apache-2.0</p>
+</footer>
+</body>
+</html>

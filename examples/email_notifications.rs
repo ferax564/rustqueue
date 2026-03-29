@@ -84,6 +84,7 @@ async fn stats(rq: RqState) -> Json<serde_json::Value> {
     Json(json!({
         "waiting": counts.waiting,
         "active": counts.active,
+        "delayed": counts.delayed,
         "completed": counts.completed,
         "failed": counts.failed,
     }))
