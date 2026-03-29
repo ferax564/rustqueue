@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="RustQueue examples: from basic push/pull to Axum web apps with background jobs. Zero dependencies, zero config.">
+    <title>Examples | RustQueue</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Manrope:wght@400;500;700;800&family=Syne:wght@500;700;800&display=swap" rel="stylesheet">
+    <style>
+:root {
+    --bg: #f4f1e8;
+    --surface: #fffdf8;
+    --ink: #11242a;
+    --muted: #52666d;
+    --line: #d5ddd9;
+    --accent: #0f9681;
+    --accent-strong: #0a6b5e;
+    --accent-alt: #e87337;
+    --accent-alt-strong: #b55321;
+    --shadow: 0 22px 44px rgba(17, 36, 42, 0.12);
+    --radius-lg: 24px;
+    --radius-md: 16px;
+    --radius-sm: 12px;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Manrope", "Segoe UI", sans-serif;
+    line-height: 1.45;
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image: linear-gradient(rgba(17, 36, 42, 0.03) 1px, transparent 1px),
+                      linear-gradient(90deg, rgba(17, 36, 42, 0.03) 1px, transparent 1px);
+    background-size: 38px 38px;
+    mask-image: radial-gradient(circle at center, rgba(0, 0, 0, 0.55), transparent 72%);
+}
+
+.scene {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+}
+
+.orb {
+    position: absolute;
+    filter: blur(36px);
+    border-radius: 50%;
+    opacity: 0.8;
+    animation: drift 18s ease-in-out infinite;
+}
+
+.orb-a {
+    width: 260px;
+    height: 260px;
+    top: 4%;
+    left: -30px;
+    background: rgba(15, 150, 129, 0.3);
+}
+
+.orb-b {
+    width: 300px;
+    height: 300px;
+    top: 14%;
+    right: -60px;
+    background: rgba(232, 115, 55, 0.25);
+    animation-delay: -6s;
+}
+
+.orb-c {
+    width: 220px;
+    height: 220px;
+    bottom: 10%;
+    left: 44%;
+    background: rgba(15, 150, 129, 0.16);
+    animation-delay: -11s;
+}
+
+.container {
+    width: min(1120px, 92vw);
+    margin-inline: auto;
+}
+
+.nav-shell {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    padding-top: 1rem;
+}
+
+.nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.75rem 1rem;
+    border: 1px solid rgba(17, 36, 42, 0.1);
+    background: rgba(255, 253, 248, 0.82);
+    backdrop-filter: blur(8px);
+    border-radius: 999px;
+}
+
+.logo {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.65rem;
+    text-decoration: none;
+    color: inherit;
+}
+
+.logo-mark {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    background: linear-gradient(140deg, var(--accent), var(--accent-alt));
+    box-shadow: 0 0 0 4px rgba(15, 150, 129, 0.15);
+}
+
+.logo-text {
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+    font-size: 1.18rem;
+    font-weight: 800;
+    letter-spacing: 0.01em;
+}
+
+.nav-links {
+    display: inline-flex;
+    align-items: center;
+    gap: 1.1rem;
+}
+
+.nav-links a {
+    color: var(--muted);
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 0.95rem;
+}
+
+.nav-links a:hover {
+    color: var(--ink);
+}
+
+.btn {
+    border-radius: 999px;
+    padding: 0.7rem 1.15rem;
+    text-decoration: none;
+    font-weight: 800;
+    letter-spacing: 0.01em;
+    transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease, color 180ms ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-primary {
+    color: #f8fffd;
+    background: linear-gradient(120deg, var(--accent), var(--accent-alt));
+    box-shadow: 0 12px 24px rgba(17, 36, 42, 0.18);
+}
+
+.btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 16px 28px rgba(17, 36, 42, 0.22);
+}
+
+.btn-ghost {
+    color: var(--ink);
+    background: rgba(255, 253, 248, 0.9);
+    border: 1px solid rgba(17, 36, 42, 0.12);
+}
+
+.btn-ghost:hover {
+    transform: translateY(-1px);
+    border-color: rgba(17, 36, 42, 0.3);
+}
+
+.hero {
+    margin-top: 3.2rem;
+    display: grid;
+    grid-template-columns: 1.2fr 0.8fr;
+    gap: 2rem;
+    align-items: start;
+}
+
+.eyebrow {
+    margin: 0 0 0.65rem;
+    font-size: 0.76rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--accent-strong);
+}
+
+.hero h1,
+.section-head h2,
+.launch h2 {
+    margin: 0;
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+    line-height: 1;
+}
+
+.hero h1 {
+    font-size: clamp(2.4rem, 6vw, 4.7rem);
+    max-width: 12ch;
+}
+
+.hero h1 span {
+    color: var(--accent-alt-strong);
+}
+
+.lead {
+    margin: 1rem 0 0;
+    color: var(--muted);
+    font-size: clamp(1rem, 1.9vw, 1.2rem);
+    max-width: 58ch;
+}
+
+.hero-cta {
+    margin-top: 1.35rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.7rem;
+}
+
+.command-block {
+    margin-top: 1.4rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 0.9rem 1rem;
+    box-shadow: 0 6px 14px rgba(17, 36, 42, 0.05);
+}
+
+.mono {
+    font-family: "JetBrains Mono", "Consolas", monospace;
+}
+
+.mono-label {
+    display: block;
+    color: var(--muted);
+    font-size: 0.78rem;
+    margin-bottom: 0.4rem;
+}
+
+.signal-list {
+    margin: 1rem 0 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 0.35rem;
+    color: var(--muted);
+}
+
+.signal-list li::before {
+    content: "●";
+    color: var(--accent);
+    margin-right: 0.5rem;
+    font-size: 0.8rem;
+}
+
+.hero-side {
+    display: grid;
+    gap: 1rem;
+}
+
+.panel {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line);
+    background: var(--surface);
+    padding: 1rem;
+    box-shadow: var(--shadow);
+}
+
+.panel h2 {
+    margin: 0 0 0.8rem;
+    font-size: 0.96rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+}
+
+.kpis {
+    display: grid;
+    gap: 0.7rem;
+}
+
+.kpis div {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(15, 150, 129, 0.08);
+    padding: 0.55rem 0.7rem;
+    border-radius: 10px;
+}
+
+.kpis strong {
+    font-size: 1.15rem;
+}
+
+.panel-events ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 0.5rem;
+}
+
+.panel-events li {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-size: 0.9rem;
+    color: var(--muted);
+}
+
+.panel-events small {
+    margin-left: auto;
+    opacity: 0.85;
+}
+
+.dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+}
+
+.dot.ok {
+    background: #17a371;
+}
+
+.dot.warn {
+    background: #d96a2f;
+}
+
+.features,
+.use-cases,
+.launch {
+    margin-top: 5.8rem;
+}
+
+.section-head h2 {
+    margin-top: 0.25rem;
+    font-size: clamp(1.8rem, 3.2vw, 2.7rem);
+    max-width: 18ch;
+}
+
+.feature-grid {
+    margin-top: 1.4rem;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.9rem;
+}
+
+.card {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line);
+    padding: 1rem;
+    background: linear-gradient(145deg, rgba(255, 255, 255, 0.95), rgba(247, 243, 236, 0.85));
+    transition: transform 180ms ease, border-color 180ms ease;
+}
+
+.card:hover {
+    transform: translateY(-4px);
+    border-color: rgba(15, 150, 129, 0.5);
+}
+
+.card h3 {
+    margin: 0;
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+    font-size: 1.2rem;
+}
+
+.card p {
+    margin: 0.6rem 0 0;
+    color: var(--muted);
+}
+
+.lane {
+    margin-top: 1.4rem;
+    display: grid;
+    gap: 0.8rem;
+}
+
+.lane-item {
+    border-radius: var(--radius-md);
+    border: 1px solid var(--line);
+    background: rgba(255, 253, 248, 0.9);
+    padding: 1rem 1rem 1rem 1.2rem;
+    position: relative;
+}
+
+.lane-item::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 16px;
+    bottom: 16px;
+    width: 4px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, var(--accent), var(--accent-alt));
+}
+
+.lane-item h3 {
+    margin: 0;
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+}
+
+.lane-item p {
+    margin: 0.45rem 0 0;
+    color: var(--muted);
+}
+
+.launch {
+    border-radius: var(--radius-lg);
+    background: linear-gradient(155deg, #102b33, #0e4038);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #e6fffa;
+    padding: 1.6rem;
+}
+
+.launch .eyebrow {
+    color: #86f3d8;
+}
+
+.launch h2 {
+    max-width: 16ch;
+    font-size: clamp(1.8rem, 3.6vw, 2.8rem);
+}
+
+.code {
+    margin: 1rem 0 0;
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background: rgba(6, 20, 24, 0.65);
+    padding: 1rem;
+    overflow-x: auto;
+}
+
+.code code {
+    margin: 0;
+    font-family: "JetBrains Mono", "Consolas", monospace;
+    color: #d0fff1;
+    font-size: 0.86rem;
+    line-height: 1.55;
+}
+
+.launch-actions {
+    margin-top: 1.1rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.footer {
+    margin: 3.4rem auto 1.9rem;
+    border-top: 1px solid var(--line);
+    padding-top: 1rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    color: var(--muted);
+    font-size: 0.9rem;
+}
+
+.reveal {
+    opacity: 0;
+    transform: translateY(20px);
+    animation: reveal 860ms cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+}
+
+.hero-copy.reveal {
+    animation-delay: 90ms;
+}
+
+.panel-queue.reveal {
+    animation-delay: 230ms;
+}
+
+.panel-events.reveal {
+    animation-delay: 360ms;
+}
+
+.feature-grid .card:nth-child(1) { animation-delay: 100ms; }
+.feature-grid .card:nth-child(2) { animation-delay: 180ms; }
+.feature-grid .card:nth-child(3) { animation-delay: 260ms; }
+.feature-grid .card:nth-child(4) { animation-delay: 340ms; }
+.feature-grid .card:nth-child(5) { animation-delay: 420ms; }
+.feature-grid .card:nth-child(6) { animation-delay: 500ms; }
+.feature-grid .card:nth-child(7) { animation-delay: 580ms; }
+.feature-grid .card:nth-child(8) { animation-delay: 660ms; }
+.feature-grid .card:nth-child(9) { animation-delay: 740ms; }
+
+.lane .lane-item:nth-child(1) { animation-delay: 120ms; }
+.lane .lane-item:nth-child(2) { animation-delay: 220ms; }
+.lane .lane-item:nth-child(3) { animation-delay: 320ms; }
+.lane .lane-item:nth-child(4) { animation-delay: 420ms; }
+
+@keyframes reveal {
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes drift {
+    0%, 100% {
+        transform: translate3d(0, 0, 0) scale(1);
+    }
+    50% {
+        transform: translate3d(0, -14px, 0) scale(1.06);
+    }
+}
+
+@media (max-width: 980px) {
+    .nav {
+        border-radius: 18px;
+        flex-wrap: wrap;
+    }
+
+    .nav-links {
+        width: 100%;
+        order: 3;
+        justify-content: flex-start;
+        overflow-x: auto;
+        padding-top: 0.2rem;
+    }
+
+    .hero {
+        grid-template-columns: 1fr;
+    }
+
+    .feature-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 640px) {
+    .container {
+        width: min(1120px, 94vw);
+    }
+
+    .hero {
+        margin-top: 2.2rem;
+    }
+
+    .feature-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .hero h1 {
+        font-size: clamp(2.1rem, 10vw, 2.9rem);
+    }
+
+    .section-head h2,
+    .launch h2 {
+        font-size: clamp(1.6rem, 9vw, 2.1rem);
+    }
+
+    .footer {
+        flex-direction: column;
+    }
+}
+
+/* ── Hero code block ────────────────────────────────────────────────── */
+.hero-code {
+    margin: 2rem 0;
+    background: var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 1.5rem 2rem;
+    overflow-x: auto;
+}
+
+.hero-code pre {
+    margin: 0;
+}
+
+.hero-code code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.95rem;
+    line-height: 1.7;
+    color: #e2e8f0;
+}
+
+.hero-code .kw { color: #c792ea; }
+.hero-code .str { color: #c3e88d; }
+.hero-code .comment { color: #637777; font-style: italic; }
+
+/* ── Growth path ────────────────────────────────────────────────────── */
+.how-it-works {
+    padding: 6rem 0;
+}
+
+.growth-path {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 2rem;
+    margin-top: 3rem;
+}
+
+.growth-step {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 2rem;
+}
+
+.step-num {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 1.1rem;
+    margin-bottom: 1rem;
+}
+
+.code-sm {
+    background: var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    margin-top: 1rem;
+}
+
+.code-sm code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    line-height: 1.6;
+    color: #e2e8f0;
+}
+
+/* ── Compare list ───────────────────────────────────────────────────── */
+.compare-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.compare-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 0.9rem;
+}
+
+.compare-list li:last-child {
+    border-bottom: none;
+}
+
+.compare-list .muted {
+    color: var(--muted);
+}
+
+.compare-list code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.8rem;
+    color: var(--muted);
+}
+    </style>
+    <style>
+        .docs-header { margin-top: 2rem; margin-bottom: 2.5rem; }
+        .docs-header h1 {
+            font-family: "Syne", "Trebuchet MS", sans-serif;
+            font-size: clamp(2rem, 5vw, 3rem);
+            line-height: 1.1;
+        }
+        .docs-header p { color: var(--muted); margin-top: 0.5rem; font-size: 1.05rem; }
+        .example-section { margin-bottom: 3rem; }
+        .example-section h2 {
+            font-family: "Syne", "Trebuchet MS", sans-serif;
+            font-size: 1.5rem;
+            margin: 0 0 0.25rem;
+        }
+        .example-section .tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            padding: 0.2rem 0.6rem;
+            border-radius: 999px;
+            margin-bottom: 0.75rem;
+        }
+        .tag-beginner { background: rgba(15,150,129,0.12); color: var(--accent-strong); }
+        .tag-intermediate { background: rgba(232,115,55,0.12); color: var(--accent-alt-strong); }
+        .example-section > p { color: var(--muted); margin: 0 0 0.75rem; font-size: 0.95rem; line-height: 1.6; }
+        .ex-code {
+            background: var(--ink);
+            border-radius: var(--radius-sm);
+            padding: 1.25rem 1.5rem;
+            overflow-x: auto;
+            margin: 0.75rem 0 0.5rem;
+        }
+        .ex-code pre { margin: 0; }
+        .ex-code code {
+            font-family: "JetBrains Mono", monospace;
+            font-size: 0.85rem;
+            line-height: 1.65;
+            color: #e2e8f0;
+        }
+        .ex-code .kw { color: #c792ea; }
+        .ex-code .str { color: #c3e88d; }
+        .ex-code .cm { color: #637777; font-style: italic; }
+        .ex-code .fn { color: #82aaff; }
+        .ex-code .mac { color: #89ddff; }
+        .run-cmd {
+            display: inline-block;
+            font-family: "JetBrains Mono", monospace;
+            font-size: 0.82rem;
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            padding: 0.3rem 0.7rem;
+            color: var(--muted);
+            margin-top: 0.25rem;
+        }
+        .example-grid {
+            display: grid;
+            gap: 2rem;
+            max-width: 72ch;
+        }
+    </style>
+</head>
+<body>
+<div class="scene" aria-hidden="true">
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+    <div class="orb orb-c"></div>
+</div>
+
+<header class="nav-shell">
+    <nav class="container nav">
+        <a href="/rustqueue/" class="logo" aria-label="RustQueue home">
+            <span class="logo-mark"></span>
+            <span class="logo-text">RustQueue</span>
+        </a>
+        <div class="nav-links">
+            <a href="/rustqueue/">Home</a>
+            <a href="/rustqueue/examples.html">Examples</a>
+            <a href="/rustqueue/blog/background-jobs-without-redis.html">Blog</a>
+            <a href="https://github.com/ferax564/rustqueue">GitHub</a>
+        </div>
+        <a class="btn btn-ghost" href="https://github.com/ferax564/rustqueue">Open Dashboard</a>
+    </nav>
+</header>
+
+<main class="container">
+    <div class="docs-header reveal">
+        <p class="eyebrow">Documentation</p>
+        <h1>Examples</h1>
+        <p>From your first background job to a full Axum web app. Each example is self-contained and runnable.</p>
+    </div>
+
+    <div class="example-grid">
+
+        <section class="example-section reveal">
+            <span class="tag tag-beginner">Beginner</span>
+            <h2>Basic Push / Pull / Ack</h2>
+            <p>The simplest possible RustQueue usage. Push a job, pull it, acknowledge it. Uses an in-memory backend &mdash; no files, no setup.</p>
+            <div class="ex-code"><pre><code><span class="kw">use</span> rustqueue::RustQueue;
+<span class="kw">use</span> serde_json::<span class="mac">json!</span>;
+
+#[tokio::main]
+<span class="kw">async fn</span> <span class="fn">main</span>() -> anyhow::Result&lt;()&gt; {
+    <span class="kw">let</span> rq = RustQueue::memory().build()?;
+
+    <span class="cm">// Push a job onto the "emails" queue</span>
+    <span class="kw">let</span> id = rq.push(<span class="str">"emails"</span>, <span class="str">"send-welcome"</span>,
+        <span class="mac">json!</span>({<span class="str">"to"</span>: <span class="str">"user@example.com"</span>, <span class="str">"template"</span>: <span class="str">"welcome"</span>}),
+        None,
+    ).<span class="kw">await</span>?;
+    println!(<span class="str">"Pushed job: {id}"</span>);
+
+    <span class="cm">// Pull one job from the queue</span>
+    <span class="kw">let</span> jobs = rq.pull(<span class="str">"emails"</span>, 1).<span class="kw">await</span>?;
+    println!(<span class="str">"Processing: {} (data: {})"</span>, jobs[0].name, jobs[0].data);
+
+    <span class="cm">// Acknowledge completion</span>
+    rq.ack(jobs[0].id, None).<span class="kw">await</span>?;
+    println!(<span class="str">"Done!"</span>);
+    Ok(())
+}</code></pre></div>
+            <span class="run-cmd">cargo run --example basic</span>
+        </section>
+
+        <section class="example-section reveal">
+            <span class="tag tag-beginner">Beginner</span>
+            <h2>Persistent Queue</h2>
+            <p>Jobs survive process restarts. Run this example twice &mdash; the second run finds the job pushed in the first run still waiting in the queue.</p>
+            <div class="ex-code"><pre><code><span class="kw">use</span> rustqueue::RustQueue;
+<span class="kw">use</span> serde_json::<span class="mac">json!</span>;
+
+#[tokio::main]
+<span class="kw">async fn</span> <span class="fn">main</span>() -> anyhow::Result&lt;()&gt; {
+    <span class="kw">let</span> rq = RustQueue::redb(<span class="str">"/tmp/rustqueue-example.db"</span>)?.build()?;
+
+    <span class="cm">// Check if there are jobs from a previous run</span>
+    <span class="kw">let</span> existing = rq.pull(<span class="str">"tasks"</span>, 1).<span class="kw">await</span>?;
+    <span class="kw">if</span> !existing.is_empty() {
+        println!(<span class="str">"Found job from previous run: {}"</span>, existing[0].name);
+        rq.ack(existing[0].id, None).<span class="kw">await</span>?;
+        <span class="kw">return</span> Ok(());
+    }
+
+    <span class="cm">// No existing jobs — push one and exit</span>
+    <span class="kw">let</span> id = rq.push(<span class="str">"tasks"</span>, <span class="str">"generate-report"</span>,
+        <span class="mac">json!</span>({<span class="str">"report"</span>: <span class="str">"monthly"</span>}), None).<span class="kw">await</span>?;
+    println!(<span class="str">"Pushed job {id}. Run again to see it survive the restart."</span>);
+    Ok(())
+}</code></pre></div>
+            <span class="run-cmd">cargo run --example persistent</span>
+        </section>
+
+        <section class="example-section reveal">
+            <span class="tag tag-intermediate">Intermediate</span>
+            <h2>Worker Loop</h2>
+            <p>A long-running worker that polls the queue and processes jobs as they arrive. The standard pattern for background job processing.</p>
+            <div class="ex-code"><pre><code><span class="kw">use</span> rustqueue::RustQueue;
+<span class="kw">use</span> std::time::Duration;
+
+#[tokio::main]
+<span class="kw">async fn</span> <span class="fn">main</span>() -> anyhow::Result&lt;()&gt; {
+    <span class="kw">let</span> rq = RustQueue::redb(<span class="str">"/tmp/rustqueue-worker.db"</span>)?.build()?;
+    println!(<span class="str">"Worker started. Waiting for jobs..."</span>);
+
+    <span class="kw">loop</span> {
+        <span class="kw">let</span> jobs = rq.pull(<span class="str">"emails"</span>, 5).<span class="kw">await</span>?;
+        <span class="kw">for</span> job <span class="kw">in</span> &amp;jobs {
+            println!(<span class="str">"[{}] Processing: {}"</span>, job.queue, job.name);
+            tokio::time::sleep(Duration::from_millis(100)).<span class="kw">await</span>;
+            rq.ack(job.id, None).<span class="kw">await</span>?;
+        }
+        <span class="kw">if</span> jobs.is_empty() {
+            tokio::time::sleep(Duration::from_millis(500)).<span class="kw">await</span>;
+        }
+    }
+}</code></pre></div>
+            <span class="run-cmd">cargo run --example worker</span>
+        </section>
+
+        <section class="example-section reveal">
+            <span class="tag tag-intermediate">Intermediate</span>
+            <h2>Axum Web App with Background Jobs</h2>
+            <p>A full Axum web application with a background job queue. The <code>RqState</code> extractor provides RustQueue to any handler. A spawned worker task processes jobs in the background.</p>
+            <div class="ex-code"><pre><code><span class="kw">use</span> axum::routing::{get, post};
+<span class="kw">use</span> axum::{Json, Router};
+<span class="kw">use</span> rustqueue::axum_integration::RqState;
+<span class="kw">use</span> rustqueue::RustQueue;
+<span class="kw">use</span> serde_json::<span class="mac">json!</span>;
+<span class="kw">use</span> std::sync::Arc;
+
+<span class="kw">async fn</span> <span class="fn">send_email</span>(rq: RqState, Json(body): Json&lt;serde_json::Value&gt;)
+    -> Json&lt;serde_json::Value&gt;
+{
+    <span class="kw">let</span> to = body[<span class="str">"to"</span>].as_str().unwrap_or(<span class="str">"unknown"</span>);
+    <span class="kw">let</span> id = rq.push(<span class="str">"emails"</span>, <span class="str">"send-welcome"</span>,
+        <span class="mac">json!</span>({<span class="str">"to"</span>: to}), None).<span class="kw">await</span>.unwrap();
+    Json(<span class="mac">json!</span>({<span class="str">"queued"</span>: true, <span class="str">"job_id"</span>: id.to_string()}))
+}
+
+#[tokio::main]
+<span class="kw">async fn</span> <span class="fn">main</span>() -> anyhow::Result&lt;()&gt; {
+    <span class="kw">let</span> rq = Arc::new(RustQueue::redb(<span class="str">"/tmp/rq-axum.db"</span>)?.build()?);
+    <span class="kw">let</span> app = Router::new()
+        .route(<span class="str">"/send-email"</span>, post(send_email))
+        .with_state(rq);
+    <span class="kw">let</span> listener = tokio::net::TcpListener::bind(<span class="str">"0.0.0.0:3000"</span>).<span class="kw">await</span>?;
+    axum::serve(listener, app).<span class="kw">await</span>?;
+    Ok(())
+}</code></pre></div>
+            <span class="run-cmd">cargo run --example axum_background_jobs</span>
+        </section>
+
+    </div>
+</main>
+
+<footer class="footer container">
+    <p>RustQueue &middot; Background jobs without infrastructure</p>
+    <p class="mono">MIT OR Apache-2.0</p>
+</footer>
+</body>
+</html>
