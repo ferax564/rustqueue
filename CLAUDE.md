@@ -4,6 +4,10 @@
 
 RustQueue provides background jobs without infrastructure. It's an embeddable job queue written in Rust — use as a library (`RustQueue::redb("./jobs.db")?.build()?`) or as a standalone server. Zero external dependencies, single-binary deployment.
 
+**Positioning:** "The SQLite of job queues." Not a replacement for RabbitMQ — a replacement for `tokio::spawn`. Lead with the embedded library story, not benchmarks.
+
+**Version:** 0.2.0 — published on [crates.io](https://crates.io/crates/rustqueue).
+
 ## Quick Commands
 
 ```bash
@@ -56,7 +60,7 @@ src/
 │   └── postgres.rs   # PostgreSQL backend (behind `postgres` feature)
 ├── protocol/         # TCP protocol: newline-delimited JSON
 ├── config/           # Configuration loading: TOML + env + CLI
-└── dashboard/        # Embedded web dashboard (rust-embed)
+└── dashboard/        # Embedded web dashboard + blog + examples (rust-embed)
 
 examples/
 ├── basic.rs              # Simplest push/pull/ack (in-memory)
@@ -65,181 +69,112 @@ examples/
 └── axum_background_jobs.rs # Axum web app with background job queue
 ```
 
+## Website & Publishing
+
+| Asset | Location | URL |
+|-------|----------|-----|
+| Landing page (embedded) | `dashboard/static/landing.html` | `http://localhost:6790/` |
+| Blog post (embedded) | `dashboard/static/blog-background-jobs-without-redis.html` | `/blog/background-jobs-without-redis` |
+| Examples page (embedded) | `dashboard/static/examples.html` | `/examples` |
+| GitHub Pages site | `docs/index.html` | https://ferax564.github.io/rustqueue/ |
+| GitHub Pages blog | `docs/blog/background-jobs-without-redis.html` | https://ferax564.github.io/rustqueue/blog/background-jobs-without-redis.html |
+| GitHub Pages examples | `docs/examples.html` | https://ferax564.github.io/rustqueue/examples.html |
+| crates.io | — | https://crates.io/crates/rustqueue |
+| Blog examples/outline | `docs/blog-examples.md` | — |
+
+**GitHub Pages** deploys from `docs/` via `.github/workflows/pages.yml` (triggers on `docs/**` changes). Pages HTML must be self-contained — inline all CSS (no `/dashboard/landing.css` references).
+
+**crates.io publishing** via `.github/workflows/publish.yml` — triggers on `v*` tags. Requires `CARGO_REGISTRY_TOKEN` secret (already configured). Verifies Cargo.toml version matches the tag, runs tests, then publishes.
+
+**Social media** content managed via the `automarketing` project at `../automarketing/`. Uses `x_direct` backend (X API v2 with OAuth 1.0a). Drafts go to `social/drafts/`, approved to `social/approved/`, posted via `python3 social/scripts/post.py`.
+
 ## Key Design Decisions
 
-- **Storage trait**: All backends implement `StorageBackend` (24 async methods, see `src/storage/mod.rs`). Swap redb/sqlite/postgres/memory/hybrid via config without changing engine code.
-- **Dual protocol**: HTTP (port 6790) for general use + TCP (port 6789) for high-throughput workers. Both support identical operations.
-- **Crash-only design**: All state is persisted before acknowledging writes. Safe to `kill -9` at any time.
-- **UUID v7 for job IDs**: Time-sortable, globally unique, no coordination needed.
-- **Feature flags**: Optional backends and integrations behind Cargo features (`sqlite`, `postgres`, `otel`, `cli`, `tls`). Only `cli` is default.
-- **Embeddable library**: `RustQueue::memory().build()`, `RustQueue::redb(path).build()`, or `RustQueue::hybrid(path).build()` for zero-config use without a server.
-- **Axum integration**: `RqState` extractor in `src/axum_integration.rs` — implements `FromRequestParts<Arc<RustQueue>>` with `Deref<Target=RustQueue>` so handlers call `.push()`, `.pull()`, `.ack()` directly.
-- **Input validation**: Max lengths enforced on queue names (256), job names (1024), data payload (1MB), unique keys (1024), error messages (10KB).
-- **Queue pause/resume**: Paused queues reject new pushes with 503. HTTP + TCP endpoints.
-- **Auth rate limiting**: 5 failed auth attempts = 5-minute lockout per IP via in-memory DashMap tracker.
-- **Comprehensive metrics**: 15+ Prometheus metrics — counters, gauges (per-queue depth), histograms (push/pull/ack latency), HTTP request tracking.
-- **Hybrid storage**: DashMap in-memory hot path with periodic background snapshot to redb. Configurable flush interval and dirty threshold.
-- **Webhooks**: `WebhookManager` with DashMap storage, HMAC-SHA256 signing, configurable retry delivery, event/queue filtering. HTTP CRUD API at `/api/v1/webhooks`.
-- **DAG Flows**: Job dependencies via `depends_on` field. BFS cycle detection with configurable max depth. Inline resolution in `ack()` promotes Blocked->Waiting children. Cascade DLQ failure on parent fail. Scheduler safety net promotes orphaned blocked jobs every 10 ticks.
-- **Client SDKs**: Node.js (`sdk/node/`, TypeScript, HTTP + TCP, zero deps), Python (`sdk/python/`, stdlib-only HTTP), and Go (`sdk/go/`, HTTP + TCP, zero deps).
-- **Docker deployment**: Multi-stage Dockerfile, docker-compose.yml (standalone), docker-compose.monitoring.yml (with Prometheus + Grafana).
-- **Background scheduler**: Tick loop (configurable interval) handles delayed job promotion, schedule execution (cron + interval), timeout detection, stall detection, retention cleanup, and orphaned blocked job promotion (DAG safety net).
-- **WebSocket events**: Real-time job lifecycle events via `tokio::sync::broadcast` channel (capacity 1024).
-- **Authentication**: Bearer token auth for HTTP (public/protected route split) and TCP (connection-level handshake). Configurable via `[auth]` TOML section.
-- **Graceful shutdown**: `Ctrl+C` triggers coordinated drain with 30s timeout for HTTP, TCP, and scheduler.
-- **Embedded dashboard**: SPA served via `rust-embed` at `/dashboard` (overview, queues, DLQ, live events). Landing page at `/`.
+- **Storage trait**: All backends implement `StorageBackend` (24 async methods). Swap via config.
+- **Dual protocol**: HTTP (6790) + TCP (6789). Both support identical operations.
+- **Crash-only design**: All state persisted before ack. Safe to `kill -9`.
+- **Embeddable library**: `RustQueue::memory().build()`, `.redb(path)`, or `.hybrid(path)` — zero-config, no server needed.
+- **Axum integration**: `RqState` extractor (`src/axum_integration.rs`) — `FromRequestParts<Arc<RustQueue>>` with `Deref`. State is `Arc<RustQueue>`.
+- **DAG Flows**: `depends_on` field, BFS cycle detection, cascade DLQ on parent fail.
+- **Hybrid storage**: DashMap hot path + periodic redb snapshots. Trade-off: up to `snapshot_interval` data loss on crash.
+- **Webhooks**: HMAC-SHA256 signing, configurable retry, event/queue filtering.
 
-## Performance
+## Performance (v0.2.0, March 2026)
 
-Benchmark results (March 28, 2026, hybrid TCP, batch_size=50):
+Competitor benchmarks (hybrid TCP, batch_size=50, 5000 ops, 3 repeats):
 
-| Metric | ops/s |
-|--------|------:|
-| Hybrid TCP produce | **40,504** |
-| Hybrid TCP consume | **26,716** |
-| Hybrid TCP end-to-end | **18,810** |
+| System | Produce | Consume | End-to-end |
+|--------|--------:|--------:|-----------:|
+| **RustQueue TCP** | **47,129/s** | **38,048/s** | **22,685/s** |
+| RabbitMQ | 47,588/s | 5,367/s | 4,686/s |
+| Redis | 9,337/s | 9,511/s | 4,951/s |
+| BullMQ | 7,559/s | 6,690/s | 1,978/s |
+| Celery | 3,168/s | 1,589/s | 893/s |
 
-RabbitMQ slightly wins produce (42,471 vs 40,504). RustQueue wins consume (5.3x) and end-to-end (4.5x).
+Neck-and-neck with RabbitMQ on produce. 7.1x faster consume. 4.8x faster end-to-end.
 
-The default redb backend has ~348 push/sec sequential throughput (fsync-dominated). Multiple performance tiers:
+Internal benchmarks: Hybrid 300K+ concurrent push ops/sec. Buffered redb 19K ops/sec at 100 callers. Raw redb ~314 push/s (fsync-dominated).
 
-- **HybridStorage** (in-memory + disk snapshots): DashMap hot path + periodic redb flush. Per-queue BTreeSet waiting index for O(log N) dequeue. Trade-off: up to `snapshot_interval` of data loss on crash.
-- **BufferedRedbStorage** (write coalescing): **~22,222 jobs/sec at 100 concurrent callers** (60.6x improvement). Enable with `write_coalescing_enabled = true`.
+Reference: `docs/competitor-benchmark-2026-03-28.md`, `docs/benchmark-v0.2.0.md`
 
-Key optimizations: TCP_NODELAY, write buffering with explicit flush, TCP pipelining (batch all commands before flush), per-queue BTreeSet waiting index for O(log N) dequeue, zero-allocation payload size estimation, stack-allocated index keys.
-
-Reference: `docs/competitor-benchmark-2026-02-07.md`
+Competitor benchmarks require Docker (Redis + RabbitMQ + Node for BullMQ + Celery):
+```bash
+python3 scripts/benchmark_competitors.py --ops 5000 --repeats 3 --rustqueue-tcp-batch-size 50 --hybrid
+```
 
 ## Conventions
 
-- **Error handling**: Use `thiserror` for library errors, `anyhow` for binary/integration code. Storage trait methods return `anyhow::Result`.
-- **Async**: Everything async via tokio. Use `#[async_trait]` for trait objects.
-- **Serialization**: All public types derive `Serialize, Deserialize` via serde. JSON payloads use `serde_json::Value`.
-- **Testing**: Unit tests in `#[cfg(test)]` modules within source files. Integration tests in `tests/`. Property-based tests with `proptest`. Benchmarks with `criterion` in `benches/`.
-- **Naming**: snake_case for files/functions, PascalCase for types, SCREAMING_CASE for constants. Module names match their domain concept.
+- **Error handling**: `thiserror` for library, `anyhow` for binary. Storage returns `anyhow::Result`.
+- **Async**: Everything async via tokio.
+- **Testing**: Unit tests in `#[cfg(test)]`, integration in `tests/`, property-based with `proptest`.
+- **Naming**: snake_case files/functions, PascalCase types, SCREAMING_CASE constants.
+- **Positioning**: Always "background jobs without infrastructure", never "distributed job scheduler" or "high-performance". The embedded library is the entry point, server mode is the growth path.
 
 ## Feature Flags
 
-| Feature | Dependencies | Purpose |
-|---------|-------------|---------|
-| `cli` (default) | `reqwest` | CLI management commands (`status`, `push`, `inspect`) |
-| `sqlite` | `rusqlite` (bundled) | SQLite storage backend |
-| `postgres` | `sqlx` (with pg) | PostgreSQL storage backend |
-| `otel` | `opentelemetry`, `opentelemetry-otlp`, `opentelemetry_sdk`, `tracing-opentelemetry` | OpenTelemetry tracing export |
-| `tls` | `rustls`, `tokio-rustls`, `rustls-pemfile` | TLS encryption for TCP protocol |
-| `axum-integration` | (none — axum already a dep) | `RqState` Axum extractor for embedding in web apps |
+| Feature | Purpose |
+|---------|---------|
+| `cli` (default) | CLI management commands |
+| `sqlite` | SQLite storage backend |
+| `postgres` | PostgreSQL storage backend |
+| `otel` | OpenTelemetry tracing export |
+| `tls` | TLS encryption for TCP protocol |
+| `axum-integration` | `RqState` Axum extractor |
 
-## Testing Strategy
+## Testing
 
-- **Unit tests**: Each module has `#[cfg(test)] mod tests` testing individual functions.
-- **Integration tests**: `tests/` directory tests full server behavior (HTTP + TCP + WebSocket).
-- **Generic backend harness**: `tests/storage_backend_tests.rs` — `backend_tests!` macro generates 19 canonical tests per storage backend (memory, redb, buffered_redb, hybrid; + sqlite with feature).
-- **Property tests**: State machine transitions, serialization roundtrips.
-- **Benchmarks**: `benches/throughput.rs` measures jobs/sec for push, pull, ack operations.
-- **Current counts**: ~315 tests (default features), ~342 tests (with `sqlite`).
+- ~315 tests (default), ~342 (with `sqlite`).
+- `tests/storage_backend_tests.rs` — `backend_tests!` macro generates 19 tests per backend.
+- Dashboard tests assert on "Background Jobs" + "Without Infrastructure" (not old positioning).
+- CLI help test asserts on "Background jobs without infrastructure".
 
-## Configuration Priority
+## Release Process
 
-CLI flags > Environment variables (`RUSTQUEUE_*`) > Config file (`rustqueue.toml`) > Defaults
-
-## Ports
-
-| Protocol | Default Port | Purpose |
-|----------|-------------|---------|
-| HTTP     | 6790        | REST API, WebSocket, Dashboard |
-| TCP      | 6789        | High-throughput worker protocol |
-| Raft     | 6800        | Cluster consensus (when enabled) |
-
-## API Endpoints
-
-### HTTP
-
-```
-POST   /api/v1/queues/{queue}/jobs      # Push job(s)
-GET    /api/v1/queues/{queue}/jobs      # Pull next job(s)
-POST   /api/v1/jobs/{id}/ack           # Acknowledge completion
-POST   /api/v1/jobs/{id}/fail          # Report failure
-POST   /api/v1/jobs/{id}/cancel        # Cancel a job
-POST   /api/v1/jobs/{id}/progress      # Update job progress (0-100)
-POST   /api/v1/jobs/{id}/heartbeat     # Send worker heartbeat
-GET    /api/v1/jobs/{id}               # Get job details
-GET    /api/v1/queues                  # List queues
-GET    /api/v1/queues/{queue}/stats    # Queue statistics
-POST   /api/v1/queues/{queue}/pause   # Pause queue (rejects pushes)
-POST   /api/v1/queues/{queue}/resume  # Resume queue
-GET    /api/v1/health                  # Health check
-GET    /api/v1/metrics/prometheus      # Prometheus metrics
-GET    /api/v1/queues/{queue}/dlq      # List DLQ jobs
-POST   /api/v1/schedules              # Create/upsert schedule
-GET    /api/v1/schedules              # List all schedules
-GET    /api/v1/schedules/{name}       # Get schedule by name
-DELETE /api/v1/schedules/{name}       # Delete schedule
-POST   /api/v1/schedules/{name}/pause  # Pause schedule
-POST   /api/v1/schedules/{name}/resume # Resume schedule
-POST   /api/v1/webhooks               # Register webhook
-GET    /api/v1/webhooks               # List webhooks
-GET    /api/v1/webhooks/{id}          # Get webhook
-DELETE /api/v1/webhooks/{id}          # Delete webhook
-GET    /api/v1/flows/{flow_id}        # Flow status (DAG jobs + summary)
-GET    /api/v1/events                  # WebSocket event stream
-GET    /api/v1/openapi.json            # OpenAPI 3.1 spec (JSON)
-GET    /api/v1/docs                    # Scalar API reference UI
-GET    /dashboard                      # Embedded web dashboard
-GET    /                               # Landing page (always public)
-```
-
-### TCP Commands
-
-`push`, `push_batch`, `pull`, `ack`, `ack_batch`, `fail`, `cancel`, `progress`, `heartbeat`, `get`, `schedule_create`, `schedule_list`, `schedule_get`, `schedule_delete`, `schedule_pause`, `schedule_resume`
-
-## CLI Commands
-
-```bash
-rustqueue serve [--config PATH] [--http-port PORT] [--tcp-port PORT]
-rustqueue status [--host HOST] [--http-port PORT]
-rustqueue push --queue NAME --name JOB_NAME [--data JSON]
-rustqueue inspect JOB_ID [--host HOST] [--http-port PORT]
-rustqueue schedules list [--host HOST] [--http-port PORT]
-rustqueue schedules create --name NAME --queue QUEUE --job-name JOB [--cron EXPR] [--every-ms MS]
-rustqueue schedules delete NAME
-rustqueue schedules pause NAME
-rustqueue schedules resume NAME
-```
-
-## Dependencies of Note
-
-| Crate | Purpose |
-|-------|---------|
-| `axum` | HTTP framework + WebSocket |
-| `tokio` | Async runtime |
-| `redb` | Embedded ACID storage (default backend) |
-| `rusqlite` | SQLite storage (optional, `sqlite` feature) |
-| `sqlx` | PostgreSQL storage (optional, `postgres` feature) |
-| `croner` | Cron expression parsing |
-| `opentelemetry` family | OTLP trace export (optional, `otel` feature) |
-| `metrics` + `metrics-exporter-prometheus` | Prometheus metrics |
-| `dashmap` | Lock-free concurrent HashMap (MemoryStorage, HybridStorage, auth rate limiter) |
-| `rust-embed` | Compile dashboard assets into binary |
-| `reqwest` | HTTP client (webhook delivery + CLI commands) |
-| `hmac` + `sha2` | HMAC-SHA256 webhook payload signing |
+1. Bump version in `Cargo.toml`, `sdk/node/package.json`, `sdk/python/pyproject.toml`, `sdk/python/rustqueue/__init__.py`, `src/api/openapi.rs`
+2. Run full test suite: `cargo test`
+3. Commit, tag: `git tag -a vX.Y.Z -m "vX.Y.Z — description"`
+4. Push: `git push origin main && git push origin vX.Y.Z`
+5. CI auto-publishes to crates.io and creates GitHub Release
 
 ## Client SDKs
 
-| SDK | Path | Transport | Dependencies |
-|-----|------|-----------|-------------|
-| **Node.js** (TypeScript) | `sdk/node/` | HTTP (`fetch`) + TCP (`net.Socket`) | Zero runtime deps, Node.js >= 18 |
-| **Python** | `sdk/python/` | HTTP (`urllib.request`) | Zero deps, Python >= 3.8 |
-| **Go** | `sdk/go/` | HTTP (`net/http`) + TCP (`net.Conn`) | Zero deps, Go >= 1.21 |
+| SDK | Path | Transport | Version |
+|-----|------|-----------|---------|
+| **Node.js** (TypeScript) | `sdk/node/` | HTTP + TCP | 0.2.0 |
+| **Python** | `sdk/python/` | HTTP | 0.2.0 |
+| **Go** | `sdk/go/` | HTTP + TCP | N/A (module) |
 
-Both SDKs cover: push, pull, ack, fail, cancel, progress, heartbeat, get_job, list_queues, queue_stats, DLQ, schedule CRUD, health.
+All three have READMEs, working examples, and zero runtime dependencies.
 
-## Docker Deployment
+## Ports
 
-| File | Purpose |
-|------|---------|
-| `Dockerfile` | Multi-stage build (rust:1.85-slim builder, debian:bookworm-slim runtime) |
-| `docker-compose.yml` | Standalone RustQueue with persistent volume |
-| `docker-compose.monitoring.yml` | RustQueue + Prometheus + Grafana (auto-provisioned dashboard) |
-| `deploy/rustqueue.toml` | Production config template |
-| `deploy/prometheus.yml` | Prometheus scrape config |
-| `deploy/grafana-*.yml` | Grafana datasource + dashboard provisioning |
+| Protocol | Port | Purpose |
+|----------|------|---------|
+| HTTP | 6790 | REST API, WebSocket, Dashboard, Blog, Examples |
+| TCP | 6789 | High-throughput worker protocol |
+
+## Routes (embedded server)
+
+Public (no auth): `/`, `/blog/*`, `/examples`, `/api/v1/health`, `/api/v1/metrics/prometheus`, `/api/v1/openapi.json`, `/api/v1/docs`
+
+Auth-protected: `/dashboard`, all job/queue/schedule/webhook endpoints.
