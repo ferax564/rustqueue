@@ -10,3 +10,4 @@ rustqueue.toml
 __pycache__/
 node_modules/
 .bench-venv/
+.gstack/
