@@ -88,9 +88,9 @@ async fn test_server_cli_help() {
     #[allow(deprecated)]
     let mut cmd = assert_cmd::Command::cargo_bin("rustqueue").unwrap();
     cmd.arg("--help");
-    cmd.assert()
-        .success()
-        .stdout(predicates::str::contains("Background jobs without infrastructure"));
+    cmd.assert().success().stdout(predicates::str::contains(
+        "Background jobs without infrastructure",
+    ));
 }
 
 #[tokio::test]

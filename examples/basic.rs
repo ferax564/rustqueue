@@ -12,12 +12,14 @@ async fn main() -> anyhow::Result<()> {
     let rq = RustQueue::memory().build()?;
 
     // Push a job onto the "emails" queue
-    let id = rq.push(
-        "emails",
-        "send-welcome",
-        json!({"to": "user@example.com", "template": "welcome"}),
-        None,
-    ).await?;
+    let id = rq
+        .push(
+            "emails",
+            "send-welcome",
+            json!({"to": "user@example.com", "template": "welcome"}),
+            None,
+        )
+        .await?;
     println!("Pushed job: {id}");
 
     // Pull one job from the queue

@@ -17,19 +17,24 @@ async fn main() -> anyhow::Result<()> {
     let existing = rq.pull("tasks", 1).await?;
     if !existing.is_empty() {
         let job = &existing[0];
-        println!("Found job from previous run: {} (data: {})", job.name, job.data);
+        println!(
+            "Found job from previous run: {} (data: {})",
+            job.name, job.data
+        );
         rq.ack(job.id, None).await?;
         println!("Acknowledged. Run again to push a new one.");
         return Ok(());
     }
 
     // No existing jobs — push one and exit without processing
-    let id = rq.push(
-        "tasks",
-        "generate-report",
-        json!({"report": "monthly", "month": "march"}),
-        None,
-    ).await?;
+    let id = rq
+        .push(
+            "tasks",
+            "generate-report",
+            json!({"report": "monthly", "month": "march"}),
+            None,
+        )
+        .await?;
     println!("Pushed job {id} to {db_path}");
     println!("Run this example again to see the job survive the restart.");
 

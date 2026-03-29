@@ -8,8 +8,8 @@
 
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rustqueue::axum_integration::RqState;
 use rustqueue::RustQueue;
+use rustqueue::axum_integration::RqState;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -64,7 +64,9 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await?;
     println!("Server running on http://localhost:3000");
-    println!("Try: curl -X POST http://localhost:3000/send-email -H 'Content-Type: application/json' -d '{{\"to\":\"user@example.com\"}}'");
+    println!(
+        "Try: curl -X POST http://localhost:3000/send-email -H 'Content-Type: application/json' -d '{{\"to\":\"user@example.com\"}}'"
+    );
     axum::serve(listener, app).await?;
 
     Ok(())

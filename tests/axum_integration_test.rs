@@ -2,8 +2,8 @@
 
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rustqueue::axum_integration::RqState;
 use rustqueue::RustQueue;
+use rustqueue::axum_integration::RqState;
 use serde_json::json;
 use std::sync::Arc;
 

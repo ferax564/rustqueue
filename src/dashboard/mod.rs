@@ -34,7 +34,10 @@ pub fn routes() -> Router<Arc<AppState>> {
 pub fn landing_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", axum::routing::get(landing))
-        .route("/blog/background-jobs-without-redis", axum::routing::get(blog_post_1))
+        .route(
+            "/blog/background-jobs-without-redis",
+            axum::routing::get(blog_post_1),
+        )
         .route("/examples", axum::routing::get(examples_page))
 }
 
