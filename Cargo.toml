@@ -106,6 +106,7 @@ assert_cmd = "2"
 predicates = "3"
 tokio-tungstenite = "0.28"
 futures-util = "0.3"
+rand = "0.8"
 sysinfo = "0.30"
 
 [features]

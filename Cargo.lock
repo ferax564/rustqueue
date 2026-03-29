@@ -2743,6 +2743,7 @@ dependencies = [
  "opentelemetry_sdk",
  "predicates",
  "proptest",
+ "rand 0.8.5",
  "redb",
  "reqwest",
  "rusqlite",
