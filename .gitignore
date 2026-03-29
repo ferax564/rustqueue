@@ -7,6 +7,9 @@
 *.redb
 rustqueue.toml
 .env
+.env.*
+*.pem
+*.key
 __pycache__/
 node_modules/
 .bench-venv/

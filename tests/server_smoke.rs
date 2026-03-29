@@ -79,7 +79,7 @@ async fn test_server_starts_and_responds_to_health() {
     let body: Value = resp.json().await.unwrap();
     assert_eq!(body["ok"], true);
     assert_eq!(body["status"], "healthy");
-    assert_eq!(body["version"], "0.1.0");
+    assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
     assert!(body["uptime_seconds"].is_number());
 }
 

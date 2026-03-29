@@ -10,7 +10,7 @@
 //!
 //! Enabled via the `postgres` feature flag:
 //! ```toml
-//! rustqueue = { version = "0.1", features = ["postgres"] }
+//! rustqueue = { version = "0.2", features = ["postgres"] }
 //! ```
 
 use anyhow::{Context, Result};

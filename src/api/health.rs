@@ -43,7 +43,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
     Json(HealthResponse {
         ok: true,
         status: "healthy",
-        version: "0.1.0",
+        version: env!("CARGO_PKG_VERSION"),
         uptime_seconds: uptime,
     })
 }
