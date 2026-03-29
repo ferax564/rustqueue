@@ -35,6 +35,7 @@
         }
         .tag-beginner { background: rgba(15,150,129,0.12); color: var(--accent-strong); }
         .tag-intermediate { background: rgba(232,115,55,0.12); color: var(--accent-alt-strong); }
+        .tag-advanced { background: rgba(139,92,246,0.12); color: #6d44c8; }
         .example-section > p { color: var(--muted); margin: 0 0 0.75rem; font-size: 0.95rem; line-height: 1.6; }
         .ex-code {
             background: var(--ink);
@@ -221,6 +222,46 @@
     Ok(())
 }</code></pre></div>
             <span class="run-cmd">cargo run --example axum_background_jobs</span>
+        </section>
+
+        <section class="example-section reveal">
+            <span class="tag tag-advanced">Advanced</span>
+            <h2>Email Notifications with Priority &amp; Retry</h2>
+            <p>A realistic email notification service with priority queues, simulated SMTP failures, and crash-safe persistence. Password resets jump ahead of welcome emails. Failed sends retry with exponential backoff. Kill the process mid-send and restart &mdash; emails resume where they left off. <a href="/blog/crash-safe-email-queue" style="color: var(--accent-strong); font-weight: 600;">Read the tutorial &rarr;</a></p>
+            <div class="ex-code"><pre><code><span class="kw">use</span> rustqueue::{JobOptions, RustQueue};
+<span class="kw">use</span> rustqueue::axum_integration::RqState;
+
+<span class="cm">// Password resets get higher priority and more retries</span>
+<span class="kw">async fn</span> <span class="fn">reset_password</span>(rq: RqState, Json(body): Json&lt;serde_json::Value&gt;)
+    -> Json&lt;serde_json::Value&gt;
+{
+    <span class="kw">let</span> id = rq.push(<span class="str">"emails"</span>, <span class="str">"password-reset"</span>,
+        <span class="mac">json!</span>({ <span class="str">"to"</span>: email, <span class="str">"subject"</span>: <span class="str">"Reset your password"</span> }),
+        Some(JobOptions {
+            priority: Some(10),      <span class="cm">// Jump ahead of welcome emails</span>
+            max_attempts: Some(5),   <span class="cm">// More retries for critical emails</span>
+            ..Default::default()
+        }),
+    ).<span class="kw">await</span>.unwrap();
+    Json(<span class="mac">json!</span>({<span class="str">"queued"</span>: <span class="kw">true</span>}))
+}
+
+<span class="cm">// Worker: pull, send, ack or fail (auto-retries on failure)</span>
+<span class="kw">async fn</span> <span class="fn">email_worker</span>(rq: Arc&lt;RustQueue&gt;) {
+    <span class="kw">loop</span> {
+        <span class="kw">let</span> jobs = rq.pull(<span class="str">"emails"</span>, 5).<span class="kw">await</span>.unwrap();
+        <span class="kw">for</span> job <span class="kw">in</span> &amp;jobs {
+            <span class="kw">match</span> <span class="fn">send_email</span>(&amp;job.data).<span class="kw">await</span> {
+                Ok(()) => rq.ack(job.id, None).<span class="kw">await</span>.unwrap(),
+                Err(e) => rq.fail(job.id, &amp;e).<span class="kw">await</span>.unwrap(),
+            }
+        }
+        <span class="kw">if</span> jobs.is_empty() {
+            tokio::time::sleep(Duration::from_millis(200)).<span class="kw">await</span>;
+        }
+    }
+}</code></pre></div>
+            <span class="run-cmd">cargo run --example email_notifications</span>
         </section>
 
     </div>
