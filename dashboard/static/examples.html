@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="RustQueue examples: from basic push/pull to Axum web apps with background jobs. Zero dependencies, zero config.">
+    <title>Examples | RustQueue</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Manrope:wght@400;500;700;800&family=Syne:wght@500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/dashboard/landing.css">
+    <style>
+        .docs-header { margin-top: 2rem; margin-bottom: 2.5rem; }
+        .docs-header h1 {
+            font-family: "Syne", "Trebuchet MS", sans-serif;
+            font-size: clamp(2rem, 5vw, 3rem);
+            line-height: 1.1;
+        }
+        .docs-header p { color: var(--muted); margin-top: 0.5rem; font-size: 1.05rem; }
+        .example-section { margin-bottom: 3rem; }
+        .example-section h2 {
+            font-family: "Syne", "Trebuchet MS", sans-serif;
+            font-size: 1.5rem;
+            margin: 0 0 0.25rem;
+        }
+        .example-section .tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.12em;
+            padding: 0.2rem 0.6rem;
+            border-radius: 999px;
+            margin-bottom: 0.75rem;
+        }
+        .tag-beginner { background: rgba(15,150,129,0.12); color: var(--accent-strong); }
+        .tag-intermediate { background: rgba(232,115,55,0.12); color: var(--accent-alt-strong); }
+        .example-section > p { color: var(--muted); margin: 0 0 0.75rem; font-size: 0.95rem; line-height: 1.6; }
+        .ex-code {
+            background: var(--ink);
+            border-radius: var(--radius-sm);
+            padding: 1.25rem 1.5rem;
+            overflow-x: auto;
+            margin: 0.75rem 0 0.5rem;
+        }
+        .ex-code pre { margin: 0; }
+        .ex-code code {
+            font-family: "JetBrains Mono", monospace;
+            font-size: 0.85rem;
+            line-height: 1.65;
+            color: #e2e8f0;
+        }
+        .ex-code .kw { color: #c792ea; }
+        .ex-code .str { color: #c3e88d; }
+        .ex-code .cm { color: #637777; font-style: italic; }
+        .ex-code .fn { color: #82aaff; }
+        .ex-code .mac { color: #89ddff; }
+        .run-cmd {
+            display: inline-block;
+            font-family: "JetBrains Mono", monospace;
+            font-size: 0.82rem;
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            padding: 0.3rem 0.7rem;
+            color: var(--muted);
+            margin-top: 0.25rem;
+        }
+        .example-grid {
+            display: grid;
+            gap: 2rem;
+            max-width: 72ch;
+        }
+    </style>
+</head>
+<body>
+<div class="scene" aria-hidden="true">
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+    <div class="orb orb-c"></div>
+</div>
+
+<header class="nav-shell">
+    <nav class="container nav">
+        <a href="/" class="logo" aria-label="RustQueue home">
+            <span class="logo-mark"></span>
+            <span class="logo-text">RustQueue</span>
+        </a>
+        <div class="nav-links">
+            <a href="/">Home</a>
+            <a href="/examples">Examples</a>
+            <a href="/blog/background-jobs-without-redis">Blog</a>
+            <a href="https://github.com/ferax564/rustqueue">GitHub</a>
+        </div>
+        <a class="btn btn-ghost" href="/dashboard">Open Dashboard</a>
+    </nav>
+</header>
+
+<main class="container">
+    <div class="docs-header reveal">
+        <p class="eyebrow">Documentation</p>
+        <h1>Examples</h1>
+        <p>From your first background job to a full Axum web app. Each example is self-contained and runnable.</p>
+    </div>
+
+    <div class="example-grid">
+
+        <section class="example-section reveal">
+            <span class="tag tag-beginner">Beginner</span>
+            <h2>Basic Push / Pull / Ack</h2>
+            <p>The simplest possible RustQueue usage. Push a job, pull it, acknowledge it. Uses an in-memory backend &mdash; no files, no setup.</p>
+            <div class="ex-code"><pre><code><span class="kw">use</span> rustqueue::RustQueue;
+<span class="kw">use</span> serde_json::<span class="mac">json!</span>;
+
+#[tokio::main]
+<span class="kw">async fn</span> <span class="fn">main</span>() -> anyhow::Result&lt;()&gt; {
+    <span class="kw">let</span> rq = RustQueue::memory().build()?;
+
+    <span class="cm">// Push a job onto the "emails" queue</span>
+    <span class="kw">let</span> id = rq.push(<span class="str">"emails"</span>, <span class="str">"send-welcome"</span>,
+        <span class="mac">json!</span>({<span class="str">"to"</span>: <span class="str">"user@example.com"</span>, <span class="str">"template"</span>: <span class="str">"welcome"</span>}),
+        None,
+    ).<span class="kw">await</span>?;
+    println!(<span class="str">"Pushed job: {id}"</span>);
+
+    <span class="cm">// Pull one job from the queue</span>
+    <span class="kw">let</span> jobs = rq.pull(<span class="str">"emails"</span>, 1).<span class="kw">await</span>?;
+    println!(<span class="str">"Processing: {} (data: {})"</span>, jobs[0].name, jobs[0].data);
+
+    <span class="cm">// Acknowledge completion</span>
+    rq.ack(jobs[0].id, None).<span class="kw">await</span>?;
+    println!(<span class="str">"Done!"</span>);
+    Ok(())
+}</code></pre></div>
+            <span class="run-cmd">cargo run --example basic</span>
+        </section>
+
+        <section class="example-section reveal">
+            <span class="tag tag-beginner">Beginner</span>
+            <h2>Persistent Queue</h2>
+            <p>Jobs survive process restarts. Run this example twice &mdash; the second run finds the job pushed in the first run still waiting in the queue.</p>
+            <div class="ex-code"><pre><code><span class="kw">use</span> rustqueue::RustQueue;
+<span class="kw">use</span> serde_json::<span class="mac">json!</span>;
+
+#[tokio::main]
+<span class="kw">async fn</span> <span class="fn">main</span>() -> anyhow::Result&lt;()&gt; {
+    <span class="kw">let</span> rq = RustQueue::redb(<span class="str">"/tmp/rustqueue-example.db"</span>)?.build()?;
+
+    <span class="cm">// Check if there are jobs from a previous run</span>
+    <span class="kw">let</span> existing = rq.pull(<span class="str">"tasks"</span>, 1).<span class="kw">await</span>?;
+    <span class="kw">if</span> !existing.is_empty() {
+        println!(<span class="str">"Found job from previous run: {}"</span>, existing[0].name);
+        rq.ack(existing[0].id, None).<span class="kw">await</span>?;
+        <span class="kw">return</span> Ok(());
+    }
+
+    <span class="cm">// No existing jobs — push one and exit</span>
+    <span class="kw">let</span> id = rq.push(<span class="str">"tasks"</span>, <span class="str">"generate-report"</span>,
+        <span class="mac">json!</span>({<span class="str">"report"</span>: <span class="str">"monthly"</span>}), None).<span class="kw">await</span>?;
+    println!(<span class="str">"Pushed job {id}. Run again to see it survive the restart."</span>);
+    Ok(())
+}</code></pre></div>
+            <span class="run-cmd">cargo run --example persistent</span>
+        </section>
+
+        <section class="example-section reveal">
+            <span class="tag tag-intermediate">Intermediate</span>
+            <h2>Worker Loop</h2>
+            <p>A long-running worker that polls the queue and processes jobs as they arrive. The standard pattern for background job processing.</p>
+            <div class="ex-code"><pre><code><span class="kw">use</span> rustqueue::RustQueue;
+<span class="kw">use</span> std::time::Duration;
+
+#[tokio::main]
+<span class="kw">async fn</span> <span class="fn">main</span>() -> anyhow::Result&lt;()&gt; {
+    <span class="kw">let</span> rq = RustQueue::redb(<span class="str">"/tmp/rustqueue-worker.db"</span>)?.build()?;
+    println!(<span class="str">"Worker started. Waiting for jobs..."</span>);
+
+    <span class="kw">loop</span> {
+        <span class="kw">let</span> jobs = rq.pull(<span class="str">"emails"</span>, 5).<span class="kw">await</span>?;
+        <span class="kw">for</span> job <span class="kw">in</span> &amp;jobs {
+            println!(<span class="str">"[{}] Processing: {}"</span>, job.queue, job.name);
+            tokio::time::sleep(Duration::from_millis(100)).<span class="kw">await</span>;
+            rq.ack(job.id, None).<span class="kw">await</span>?;
+        }
+        <span class="kw">if</span> jobs.is_empty() {
+            tokio::time::sleep(Duration::from_millis(500)).<span class="kw">await</span>;
+        }
+    }
+}</code></pre></div>
+            <span class="run-cmd">cargo run --example worker</span>
+        </section>
+
+        <section class="example-section reveal">
+            <span class="tag tag-intermediate">Intermediate</span>
+            <h2>Axum Web App with Background Jobs</h2>
+            <p>A full Axum web application with a background job queue. The <code>RqState</code> extractor provides RustQueue to any handler. A spawned worker task processes jobs in the background.</p>
+            <div class="ex-code"><pre><code><span class="kw">use</span> axum::routing::{get, post};
+<span class="kw">use</span> axum::{Json, Router};
+<span class="kw">use</span> rustqueue::axum_integration::RqState;
+<span class="kw">use</span> rustqueue::RustQueue;
+<span class="kw">use</span> serde_json::<span class="mac">json!</span>;
+<span class="kw">use</span> std::sync::Arc;
+
+<span class="kw">async fn</span> <span class="fn">send_email</span>(rq: RqState, Json(body): Json&lt;serde_json::Value&gt;)
+    -> Json&lt;serde_json::Value&gt;
+{
+    <span class="kw">let</span> to = body[<span class="str">"to"</span>].as_str().unwrap_or(<span class="str">"unknown"</span>);
+    <span class="kw">let</span> id = rq.push(<span class="str">"emails"</span>, <span class="str">"send-welcome"</span>,
+        <span class="mac">json!</span>({<span class="str">"to"</span>: to}), None).<span class="kw">await</span>.unwrap();
+    Json(<span class="mac">json!</span>({<span class="str">"queued"</span>: true, <span class="str">"job_id"</span>: id.to_string()}))
+}
+
+#[tokio::main]
+<span class="kw">async fn</span> <span class="fn">main</span>() -> anyhow::Result&lt;()&gt; {
+    <span class="kw">let</span> rq = Arc::new(RustQueue::redb(<span class="str">"/tmp/rq-axum.db"</span>)?.build()?);
+    <span class="kw">let</span> app = Router::new()
+        .route(<span class="str">"/send-email"</span>, post(send_email))
+        .with_state(rq);
+    <span class="kw">let</span> listener = tokio::net::TcpListener::bind(<span class="str">"0.0.0.0:3000"</span>).<span class="kw">await</span>?;
+    axum::serve(listener, app).<span class="kw">await</span>?;
+    Ok(())
+}</code></pre></div>
+            <span class="run-cmd">cargo run --example axum_background_jobs</span>
+        </section>
+
+    </div>
+</main>
+
+<footer class="footer container">
+    <p>RustQueue &middot; Background jobs without infrastructure</p>
+    <p class="mono">MIT OR Apache-2.0</p>
+</footer>
+</body>
+</html>

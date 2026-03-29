@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Add background job processing to any Rust application in 3 lines of code. No Redis, no RabbitMQ, no external services. Just cargo add rustqueue.">
+    <meta property="og:title" content="Background Jobs in Rust Without Redis">
+    <meta property="og:description" content="Add background job processing to any Rust application in 3 lines. No Redis. No RabbitMQ. Just a library.">
+    <meta property="og:type" content="article">
+    <title>Background Jobs in Rust Without Redis | RustQueue</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Manrope:wght@400;500;700;800&family=Syne:wght@500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/dashboard/landing.css">
+    <style>
+        .blog-header { margin-top: 2rem; margin-bottom: 3rem; }
+        .blog-header h1 {
+            font-family: "Syne", "Trebuchet MS", sans-serif;
+            font-size: clamp(2rem, 5vw, 3.2rem);
+            line-height: 1.1;
+            max-width: 20ch;
+        }
+        .blog-meta {
+            margin-top: 0.75rem;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+        .blog-body { max-width: 72ch; }
+        .blog-body h2 {
+            font-family: "Syne", "Trebuchet MS", sans-serif;
+            font-size: 1.6rem;
+            margin: 2.5rem 0 0.75rem;
+            line-height: 1.15;
+        }
+        .blog-body h3 {
+            font-family: "Syne", "Trebuchet MS", sans-serif;
+            font-size: 1.2rem;
+            margin: 2rem 0 0.5rem;
+        }
+        .blog-body p { color: var(--muted); margin: 0.75rem 0; font-size: 1.05rem; line-height: 1.7; }
+        .blog-body p strong { color: var(--ink); }
+        .blog-body blockquote {
+            border-left: 4px solid var(--accent);
+            margin: 1.5rem 0;
+            padding: 0.75rem 1.25rem;
+            background: rgba(15, 150, 129, 0.06);
+            border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+        }
+        .blog-body blockquote p { font-style: italic; margin: 0; }
+        .blog-code {
+            background: var(--ink);
+            border-radius: var(--radius-sm);
+            padding: 1.25rem 1.5rem;
+            overflow-x: auto;
+            margin: 1.25rem 0;
+        }
+        .blog-code pre { margin: 0; }
+        .blog-code code {
+            font-family: "JetBrains Mono", monospace;
+            font-size: 0.88rem;
+            line-height: 1.65;
+            color: #e2e8f0;
+        }
+        .blog-code .kw { color: #c792ea; }
+        .blog-code .str { color: #c3e88d; }
+        .blog-code .cm { color: #637777; font-style: italic; }
+        .blog-code .fn { color: #82aaff; }
+        .blog-code .mac { color: #89ddff; }
+        .blog-table { width: 100%; border-collapse: collapse; margin: 1.25rem 0; font-size: 0.92rem; }
+        .blog-table th, .blog-table td { padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--line); text-align: left; }
+        .blog-table th { font-weight: 700; color: var(--ink); font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .blog-table td { color: var(--muted); }
+        .blog-table td strong { color: var(--ink); }
+        .blog-cta {
+            margin: 3rem 0 2rem;
+            padding: 2rem;
+            border-radius: var(--radius-lg);
+            background: linear-gradient(155deg, #102b33, #0e4038);
+            color: #e6fffa;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        .blog-cta h2 { color: #e6fffa; margin: 0 0 0.5rem; font-family: "Syne", sans-serif; font-size: 1.6rem; }
+        .blog-cta p { color: #86f3d8; margin: 0 0 1rem; }
+        .blog-cta code { font-family: "JetBrains Mono", monospace; background: rgba(6,20,24,0.65); padding: 0.6rem 1rem; border-radius: var(--radius-sm); display: block; color: #d0fff1; font-size: 0.88rem; border: 1px solid rgba(255,255,255,0.15); }
+    </style>
+</head>
+<body>
+<div class="scene" aria-hidden="true">
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+    <div class="orb orb-c"></div>
+</div>
+
+<header class="nav-shell">
+    <nav class="container nav">
+        <a href="/" class="logo" aria-label="RustQueue home">
+            <span class="logo-mark"></span>
+            <span class="logo-text">RustQueue</span>
+        </a>
+        <div class="nav-links">
+            <a href="/">Home</a>
+            <a href="/dashboard/blog-background-jobs-without-redis.html">Blog</a>
+            <a href="https://github.com/ferax564/rustqueue">GitHub</a>
+        </div>
+        <a class="btn btn-ghost" href="/dashboard">Open Dashboard</a>
+    </nav>
+</header>
+
+<main class="container">
+    <article class="blog-header">
+        <p class="eyebrow">Launch Post</p>
+        <h1>Background Jobs in Rust Without Redis</h1>
+        <p class="blog-meta">March 29, 2026 &middot; RustQueue v0.2.0</p>
+    </article>
+
+    <div class="blog-body">
+
+        <p><strong>What if adding background jobs to your Rust app was as simple as adding SQLite?</strong></p>
+
+        <p>Every Rust web application eventually needs background job processing. Send welcome emails. Generate reports. Process uploads. Retry failed API calls. And the standard answer is always the same: install Redis, set up a queue library, run a separate worker process, configure monitoring, add Redis to your Docker Compose, your CI, your staging environment, your production...</p>
+
+        <p>For most applications, that's overkill. You don't need a distributed message broker. You need a way to run tasks in the background that won't be lost if your process crashes.</p>
+
+        <p>Today we're releasing <strong>RustQueue v0.2.0</strong> &mdash; and it does exactly that.</p>
+
+        <h2>Three Lines of Code</h2>
+
+        <div class="blog-code"><pre><code><span class="kw">let</span> rq = RustQueue::redb(<span class="str">"./jobs.db"</span>)?.build()?;
+rq.push(<span class="str">"emails"</span>, <span class="str">"send-welcome"</span>, <span class="mac">json!</span>({<span class="str">"to"</span>: <span class="str">"user@a.com"</span>}), None).<span class="kw">await</span>?;
+
+<span class="cm">// That's it. The job is persisted to disk. It survives crashes.</span></code></pre></div>
+
+        <p>No Redis. No RabbitMQ. No Docker. No config file. No separate process. Just <code>cargo add rustqueue</code> and you have a persistent, crash-safe job queue embedded in your application.</p>
+
+        <p>The job is written to an embedded ACID database (redb). If your process crashes mid-flight, the job is still there when you restart. Retries, exponential backoff, and a dead-letter queue are built in.</p>
+
+        <h2>The Full Example</h2>
+
+        <div class="blog-code"><pre><code><span class="kw">use</span> rustqueue::RustQueue;
+<span class="kw">use</span> serde_json::<span class="mac">json!</span>;
+
+#[tokio::main]
+<span class="kw">async fn</span> <span class="fn">main</span>() -> anyhow::Result&lt;()&gt; {
+    <span class="kw">let</span> rq = RustQueue::redb(<span class="str">"./jobs.db"</span>)?.build()?;
+
+    <span class="cm">// Push a job</span>
+    <span class="kw">let</span> id = rq.push(<span class="str">"emails"</span>, <span class="str">"send-welcome"</span>,
+        <span class="mac">json!</span>({<span class="str">"to"</span>: <span class="str">"user@example.com"</span>}), None).<span class="kw">await</span>?;
+    println!(<span class="str">"Queued: {id}"</span>);
+
+    <span class="cm">// Pull and process</span>
+    <span class="kw">let</span> jobs = rq.pull(<span class="str">"emails"</span>, 1).<span class="kw">await</span>?;
+    println!(<span class="str">"Processing: {}"</span>, jobs[0].name);
+    rq.ack(jobs[0].id, None).<span class="kw">await</span>?;
+
+    Ok(())
+}</code></pre></div>
+
+        <p>Run it with <code>cargo run</code>. That's your first background job &mdash; processed, acknowledged, done. The <code>jobs.db</code> file persists everything. Kill the process, restart it, and your pending jobs are still there.</p>
+
+        <h2>Adding Background Jobs to an Existing Axum App</h2>
+
+        <p>Most Rust web apps are built on Axum. RustQueue v0.2.0 ships with a native Axum integration &mdash; the <code>RqState</code> extractor. Here's what it looks like to add background email processing to an existing web application:</p>
+
+        <div class="blog-code"><pre><code><span class="kw">use</span> axum::routing::post;
+<span class="kw">use</span> axum::{Json, Router};
+<span class="kw">use</span> rustqueue::axum_integration::RqState;
+<span class="kw">use</span> rustqueue::RustQueue;
+<span class="kw">use</span> serde_json::<span class="mac">json!</span>;
+<span class="kw">use</span> std::sync::Arc;
+
+<span class="kw">async fn</span> <span class="fn">enqueue_email</span>(rq: RqState, Json(body): Json&lt;serde_json::Value&gt;)
+    -> Json&lt;serde_json::Value&gt;
+{
+    <span class="kw">let</span> to = body[<span class="str">"to"</span>].as_str().unwrap_or(<span class="str">"unknown"</span>);
+    <span class="kw">let</span> id = rq.push(<span class="str">"emails"</span>, <span class="str">"send-welcome"</span>,
+        <span class="mac">json!</span>({<span class="str">"to"</span>: to}), None).<span class="kw">await</span>.unwrap();
+    Json(<span class="mac">json!</span>({<span class="str">"queued"</span>: true, <span class="str">"job_id"</span>: id.to_string()}))
+}
+
+#[tokio::main]
+<span class="kw">async fn</span> <span class="fn">main</span>() -> anyhow::Result&lt;()&gt; {
+    <span class="kw">let</span> rq = Arc::new(RustQueue::redb(<span class="str">"./jobs.db"</span>)?.build()?);
+    <span class="kw">let</span> app = Router::new()
+        .route(<span class="str">"/send-email"</span>, post(enqueue_email))
+        .with_state(rq);
+
+    <span class="kw">let</span> listener = tokio::net::TcpListener::bind(<span class="str">"0.0.0.0:3000"</span>).<span class="kw">await</span>?;
+    axum::serve(listener, app).<span class="kw">await</span>?;
+    Ok(())
+}</code></pre></div>
+
+        <p>The <code>RqState</code> extractor handles everything. Add it as a handler parameter and call <code>.push()</code>, <code>.pull()</code>, <code>.ack()</code> directly. No setup, no wiring, no boilerplate.</p>
+
+        <h2>Why Not Just Use Redis?</h2>
+
+        <table class="blog-table">
+            <thead>
+                <tr><th></th><th>RustQueue</th><th>Redis + BullMQ</th><th>RabbitMQ</th><th>Celery</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>External deps</td><td><strong>None</strong></td><td>Redis server</td><td>Erlang + RabbitMQ</td><td>Redis/RabbitMQ</td></tr>
+                <tr><td>Time to first job</td><td><strong>~60 seconds</strong></td><td>15&ndash;30 min</td><td>15&ndash;30 min</td><td>15&ndash;30 min</td></tr>
+                <tr><td>Deployment</td><td><strong>cargo add</strong></td><td>2+ services</td><td>2+ services</td><td>3+ services</td></tr>
+                <tr><td>Binary / footprint</td><td><strong>6.8 MB, 15 MB RAM</strong></td><td>N/A, ~100 MB+</td><td>N/A, ~100 MB+</td><td>N/A, ~200 MB+</td></tr>
+                <tr><td>Crash recovery</td><td><strong>ACID</strong></td><td>Configurable</td><td>Yes</td><td>Depends</td></tr>
+            </tbody>
+        </table>
+
+        <p>Redis is a fantastic tool. But running an entire Redis server just for background jobs is like renting a warehouse to store your grocery list. For most applications, an embedded queue that lives inside your process is the right abstraction.</p>
+
+        <h2>Start Embedded. Grow Into a Server.</h2>
+
+        <p>The best part: you're never locked in. When your application outgrows embedded mode, run the same engine as a standalone server &mdash; same data file, same guarantees, zero migration:</p>
+
+        <div class="blog-code"><pre><code><span class="cm"># Day 1: embedded in your app</span>
+<span class="kw">let</span> rq = RustQueue::redb(<span class="str">"./jobs.db"</span>)?.build()?;
+
+<span class="cm"># Day 30: standalone server, same data</span>
+$ rustqueue serve --storage ./jobs.db
+
+<span class="cm"># Day 60: workers in any language</span>
+<span class="kw">const</span> rq = <span class="kw">new</span> RustQueueClient(<span class="str">"http://localhost:6790"</span>);
+<span class="kw">await</span> rq.push(<span class="str">"emails"</span>, <span class="str">"welcome"</span>, { to: <span class="str">"user@a.com"</span> });</code></pre></div>
+
+        <p>Client SDKs for Node.js, Python, and Go are included &mdash; all zero-dependency. REST API, TCP protocol, WebSocket events, web dashboard, Prometheus metrics, Grafana dashboards &mdash; everything is built in.</p>
+
+        <h2>Performance</h2>
+
+        <p>Because we know you'll ask:</p>
+
+        <table class="blog-table">
+            <thead>
+                <tr><th>System</th><th>Produce</th><th>Consume</th><th>End-to-end</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><strong>RustQueue TCP</strong></td><td><strong>47,129/s</strong></td><td><strong>38,048/s</strong></td><td><strong>22,685/s</strong></td></tr>
+                <tr><td>RabbitMQ</td><td>47,588/s</td><td>5,367/s</td><td>4,686/s</td></tr>
+                <tr><td>Redis</td><td>9,337/s</td><td>9,511/s</td><td>4,951/s</td></tr>
+                <tr><td>BullMQ</td><td>7,559/s</td><td>6,690/s</td><td>1,978/s</td></tr>
+                <tr><td>Celery</td><td>3,168/s</td><td>1,589/s</td><td>893/s</td></tr>
+            </tbody>
+        </table>
+
+        <p>Neck-and-neck with RabbitMQ on produce. <strong>7.1x faster on consume. 4.8x faster end-to-end.</strong> With a 6.8 MB binary using 15 MB of RAM.</p>
+
+        <p>But performance isn't the point. The point is that you shouldn't need to think about your job queue. It should be invisible infrastructure &mdash; like SQLite is for databases.</p>
+
+        <blockquote>
+            <p>Think of RustQueue not as a replacement for RabbitMQ, but as a replacement for tokio::spawn.</p>
+        </blockquote>
+
+        <h2>Production Features</h2>
+
+        <p>This isn't a toy. RustQueue ships with everything you need for production:</p>
+
+        <p><strong>Retries &amp; backoff</strong> &mdash; fixed, linear, or exponential. Jobs that exhaust retries land in a dead-letter queue for inspection.</p>
+        <p><strong>Cron &amp; interval scheduling</strong> &mdash; built-in schedule engine with pause/resume.</p>
+        <p><strong>DAG workflows</strong> &mdash; job dependencies with cycle detection and cascade failure.</p>
+        <p><strong>Progress tracking</strong> &mdash; 0&ndash;100 progress with log messages and worker heartbeats.</p>
+        <p><strong>Webhooks</strong> &mdash; HMAC-SHA256 signed HTTP callbacks on job events.</p>
+        <p><strong>Observability</strong> &mdash; 15+ Prometheus metrics, pre-built Grafana dashboard, WebSocket event stream.</p>
+
+        <h2>Get Started</h2>
+
+        <div class="blog-cta">
+            <h2>Your First Background Job in 60 Seconds</h2>
+            <p>Add RustQueue to your project and push your first job:</p>
+            <code>cargo add rustqueue tokio serde_json anyhow</code>
+        </div>
+
+        <p>Then check out the <a href="https://github.com/ferax564/rustqueue/tree/main/examples" style="color: var(--accent-strong); font-weight: 700;">examples</a>: basic push/pull/ack, persistent queues, worker loops, and a full Axum web app with background jobs.</p>
+
+        <p>Star us on <a href="https://github.com/ferax564/rustqueue" style="color: var(--accent-strong); font-weight: 700;">GitHub</a>. We'd love to hear what you build.</p>
+
+    </div>
+</article>
+</main>
+
+<footer class="footer container">
+    <p>RustQueue &middot; Background jobs without infrastructure</p>
+    <p class="mono">MIT OR Apache-2.0</p>
+</footer>
+</body>
+</html>

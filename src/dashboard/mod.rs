@@ -30,9 +30,12 @@ pub fn routes() -> Router<Arc<AppState>> {
 
 /// Routes that should always be publicly accessible (no auth required).
 ///
-/// Currently only the marketing landing page at `GET /`.
+/// Currently only the marketing landing page at `GET /` and blog posts.
 pub fn landing_routes() -> Router<Arc<AppState>> {
-    Router::new().route("/", axum::routing::get(landing))
+    Router::new()
+        .route("/", axum::routing::get(landing))
+        .route("/blog/background-jobs-without-redis", axum::routing::get(blog_post_1))
+        .route("/examples", axum::routing::get(examples_page))
 }
 
 /// Routes for the authenticated dashboard SPA and its static assets.
@@ -47,6 +50,14 @@ pub fn dashboard_routes() -> Router<Arc<AppState>> {
 
 async fn landing() -> impl IntoResponse {
     serve_embedded("landing.html")
+}
+
+async fn blog_post_1() -> impl IntoResponse {
+    serve_embedded("blog-background-jobs-without-redis.html")
+}
+
+async fn examples_page() -> impl IntoResponse {
+    serve_embedded("examples.html")
 }
 
 async fn index() -> impl IntoResponse {
