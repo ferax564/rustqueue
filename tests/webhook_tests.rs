@@ -138,7 +138,7 @@ async fn test_webhook_event_filtering() {
 
     // This webhook should be listed
     assert_eq!(mgr.list().len(), 1);
-    assert_eq!(mgr.get(wh.id).unwrap().active, true);
+    assert!(mgr.get(wh.id).unwrap().active);
 }
 
 #[tokio::test]
