@@ -48,7 +48,10 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
       - name: Security audit
-        run: cargo audit
+        # RUSTSEC-2023-0071 (rsa Marvin attack): no upstream fix exists; reached
+        # only via the optional `postgres` feature (sqlx -> rsa). Default and
+        # embedded-library builds never compile it. Re-evaluate when rsa ships a fix.
+        run: cargo audit --ignore RUSTSEC-2023-0071
 
   benchmarks:
     runs-on: ubuntu-latest
