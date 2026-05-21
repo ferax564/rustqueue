@@ -24,7 +24,7 @@ jobs:
       - name: Run tests
         run: cargo test --verbose
       - name: Clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
       - name: Format check
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --check
@@ -38,7 +38,20 @@ jobs:
       - name: Test with SQLite
         run: cargo test --features sqlite
       - name: Clippy all features
-        run: cargo clippy --features sqlite,otel -- -D warnings
+        run: cargo clippy --all-targets --features sqlite,postgres,otel -- -D warnings
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Security audit
+        # RUSTSEC-2023-0071 (rsa Marvin attack): no upstream fix exists; reached
+        # only via the optional `postgres` feature (sqlx -> rsa). Default and
+        # embedded-library builds never compile it. Re-evaluate when rsa ships a fix.
+        run: cargo audit --ignore RUSTSEC-2023-0071
 
   benchmarks:
     runs-on: ubuntu-latest

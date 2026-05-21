@@ -604,7 +604,7 @@ mod tests {
         let (queue, decoded) = decode_push_batch(&encoded).unwrap();
         assert_eq!(queue, "bulk");
         assert_eq!(decoded.len(), 1000);
-        assert_eq!(decoded[999], format!("msg-999").into_bytes());
+        assert_eq!(decoded[999], "msg-999".to_string().into_bytes());
     }
 
     #[test]
