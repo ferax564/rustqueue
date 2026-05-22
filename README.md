@@ -77,6 +77,35 @@ cargo run --example axum_background_jobs  # Background jobs in an Axum web app
 - **Client SDKs** — Node.js, Python, Go — zero runtime dependencies each.
 - **Observability** — 15+ Prometheus metrics, pre-built Grafana dashboard.
 
+## Production
+
+Jobs survive `kill -9`. Retries, backoff, and crash recovery work embedded — no infrastructure required.
+
+`run_worker` is the managed entry point: it handles pull, ack/fail, heartbeats, and housekeeping in one call:
+
+```rust
+use rustqueue::RustQueue;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let rq = RustQueue::redb("./jobs.db")?.build()?;
+
+    // Runs until Ctrl-C. Auto-acks on Ok, fails (→ retry/DLQ) on Err.
+    // Auto-heartbeats long-running jobs so they aren't falsely reclaimed.
+    rq.run_worker("emails", |job| async move {
+        send_email(&job.data).await?;
+        Ok::<(), anyhow::Error>(())
+    })
+    .await?;
+
+    Ok(())
+}
+```
+
+When embedding inside a web server, pass your server's shutdown signal to `run_worker_with_shutdown` — the in-flight job always completes before the worker stops.
+
+For full coverage of durability modes, retry/DLQ tuning, housekeeping, and a step-by-step crash-recovery walkthrough, see [docs/production.md](docs/production.md).
+
 ## Server Mode
 
 When you need a standalone deployment:
