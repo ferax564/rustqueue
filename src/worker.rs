@@ -27,6 +27,19 @@ fn truncate_err(mut s: String) -> String {
     s
 }
 
+/// Aborts the wrapped task when dropped. Tokio's `JoinHandle::drop` only
+/// *detaches* a task — so without this guard, an early `?` return or a panic
+/// in the user handler would leave the heartbeat / shutdown-watcher task
+/// running. A leaked heartbeat task keeps the job's heartbeat fresh forever,
+/// which would prevent stall detection from ever reclaiming the job.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 impl RustQueue {
     /// Run a managed worker on `queue` until Ctrl-C: pulls jobs, runs `handler`,
     /// acks on `Ok`, fails (engine retries/DLQ) on `Err`. Ensures housekeeping is
@@ -61,15 +74,21 @@ impl RustQueue {
     {
         self.start_housekeeping()?;
         let stop = Arc::new(AtomicBool::new(false));
-        {
+        // Aborted on function exit (incl. early `?` return) so the watcher does
+        // not outlive the worker when `shutdown` is a never-resolving future
+        // such as Ctrl-C.
+        let _watcher = {
             let stop = stop.clone();
-            tokio::spawn(async move {
+            AbortOnDrop(tokio::spawn(async move {
                 shutdown.await;
                 stop.store(true, Ordering::SeqCst);
-            });
-        }
+            }))
+        };
 
-        let hb_interval = std::cmp::max(self.stall_timeout / 3, Duration::from_secs(1));
+        // Heartbeat well inside the stall window: half the timeout, clamped so we
+        // neither hammer storage (floor) nor drift on long timeouts (ceiling).
+        let hb_interval =
+            (self.stall_timeout / 2).clamp(Duration::from_millis(200), Duration::from_secs(30));
 
         loop {
             if stop.load(Ordering::SeqCst) {
@@ -82,9 +101,12 @@ impl RustQueue {
             }
             for job in jobs {
                 let job_id = job.id;
-                let hb = {
+                // Heartbeat the in-flight job so stall detection does not reclaim
+                // a healthy long-running job. The guard aborts the task on every
+                // exit path — including a panic in the user handler.
+                let _hb = {
                     let rq = self.clone();
-                    tokio::spawn(async move {
+                    AbortOnDrop(tokio::spawn(async move {
                         let mut tick = tokio::time::interval(hb_interval);
                         tick.tick().await; // consume immediate tick
                         loop {
@@ -93,10 +115,9 @@ impl RustQueue {
                                 break;
                             }
                         }
-                    })
+                    }))
                 };
                 let outcome = handler(job).await;
-                hb.abort();
                 match outcome {
                     Ok(()) => {
                         if let Err(e) = self.ack(job_id, None).await {

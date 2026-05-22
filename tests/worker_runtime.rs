@@ -121,3 +121,52 @@ async fn long_handler_is_not_reclaimed_as_stalled() {
     use rustqueue::JobState;
     assert!(matches!(job.state, JobState::Completed));
 }
+
+#[tokio::test]
+async fn panicking_handler_does_not_leave_ghost_heartbeat() {
+    // A panic in the handler must abort the heartbeat task. Otherwise a leaked
+    // heartbeat keeps the job's heartbeat fresh forever and stall detection can
+    // never reclaim it — the job would be stuck Active permanently.
+    let rq = RustQueue::memory()
+        .tick_interval(Duration::from_millis(100))
+        .stall_timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
+    rq.start_housekeeping().unwrap();
+    let id = rq.push("p", "job", json!({}), None).await.unwrap();
+    let worker = {
+        let rq = rq.clone();
+        tokio::spawn(async move {
+            rq.run_worker_with_shutdown(
+                "p",
+                |_job| async {
+                    panic!("boom");
+                    #[allow(unreachable_code)]
+                    Ok::<(), String>(())
+                },
+                std::future::pending::<()>(),
+            )
+            .await
+        })
+    };
+    // The worker task unwinds on the panic; its heartbeat guard aborts the task.
+    let _ = worker.await;
+    // With the heartbeat stopped, stall detection reclaims the job (leaving the
+    // Active state) within ~stall_timeout. Without the AbortOnDrop guard the
+    // ghost heartbeat would keep it Active and this loop would time out.
+    let mut reclaimed = false;
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Some(j) = rq.get_job(id).await.unwrap() {
+            use rustqueue::JobState;
+            if !matches!(j.state, JobState::Active) {
+                reclaimed = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        reclaimed,
+        "job stuck Active — ghost heartbeat prevented stall reclaim"
+    );
+}
