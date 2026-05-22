@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use crate::config::RetentionConfig;
 use crate::engine::error::RustQueueError;
-use crate::engine::models::{Job, JobId, QueueCounts};
+use crate::engine::models::{Job, JobId, QueueCounts, Schedule};
 use crate::engine::plugins::WorkerRegistry;
 use crate::engine::queue::{FailResult, JobOptions, QueueInfo, QueueManager};
 use crate::housekeeping::HousekeepingState;
@@ -295,5 +295,53 @@ impl RustQueue {
         message: Option<String>,
     ) -> Result<(), RustQueueError> {
         self.manager.update_progress(id, progress, message).await
+    }
+
+    /// Send a heartbeat for an active job, resetting its stall timer.
+    ///
+    /// The job must be in `Active` state; otherwise an error is returned.
+    pub async fn heartbeat(&self, id: JobId) -> Result<(), RustQueueError> {
+        self.manager.heartbeat(id).await
+    }
+
+    /// List jobs in the dead-letter queue for the given queue name.
+    ///
+    /// Returns up to `limit` DLQ jobs ordered by most-recently-failed.
+    pub async fn get_dlq_jobs(&self, queue: &str, limit: u32) -> Result<Vec<Job>, RustQueueError> {
+        self.manager.get_dlq_jobs(queue, limit).await
+    }
+
+    /// Create a new recurring schedule.
+    ///
+    /// The schedule will be picked up on the next housekeeping tick.
+    pub async fn create_schedule(&self, schedule: &Schedule) -> Result<(), RustQueueError> {
+        self.manager.create_schedule(schedule).await
+    }
+
+    /// List all registered schedules.
+    pub async fn list_schedules(&self) -> Result<Vec<Schedule>, RustQueueError> {
+        self.manager.list_schedules().await
+    }
+
+    /// Get a single schedule by name, or `None` if it does not exist.
+    pub async fn get_schedule(&self, name: &str) -> Result<Option<Schedule>, RustQueueError> {
+        self.manager.get_schedule(name).await
+    }
+
+    /// Delete a schedule by name.
+    ///
+    /// No-ops gracefully if the schedule does not exist.
+    pub async fn delete_schedule(&self, name: &str) -> Result<(), RustQueueError> {
+        self.manager.delete_schedule(name).await
+    }
+
+    /// Pause a schedule by name, halting further job creation.
+    pub async fn pause_schedule(&self, name: &str) -> Result<(), RustQueueError> {
+        self.manager.pause_schedule(name).await
+    }
+
+    /// Resume a previously paused schedule.
+    pub async fn resume_schedule(&self, name: &str) -> Result<(), RustQueueError> {
+        self.manager.resume_schedule(name).await
     }
 }

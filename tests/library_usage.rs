@@ -123,3 +123,51 @@ async fn dropping_all_clones_aborts_housekeeping() {
     drop(rq2);
     tokio::time::sleep(Duration::from_millis(100)).await;
 }
+
+// ── Schedule helpers ─────────────────────────────────────────────────────────
+
+fn make_interval_schedule(name: &str, queue: &str, every_ms: u64) -> rustqueue::Schedule {
+    use chrono::Utc;
+    rustqueue::Schedule {
+        name: name.to_string(),
+        queue: queue.to_string(),
+        job_name: name.to_string(),
+        job_data: serde_json::json!({}),
+        job_options: None,
+        cron_expr: None,
+        every_ms: Some(every_ms),
+        timezone: None,
+        max_executions: None,
+        execution_count: 0,
+        paused: false,
+        last_run_at: None,
+        next_run_at: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
+#[tokio::test]
+async fn embedded_schedule_fires_via_housekeeping() {
+    use rustqueue::RustQueue;
+    use std::time::Duration;
+    let rq = RustQueue::memory()
+        .tick_interval(Duration::from_millis(50))
+        .build()
+        .unwrap();
+    rq.start_housekeeping().unwrap();
+    let schedule = make_interval_schedule("tick-sched", "scheduled_q", 100);
+    rq.create_schedule(&schedule).await.unwrap();
+    let listed = rq.list_schedules().await.unwrap();
+    assert!(listed.iter().any(|s| s.name == "tick-sched"));
+    let mut fired = false;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let counts = rq.get_queue_stats("scheduled_q").await.unwrap();
+        if counts.waiting + counts.active + counts.completed > 0 {
+            fired = true;
+            break;
+        }
+    }
+    assert!(fired, "schedule never fired a job in embedded mode");
+}
