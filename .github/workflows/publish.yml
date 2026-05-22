@@ -10,6 +10,8 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # required for the Create GitHub Release step
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
