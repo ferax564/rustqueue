@@ -31,6 +31,7 @@ mod housekeeping;
 pub mod metrics_registry;
 pub mod protocol;
 pub mod storage;
+pub mod worker;
 
 // Re-export core types for library consumers
 pub use builder::RustQueue;

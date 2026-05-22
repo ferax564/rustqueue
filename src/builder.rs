@@ -40,7 +40,7 @@ use crate::storage::{
 pub struct RustQueue {
     manager: Arc<QueueManager>,
     housekeeping: Arc<HousekeepingState>,
-    stall_timeout: Duration,
+    pub(crate) stall_timeout: Duration,
     tick_interval: Duration,
 }
 
