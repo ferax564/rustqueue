@@ -27,6 +27,7 @@ pub mod builder;
 pub mod config;
 pub mod dashboard;
 pub mod engine;
+mod housekeeping;
 pub mod metrics_registry;
 pub mod protocol;
 pub mod storage;
