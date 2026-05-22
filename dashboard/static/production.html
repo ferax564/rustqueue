@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="RustQueue production guide: crash-only design, durability modes, run_worker, retries, crash recovery, and graceful shutdown.">
+    <title>Production Guide | RustQueue</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Manrope:wght@400;500;700;800&family=Syne:wght@500;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/dashboard/landing.css">
+    <style>
+/* ── Production guide styles ───────────────────────────────────────── */
+.docs-header {
+    margin-top: 2rem;
+    margin-bottom: 2.5rem;
+}
+
+.docs-header h1 {
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+    font-size: clamp(2rem, 5vw, 3rem);
+    line-height: 1.1;
+    margin: 0;
+}
+
+.docs-header h1 span {
+    color: var(--accent-alt-strong);
+}
+
+.docs-header p {
+    color: var(--muted);
+    margin-top: 0.5rem;
+    font-size: 1.05rem;
+}
+
+.guide-layout {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 3rem;
+    align-items: start;
+    margin-bottom: 4rem;
+}
+
+.toc {
+    position: sticky;
+    top: 6rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    padding: 1.25rem;
+}
+
+.toc h3 {
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    margin: 0 0 0.75rem;
+}
+
+.toc ol {
+    margin: 0;
+    padding: 0 0 0 1.1rem;
+    list-style: decimal;
+}
+
+.toc li {
+    margin-bottom: 0.4rem;
+}
+
+.toc a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.88rem;
+    font-weight: 600;
+    line-height: 1.4;
+    display: block;
+}
+
+.toc a:hover {
+    color: var(--accent-strong);
+}
+
+.guide-content section {
+    margin-bottom: 3rem;
+}
+
+.guide-content section h2 {
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+    font-size: 1.55rem;
+    margin: 0 0 0.75rem;
+    padding-top: 0.5rem;
+}
+
+.guide-content section > p {
+    color: var(--muted);
+    margin: 0 0 1rem;
+    font-size: 0.97rem;
+    line-height: 1.65;
+    max-width: 72ch;
+}
+
+.guide-content ul,
+.guide-content ol {
+    color: var(--muted);
+    margin: 0 0 1rem;
+    padding-left: 1.4rem;
+    font-size: 0.95rem;
+    line-height: 1.7;
+    max-width: 72ch;
+}
+
+.guide-content li {
+    margin-bottom: 0.3rem;
+}
+
+.guide-content code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.85em;
+    background: rgba(15, 150, 129, 0.1);
+    color: var(--accent-strong);
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+}
+
+.callout {
+    border-left: 3px solid var(--accent);
+    background: rgba(15, 150, 129, 0.06);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    padding: 0.9rem 1.1rem;
+    margin: 1rem 0;
+    font-size: 0.93rem;
+    color: var(--ink);
+    max-width: 72ch;
+}
+
+.callout strong {
+    color: var(--accent-strong);
+}
+
+.callout.warn {
+    border-left-color: var(--accent-alt);
+    background: rgba(232, 115, 55, 0.06);
+}
+
+.callout.warn strong {
+    color: var(--accent-alt-strong);
+}
+
+.ex-code {
+    background: var(--ink);
+    border-radius: var(--radius-sm);
+    padding: 1.25rem 1.5rem;
+    overflow-x: auto;
+    margin: 0.75rem 0;
+    max-width: 72ch;
+}
+
+.ex-code pre {
+    margin: 0;
+}
+
+.ex-code code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.85rem;
+    line-height: 1.65;
+    color: #e2e8f0;
+    background: none;
+    padding: 0;
+}
+
+.ex-code .kw { color: #c792ea; }
+.ex-code .str { color: #c3e88d; }
+.ex-code .cm { color: #637777; font-style: italic; }
+.ex-code .fn { color: #82aaff; }
+.ex-code .mac { color: #89ddff; }
+.ex-code .type { color: #ffcb6b; }
+
+.data-table {
+    width: 100%;
+    max-width: 72ch;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+    margin: 1rem 0;
+}
+
+.data-table th {
+    text-align: left;
+    padding: 0.55rem 0.9rem;
+    background: rgba(17, 36, 42, 0.05);
+    border-bottom: 2px solid var(--line);
+    font-weight: 700;
+    color: var(--ink);
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.data-table td {
+    padding: 0.55rem 0.9rem;
+    border-bottom: 1px solid var(--line);
+    color: var(--muted);
+    vertical-align: top;
+    line-height: 1.5;
+}
+
+.data-table tr:last-child td {
+    border-bottom: none;
+}
+
+.data-table td:first-child,
+.data-table td strong {
+    color: var(--ink);
+    font-weight: 600;
+}
+
+.data-table code {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.82em;
+    background: rgba(15, 150, 129, 0.1);
+    color: var(--accent-strong);
+    padding: 0.1em 0.3em;
+    border-radius: 3px;
+}
+
+.step-list {
+    counter-reset: steps;
+    list-style: none;
+    padding: 0;
+    margin: 1rem 0;
+    max-width: 72ch;
+}
+
+.step-list li {
+    counter-increment: steps;
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+    align-items: flex-start;
+}
+
+.step-list li::before {
+    content: counter(steps);
+    display: flex;
+    flex-shrink: 0;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 50%;
+    background: var(--accent);
+    color: white;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.9rem;
+    margin-top: 0.1rem;
+}
+
+.step-list .step-body h4 {
+    font-family: "Syne", "Trebuchet MS", sans-serif;
+    font-size: 1rem;
+    margin: 0 0 0.3rem;
+}
+
+.step-list .step-body p {
+    color: var(--muted);
+    font-size: 0.9rem;
+    margin: 0 0 0.5rem;
+    line-height: 1.6;
+}
+
+.tag {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    margin-bottom: 0.75rem;
+}
+
+.tag-prod { background: rgba(15,150,129,0.12); color: var(--accent-strong); }
+
+@media (max-width: 860px) {
+    .guide-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .toc {
+        position: static;
+    }
+}
+    </style>
+</head>
+<body>
+<div class="scene" aria-hidden="true">
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+    <div class="orb orb-c"></div>
+</div>
+
+<header class="nav-shell">
+    <nav class="container nav">
+        <a href="/" class="logo" aria-label="RustQueue home">
+            <span class="logo-mark"></span>
+            <span class="logo-text">RustQueue</span>
+        </a>
+        <div class="nav-links">
+            <a href="/">Home</a>
+            <a href="/examples">Examples</a>
+            <a href="/production">Production</a>
+            <a href="/blog/background-jobs-without-redis">Launch Post</a>
+            <a href="/blog/crash-safe-email-queue">Email Queue Tutorial</a>
+            <a href="https://github.com/ferax564/rustqueue">GitHub</a>
+        </div>
+        <a class="btn btn-ghost" href="/dashboard">Open Dashboard</a>
+    </nav>
+</header>
+
+<main class="container">
+    <div class="docs-header reveal">
+        <p class="eyebrow">Guide</p>
+        <h1>Running RustQueue <span>in production</span></h1>
+        <p>Durability tradeoffs, managed workers, retries, crash recovery, and graceful shutdown &mdash; without a message broker.</p>
+    </div>
+
+    <div class="guide-layout">
+        <nav class="toc" aria-label="Table of contents">
+            <h3>Contents</h3>
+            <ol>
+                <li><a href="#crash-only">Crash-only design</a></li>
+                <li><a href="#durability">Durability modes</a></li>
+                <li><a href="#workers">Workers</a></li>
+                <li><a href="#retries">Retries &amp; DLQ</a></li>
+                <li><a href="#housekeeping">Housekeeping</a></li>
+                <li><a href="#shutdown">Graceful shutdown</a></li>
+                <li><a href="#walkthrough">Crash-recovery walkthrough</a></li>
+            </ol>
+        </nav>
+
+        <div class="guide-content">
+
+            <section id="crash-only" class="reveal">
+                <span class="tag tag-prod">Foundation</span>
+                <h2>Crash-only design</h2>
+                <p>Every job is persisted to storage before it is acknowledged. There is no in-memory state that would be lost on a crash. You can <code>kill -9</code> the process at any point and no committed work will be silently dropped.</p>
+                <p>Delivery is <strong>at-least-once</strong>: a job being processed when the process died will be retried automatically. Handlers should be idempotent, or use the <code>unique_key</code> field to deduplicate on re-delivery.</p>
+            </section>
+
+            <section id="durability" class="reveal">
+                <span class="tag tag-prod">Storage</span>
+                <h2>Durability modes</h2>
+                <p>Choose the backend that matches your availability/throughput tradeoff.</p>
+
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Backend</th>
+                            <th>Durability</th>
+                            <th>Throughput</th>
+                            <th>Crash loss window</th>
+                            <th>When to use</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong><code>redb</code></strong> (default)</td>
+                            <td>ACID, fsync per write</td>
+                            <td>~314 push/s raw</td>
+                            <td>None &mdash; zero data loss</td>
+                            <td>Default production choice. Correct and zero-config.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Buffered redb</strong> (<code>.with_write_coalescing</code>)</td>
+                            <td>Batched fsync</td>
+                            <td>~19 K ops/s</td>
+                            <td>One flush interval</td>
+                            <td>High-write workloads where small loss windows are acceptable.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>Hybrid</strong> (<code>RustQueue::hybrid</code>)</td>
+                            <td>In-memory hot path + periodic snapshot</td>
+                            <td>300 K+ ops/s</td>
+                            <td>Up to <code>snapshot_interval</code></td>
+                            <td>Maximum throughput; explicitly trade durability for speed.</td>
+                        </tr>
+                        <tr>
+                            <td><strong>In-memory</strong> (<code>RustQueue::memory</code>)</td>
+                            <td>None &mdash; lost on drop</td>
+                            <td>Fastest</td>
+                            <td>Total</td>
+                            <td>Tests and ephemeral workloads only.</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="ex-code"><pre><code><span class="cm">// Safest: ACID redb</span>
+<span class="kw">let</span> rq = RustQueue::<span class="fn">redb</span>(<span class="str">"./jobs.db"</span>)?.<span class="fn">build</span>()?;
+
+<span class="cm">// Faster writes, tiny loss window:</span>
+<span class="kw">use</span> rustqueue::storage::BufferedRedbConfig;
+<span class="kw">let</span> rq = RustQueue::<span class="fn">redb</span>(<span class="str">"./jobs.db"</span>)?
+    .<span class="fn">with_write_coalescing</span>(<span class="type">BufferedRedbConfig</span>::default())
+    .<span class="fn">build</span>()?;
+
+<span class="cm">// Maximum throughput, explicit durability tradeoff:</span>
+<span class="kw">let</span> rq = RustQueue::<span class="fn">hybrid</span>(<span class="str">"./jobs.db"</span>)?.<span class="fn">build</span>()?;</code></pre></div>
+            </section>
+
+            <section id="workers" class="reveal">
+                <span class="tag tag-prod">Workers</span>
+                <h2>Workers</h2>
+                <p><code>run_worker</code> is the managed entry point for processing jobs. It replaces a hand-rolled <code>pull</code> / <code>ack</code> / <code>fail</code> loop and handles operational details automatically:</p>
+                <ul>
+                    <li><strong>Auto-acks</strong> a job when the handler returns <code>Ok(())</code>.</li>
+                    <li><strong>Auto-fails</strong> a job (triggering retry/DLQ logic) when the handler returns <code>Err(e)</code>.</li>
+                    <li><strong>Auto-heartbeats</strong> the in-flight job so stall detection does not reclaim a healthy long-running job.</li>
+                    <li><strong>Starts housekeeping</strong> automatically on first call &mdash; no separate setup required.</li>
+                </ul>
+
+                <div class="ex-code"><pre><code><span class="kw">use</span> rustqueue::RustQueue;
+
+#[tokio::main]
+<span class="kw">async fn</span> <span class="fn">main</span>() -> anyhow::Result&lt;()&gt; {
+    <span class="kw">let</span> rq = RustQueue::<span class="fn">redb</span>(<span class="str">"./jobs.db"</span>)?.<span class="fn">build</span>()?;
+
+    rq.<span class="fn">run_worker</span>(<span class="str">"emails"</span>, |job| async move {
+        println!(<span class="str">"sending email: {}"</span>, job.data[<span class="str">"to"</span>]);
+        <span class="cm">// return Ok to ack, Err to fail (&rarr; retry or DLQ)</span>
+        Ok::&lt;(), String&gt;(())
+    })
+    .await?;
+
+    Ok(())
+}</code></pre></div>
+
+                <p><code>run_worker</code> runs until Ctrl-C and finishes the in-flight job before returning.</p>
+
+                <h3 style="font-family:'Syne',sans-serif;font-size:1.1rem;margin:1.5rem 0 0.5rem;">Embedding in a web server</h3>
+                <p>Use <code>run_worker_with_shutdown</code> to stop the worker when a server shuts down rather than on Ctrl-C:</p>
+
+                <div class="ex-code"><pre><code><span class="kw">use</span> tokio::sync::oneshot;
+
+<span class="kw">let</span> (tx, rx) = oneshot::<span class="fn">channel</span>::&lt;()&gt;();
+<span class="cm">// In your server shutdown handler: tx.send(()).ok();</span>
+
+tokio::<span class="fn">spawn</span>(<span class="kw">async</span> move {
+    rq.<span class="fn">run_worker_with_shutdown</span>(<span class="str">"emails"</span>, handler, <span class="kw">async</span> {
+        rx.<span class="kw">await</span>.ok();
+    })
+    .<span class="kw">await</span>
+    .<span class="fn">expect</span>(<span class="str">"worker failed"</span>);
+});</code></pre></div>
+
+                <div class="callout warn">
+                    <strong>CPU-bound handlers:</strong> A handler that never <code>.await</code>s will block the tokio thread and prevent heartbeats from firing. After <code>stall_timeout</code> the job will be reclaimed. Wrap CPU-intensive sections with <code>tokio::task::spawn_blocking</code>, or raise <code>stall_timeout</code>.
+                </div>
+            </section>
+
+            <section id="retries" class="reveal">
+                <span class="tag tag-prod">Reliability</span>
+                <h2>Retries &amp; DLQ</h2>
+                <p>Every job carries retry configuration. The defaults:</p>
+
+                <table class="data-table" style="max-width:40ch">
+                    <thead>
+                        <tr><th>Setting</th><th>Default</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>max_attempts</code></td><td>3</td></tr>
+                        <tr><td><code>backoff</code></td><td>Exponential</td></tr>
+                        <tr><td><code>backoff_delay_ms</code></td><td>1 000 ms</td></tr>
+                    </tbody>
+                </table>
+
+                <p>When a job fails (handler returns <code>Err</code>, or stall detection fires), the engine applies backoff and re-queues &mdash; unless <code>attempt &ge; max_attempts</code>, at which point the job moves to the dead-letter queue.</p>
+
+                <table class="data-table">
+                    <thead>
+                        <tr><th>Strategy</th><th>Delay formula</th><th>Example (base = 1 s)</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>Fixed</code></td><td><code>base</code></td><td>1 s, 1 s, 1 s</td></tr>
+                        <tr><td><code>Linear</code></td><td><code>base &times; attempt</code></td><td>1 s, 2 s, 3 s</td></tr>
+                        <tr><td><code>Exponential</code> (default)</td><td><code>base &times; 2^(attempt-1)</code></td><td>1 s, 2 s, 4 s</td></tr>
+                    </tbody>
+                </table>
+
+                <h3 style="font-family:'Syne',sans-serif;font-size:1.1rem;margin:1.5rem 0 0.5rem;">Inspecting the DLQ</h3>
+                <div class="ex-code"><pre><code><span class="kw">let</span> dead = rq.<span class="fn">get_dlq_jobs</span>(<span class="str">"emails"</span>, 50).<span class="kw">await</span>?;
+<span class="kw">for</span> job <span class="kw">in</span> dead {
+    println!(<span class="str">"{}: {:?}"</span>, job.id, job.last_error);
+}</code></pre></div>
+            </section>
+
+            <section id="housekeeping" class="reveal">
+                <span class="tag tag-prod">Operations</span>
+                <h2>Housekeeping</h2>
+                <p>The housekeeping loop is a background tokio task (default tick: 1 s) that drives retries, schedules, and crash recovery. <code>run_worker</code> starts it automatically. If you use <code>pull</code>/<code>ack</code> directly, call it explicitly:</p>
+
+                <div class="ex-code"><pre><code><span class="cm">// Call once after building; safe to call multiple times (idempotent).</span>
+rq.<span class="fn">start_housekeeping</span>()?;</code></pre></div>
+
+                <div class="callout">
+                    <strong>Required for correctness:</strong> without housekeeping, delayed jobs never become runnable, stalled jobs stay stuck forever, and schedules never fire.
+                </div>
+
+                <h3 style="font-family:'Syne',sans-serif;font-size:1.1rem;margin:1.5rem 0 0.5rem;">What it does each tick</h3>
+                <ul>
+                    <li>Promotes <code>Delayed</code> &rarr; <code>Waiting</code> when delay expires.</li>
+                    <li>Fires cron and interval schedules that are due.</li>
+                    <li>Fails jobs that have exceeded <code>timeout_ms</code>.</li>
+                    <li>Detects stalled <code>Active</code> jobs (no heartbeat within <code>stall_timeout</code>).</li>
+                    <li>Refreshes queue depth metrics.</li>
+                    <li>Cleans up expired completed/failed/DLQ jobs (every ~1 min).</li>
+                </ul>
+
+                <h3 style="font-family:'Syne',sans-serif;font-size:1.1rem;margin:1.5rem 0 0.5rem;">Tuning</h3>
+                <div class="ex-code"><pre><code><span class="kw">use</span> std::time::Duration;
+
+<span class="kw">let</span> rq = RustQueue::<span class="fn">redb</span>(<span class="str">"./jobs.db"</span>)?
+    .<span class="fn">stall_timeout</span>(Duration::<span class="fn">from_secs</span>(60))    <span class="cm">// default: 30 s</span>
+    .<span class="fn">tick_interval</span>(Duration::<span class="fn">from_millis</span>(500))  <span class="cm">// default: 1 s</span>
+    .<span class="fn">build</span>()?;</code></pre></div>
+            </section>
+
+            <section id="shutdown" class="reveal">
+                <span class="tag tag-prod">Lifecycle</span>
+                <h2>Graceful shutdown</h2>
+                <p><code>run_worker</code> catches Ctrl-C and finishes the in-flight job before returning. For programmatic shutdown (e.g., Axum shutdown signal):</p>
+
+                <div class="ex-code"><pre><code><span class="kw">use</span> tokio::sync::watch;
+
+<span class="kw">let</span> (shutdown_tx, shutdown_rx) = watch::<span class="fn">channel</span>(<span class="kw">false</span>);
+
+rq.<span class="fn">run_worker_with_shutdown</span>(<span class="str">"work"</span>, handler, <span class="kw">async</span> move {
+    shutdown_rx.<span class="fn">changed</span>().<span class="kw">await</span>.ok();
+})
+.<span class="kw">await</span>?;
+
+<span class="cm">// Elsewhere, to trigger shutdown:</span>
+shutdown_tx.<span class="fn">send</span>(<span class="kw">true</span>).ok();</code></pre></div>
+
+                <p>Jobs that have not yet been pulled remain in <code>Waiting</code> state and will be picked up on the next startup. No work is lost.</p>
+            </section>
+
+            <section id="walkthrough" class="reveal">
+                <span class="tag tag-prod">Tutorial</span>
+                <h2>Crash-recovery walkthrough</h2>
+                <p>The <code>crash_recovery</code> example demonstrates the full lifecycle: push a job, crash mid-processing, restart, and watch the job complete automatically.</p>
+
+                <ol class="step-list">
+                    <li>
+                        <div class="step-body">
+                            <h4>Start the worker (Terminal 1)</h4>
+                            <p>Uses a short <code>stall_timeout</code> of 3 s so you don&apos;t wait long.</p>
+                            <div class="ex-code"><pre><code>cargo run --example crash_recovery -- worker</code></pre></div>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="step-body">
+                            <h4>Push a job (Terminal 2)</h4>
+                            <div class="ex-code"><pre><code>cargo run --example crash_recovery -- push</code></pre></div>
+                            <p>The worker picks it up and logs progress steps.</p>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="step-body">
+                            <h4>Simulate a crash</h4>
+                            <p>While the job is mid-run, kill the worker process:</p>
+                            <div class="ex-code"><pre><code>kill -9 &lt;pid printed at startup&gt;</code></pre></div>
+                            <p>The job is now <code>Active</code> with no heartbeat. The database still holds it.</p>
+                        </div>
+                    </li>
+                    <li>
+                        <div class="step-body">
+                            <h4>Restart and watch recovery</h4>
+                            <div class="ex-code"><pre><code>cargo run --example crash_recovery -- worker</code></pre></div>
+                            <p>After ~3 s, housekeeping detects no heartbeat, fails the job, and re-queues it. The new worker picks it up and completes it. No manual intervention. No data loss. No message broker.</p>
+                        </div>
+                    </li>
+                </ol>
+
+                <div class="callout warn">
+                    <strong>Note:</strong> each crash consumes one retry attempt. With <code>max_attempts=3</code> (the default), a job killed three times will land in the DLQ. Raise <code>max_attempts</code> for workloads that may experience frequent infrastructure interruptions.
+                </div>
+            </section>
+
+        </div><!-- /.guide-content -->
+    </div><!-- /.guide-layout -->
+</main>
+
+<footer class="container footer">
+    <span>RustQueue &mdash; MIT / Apache-2.0</span>
+    <span>
+        <a href="https://github.com/ferax564/rustqueue" style="color:var(--accent-strong);text-decoration:none;font-weight:700;">GitHub</a>
+        &nbsp;&middot;&nbsp;
+        <a href="https://crates.io/crates/rustqueue" style="color:var(--accent-strong);text-decoration:none;font-weight:700;">crates.io</a>
+    </span>
+</footer>
+</body>
+</html>

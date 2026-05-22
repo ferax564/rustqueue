@@ -43,6 +43,7 @@ pub fn landing_routes() -> Router<Arc<AppState>> {
             axum::routing::get(blog_post_2),
         )
         .route("/examples", axum::routing::get(examples_page))
+        .route("/production", axum::routing::get(production_page))
 }
 
 /// Routes for the authenticated dashboard SPA and its static assets.
@@ -69,6 +70,10 @@ async fn blog_post_2() -> impl IntoResponse {
 
 async fn examples_page() -> impl IntoResponse {
     serve_embedded("examples.html")
+}
+
+async fn production_page() -> impl IntoResponse {
+    serve_embedded("production.html")
 }
 
 async fn index() -> impl IntoResponse {

@@ -16,11 +16,15 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
+use crate::config::RetentionConfig;
 use crate::engine::error::RustQueueError;
-use crate::engine::models::{Job, JobId, QueueCounts};
+use crate::engine::models::{Job, JobId, QueueCounts, Schedule};
 use crate::engine::plugins::WorkerRegistry;
 use crate::engine::queue::{FailResult, JobOptions, QueueInfo, QueueManager};
+use crate::housekeeping::HousekeepingState;
 use crate::storage::{
     BufferedRedbConfig, BufferedRedbStorage, HybridConfig, HybridStorage, MemoryStorage,
     RedbStorage, StorageBackend,
@@ -32,8 +36,12 @@ use crate::storage::{
 /// [`RustQueue::redb(path)`] for a persistent file-backed backend.
 ///
 /// All methods delegate to an internal [`QueueManager`].
+#[derive(Clone)]
 pub struct RustQueue {
-    manager: QueueManager,
+    manager: Arc<QueueManager>,
+    housekeeping: Arc<HousekeepingState>,
+    pub(crate) stall_timeout: Duration,
+    tick_interval: Duration,
 }
 
 /// Builder for constructing a [`RustQueue`] instance.
@@ -45,6 +53,8 @@ pub struct RustQueueBuilder {
     buffered_config: Option<BufferedRedbConfig>,
     hybrid_config: Option<HybridConfig>,
     worker_registry: Option<Arc<WorkerRegistry>>,
+    stall_timeout: Duration,
+    tick_interval: Duration,
 }
 
 impl RustQueue {
@@ -58,6 +68,8 @@ impl RustQueue {
             buffered_config: None,
             hybrid_config: None,
             worker_registry: None,
+            stall_timeout: Duration::from_secs(30),
+            tick_interval: Duration::from_secs(1),
         }
     }
 
@@ -72,6 +84,8 @@ impl RustQueue {
             buffered_config: None,
             hybrid_config: None,
             worker_registry: None,
+            stall_timeout: Duration::from_secs(30),
+            tick_interval: Duration::from_secs(1),
         })
     }
 
@@ -87,6 +101,8 @@ impl RustQueue {
             buffered_config: None,
             hybrid_config: Some(HybridConfig::default()),
             worker_registry: None,
+            stall_timeout: Duration::from_secs(30),
+            tick_interval: Duration::from_secs(1),
         })
     }
 }
@@ -115,8 +131,28 @@ impl RustQueueBuilder {
         self
     }
 
+    /// Set the stall timeout for the background housekeeping scheduler.
+    ///
+    /// Jobs that have not sent a heartbeat within this duration are considered stalled.
+    pub fn stall_timeout(mut self, d: Duration) -> Self {
+        self.stall_timeout = d;
+        self
+    }
+
+    /// Set the tick interval for the background housekeeping scheduler.
+    ///
+    /// Must be greater than zero.
+    pub fn tick_interval(mut self, d: Duration) -> Self {
+        self.tick_interval = d;
+        self
+    }
+
     /// Build the [`RustQueue`] instance.
     pub fn build(self) -> anyhow::Result<RustQueue> {
+        if self.tick_interval.is_zero() {
+            return Err(anyhow::anyhow!("tick_interval must be greater than zero"));
+        }
+
         let storage: Arc<dyn StorageBackend> = if let Some(config) = self.hybrid_config {
             Arc::new(HybridStorage::new(self.storage, config))
         } else if let Some(config) = self.buffered_config {
@@ -129,7 +165,52 @@ impl RustQueueBuilder {
         } else {
             QueueManager::new(storage)
         };
-        Ok(RustQueue { manager })
+        Ok(RustQueue {
+            manager: Arc::new(manager),
+            housekeeping: Arc::new(HousekeepingState::new()),
+            stall_timeout: self.stall_timeout,
+            tick_interval: self.tick_interval,
+        })
+    }
+}
+
+// ── Housekeeping ─────────────────────────────────────────────────────────────
+
+impl RustQueue {
+    /// Start the background housekeeping scheduler.
+    ///
+    /// This spawns a tokio task that periodically:
+    /// - Promotes delayed jobs whose delay has expired
+    /// - Executes due schedules (cron + interval)
+    /// - Checks for timed-out and stalled jobs
+    ///
+    /// Must be called from within a Tokio runtime. Safe to call multiple times —
+    /// only the first call starts the scheduler; subsequent calls are no-ops.
+    ///
+    /// The scheduler task is automatically aborted when the last `RustQueue`
+    /// clone is dropped.
+    pub fn start_housekeeping(&self) -> Result<(), RustQueueError> {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return Err(RustQueueError::Internal(anyhow::anyhow!(
+                "start_housekeeping must be called within a Tokio runtime"
+            )));
+        }
+        if self
+            .housekeeping
+            .started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Ok(());
+        }
+        let handle = crate::engine::scheduler::start_scheduler(
+            self.manager.clone(),
+            self.tick_interval.as_millis() as u64,
+            self.stall_timeout.as_millis() as u64,
+            RetentionConfig::default(),
+        );
+        *self.housekeeping.task.lock().unwrap() = Some(handle);
+        Ok(())
     }
 }
 
@@ -214,5 +295,53 @@ impl RustQueue {
         message: Option<String>,
     ) -> Result<(), RustQueueError> {
         self.manager.update_progress(id, progress, message).await
+    }
+
+    /// Send a heartbeat for an active job, resetting its stall timer.
+    ///
+    /// The job must be in `Active` state; otherwise an error is returned.
+    pub async fn heartbeat(&self, id: JobId) -> Result<(), RustQueueError> {
+        self.manager.heartbeat(id).await
+    }
+
+    /// List jobs in the dead-letter queue for the given queue name.
+    ///
+    /// Returns up to `limit` DLQ jobs ordered by most-recently-failed.
+    pub async fn get_dlq_jobs(&self, queue: &str, limit: u32) -> Result<Vec<Job>, RustQueueError> {
+        self.manager.get_dlq_jobs(queue, limit).await
+    }
+
+    /// Create a new recurring schedule.
+    ///
+    /// The schedule will be picked up on the next housekeeping tick.
+    pub async fn create_schedule(&self, schedule: &Schedule) -> Result<(), RustQueueError> {
+        self.manager.create_schedule(schedule).await
+    }
+
+    /// List all registered schedules.
+    pub async fn list_schedules(&self) -> Result<Vec<Schedule>, RustQueueError> {
+        self.manager.list_schedules().await
+    }
+
+    /// Get a single schedule by name, or `None` if it does not exist.
+    pub async fn get_schedule(&self, name: &str) -> Result<Option<Schedule>, RustQueueError> {
+        self.manager.get_schedule(name).await
+    }
+
+    /// Delete a schedule by name.
+    ///
+    /// No-ops gracefully if the schedule does not exist.
+    pub async fn delete_schedule(&self, name: &str) -> Result<(), RustQueueError> {
+        self.manager.delete_schedule(name).await
+    }
+
+    /// Pause a schedule by name, halting further job creation.
+    pub async fn pause_schedule(&self, name: &str) -> Result<(), RustQueueError> {
+        self.manager.pause_schedule(name).await
+    }
+
+    /// Resume a previously paused schedule.
+    pub async fn resume_schedule(&self, name: &str) -> Result<(), RustQueueError> {
+        self.manager.resume_schedule(name).await
     }
 }
